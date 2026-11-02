@@ -40,7 +40,8 @@ uses
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
-  Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas';
+  Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas',
+  Kafka.CloudIntegrationTests in 'Kafka.CloudIntegrationTests.pas';
 
 var
   runner: ITestRunner;

@@ -1,7 +1,7 @@
 # pascal-kafka-faa — design
 
-Status: **K0 done; K1 started** (its foundation, 2026-11-02: "K1 progress" below). From the
-feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
+Status: **K0 done; K1 done but for its Confluent Cloud run** (2026-11-02: "K1 progress"
+below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
 accepted (3 and 4, and the transport's T1–T8).
 
@@ -570,10 +570,63 @@ completing, the batch was in no list `Flush` reads. Seen once as a failure of
 batches now stay in the transit list until every future is done, also when they expire or the
 producer aborts them; the producer tests then passed 25 times in a row.
 
-**Next in K1** (section 5): the interoperability tests (consume with the Java client what this
-producer sent, and the reverse); the opt-in Confluent Cloud test; then the K1 sample over TLS +
-SASL. Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first managed
-broker.
+### Interoperability, the Confluent Cloud test, the sample (2026-11-02)
+
+**Done:**
+
+- **Interoperability with the Java client 4.4.0**, both directions (section 6), over the
+  records of `tests/data/interop-records.tsv`: keys with accents, CJK and colons, a 200-byte
+  key, null keys, a header with a null value, a header name twice, a non-ASCII header value, an
+  empty value. The file is the Java console producer's own input format. `tools/interop.py`
+  runs the Java tools in the broker's container and the library's side,
+  `tests/Interop` (`KafkaInterop.dpr` and `fpc/KafkaInteropFpc.lpr` over one unit,
+  `Kafka.Interop`), on two new topics of 6 partitions:
+  - Java to library: the console producer sends the file with gzip; the program reads every
+    partition and checks key, value, headers, CreateTime, the file's order within each
+    partition, and that every keyed record is in the partition `KafkaPartitionForKey` gives
+    (Java's partitioner and this murmur2 agree).
+  - Library to Java: the program sends the file with gzip and fixed timestamps; the console
+    consumer reads timestamp, partition, offset, headers, key and value exactly as sent and as
+    the program's reports said; `kafka-dump-log.sh` reads the broker's segments, and every
+    batch is gzip with a valid CRC.
+  It runs in `tools/test_fpc.sh` (Windows), `tools/test_interop_docker.sh` (Linux, in a
+  container on the broker's network) and CI. A program and a script, not a fixture: on Linux
+  the suites run in a container with no Docker inside, and the Java side needs `docker exec`.
+- **`Kafka.CloudIntegrationTests`**: Confluent Cloud, opt-in, credentials only from the
+  environment (`KAFKA_CLOUD_BOOTSTRAP`, `KAFKA_CLOUD_API_KEY`, `KAFKA_CLOUD_API_SECRET`,
+  `KAFKA_CLOUD_TOPIC`), SASL PLAIN over TLS with the system's trust store; without them it
+  prints a notice and passes. Its code path ran against the local SASL_SSL listener
+  (`KAFKA_CLOUD_CA_FILE`, alice): 30 records produced and polled back. **Not yet run against
+  Confluent Cloud itself** (no account here).
+- **The K1 sample**, `samples/ProduceConsume/KafkaSample.dpr`: one source for Delphi (`.dproj`)
+  and Lazarus (`.lpi`), a producer and a consumer over TLS and SASL, options for bootstrap, CA
+  (`""` for the system's store), mechanism, user, password (or the name of an environment
+  variable holding it), topic and count. Its defaults use the SASL_SSL listener with SCRAM; the
+  test scripts run it that way on Windows and Linux.
+
+**Measured:** FPC 3.2.2 Windows x64: 215 unit and 32 integration tests, the interoperability
+test and the sample, 0 leaks. Linux (Docker): the same, and both suites 5 times in three
+containers at once with `--cpus=1` (30 runs). Delphi 12 Win32 and Win64: 215 and 32, 0 leaks;
+the interoperability test and the sample with the Delphi programs too.
+
+**Found on the way:**
+
+- **Old timestamps meet retention.** The library's records carry 2026-01-01 timestamps (fixed,
+  so a run is reproducible); with the broker's default retention (7 days) their segment was
+  deleted as soon as the broker looked, and `kafka-dump-log.sh` found no file. The interop topics
+  are created with `retention.ms=-1`.
+- The consumer turns off topic auto-creation (decided with the consumer): the sample opens the
+  producer first and asks it for the topic, which a broker that allows it then creates.
+
+**K1's criterion** (section 7): "a sample produces and consumes against Kafka 4.x over TLS +
+SASL" is met (both mechanisms; FPC on Windows and Linux, Delphi Win32 and Win64); "and against Confluent
+Cloud (SASL PLAIN over TLS)" waits for a run with an account
+(`KafkaSample --sasl plain --ca "" ...`, or the opt-in test); "interoperability tests green"
+is met.
+
+**Next:** run the sample and the opt-in test against Confluent Cloud; then K2 (the KIP-848
+consumer group). Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first
+managed broker.
 
 ## 8. Open questions
 

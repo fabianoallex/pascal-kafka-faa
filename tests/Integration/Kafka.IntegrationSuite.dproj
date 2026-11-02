@@ -94,6 +94,7 @@
         <DCCReference Include="..\Unit\Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.IntegrationTests.pas"/>
         <DCCReference Include="Kafka.SaslIntegrationTests.pas"/>
+        <DCCReference Include="Kafka.CloudIntegrationTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

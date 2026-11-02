@@ -6,8 +6,8 @@ may change the API; each such change is listed here.
 
 ## [Unreleased]
 
-The foundation of phase K1 (`docs/design.md`, "K1 progress"). Not released: 0.1.0 comes with
-the rest of K1 (the interoperability tests and the sample).
+Phase K1 (`docs/design.md`, "K1 progress"). Not released: 0.1.0 comes once K1's last criterion,
+the sample against Confluent Cloud, has been run.
 
 ### Added
 
@@ -77,12 +77,21 @@ the rest of K1 (the interoperability tests and the sample).
   TLS and SASL (PLAIN and SCRAM with right and wrong credentials, a wrong server signature, an
   unsupported mechanism, a listener without SASL, session lifetimes); the producer against fake
   brokers that fail, hold or drop requests, the consumer against fake brokers that answer Fetch
-  with a long poll) and 31 integration tests against `docker/docker-compose.yml` (plaintext and
+  with a long poll) and 32 integration tests against `docker/docker-compose.yml` (plaintext and
   TLS with a private CA, every TLS backend; records produced and fetched back, gzip, acks=0; the
   cluster's bootstrap, leaders, an auto-created topic, a keyed record through its partition's
   leader; the producer's keyed, sticky and bulk records fetched back; the consumer polling what
   the producer sent, plain and TLS; both through SASL_PLAINTEXT and SASL_SSL with each
-  mechanism, and across SASL sessions that expire).
+  mechanism, and across SASL sessions that expire; Confluent Cloud, opt-in).
+- Interoperability with the Java client 4.4.0 (`tools/interop.py`, the library's side in
+  `tests/Interop`): what the Java console producer sends is read by the library field by field,
+  each keyed record in the partition both murmur2 implementations agree on; what the library
+  sends is read by the Java console consumer as sent, and `kafka-dump-log.sh` finds every batch
+  gzip with a valid CRC. Run by `tools/test_fpc.sh`, `tools/test_interop_docker.sh` and CI.
+- `Kafka.CloudIntegrationTests`: the opt-in test against Confluent Cloud (SASL PLAIN over TLS,
+  the system's trust store), credentials from `KAFKA_CLOUD_*` in the environment.
+- `samples/ProduceConsume`: K1's sample, a producer and a consumer over TLS and SASL, one source
+  for Delphi and Lazarus; its defaults use the SASL_SSL listener of `docker/`.
 
 ### Fixed
 

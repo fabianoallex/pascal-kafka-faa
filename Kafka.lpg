@@ -12,6 +12,16 @@
           <Mode Name="Default"/>
         </BuildModes>
       </Target>
+      <Target FileName="tests\Interop\fpc\KafkaInteropFpc.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
+      <Target FileName="samples\ProduceConsume\KafkaSample.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
     </Targets>
   </ProjectGroup>
 </CONFIG>

@@ -1,0 +1,24 @@
+n:0,lang:pt	customer-1	Olá, São Paulo
+n:1	customer-2	pedido 2: 10 itens
+n:2,trace:00-abc-01	customer-3	漢字 and ÿ€
+n:3	customer-1	second for customer-1
+n:4,empty:NULL	NULL	no key, a null header value
+n:5	customer-4	five
+n:6	São Paulo	an accented key
+n:7	漢字キー	a CJK key
+n:8	customer-5	eight
+n:9,lang:en,lang:pt	customer-6	a header name twice
+n:10	customer-1	third for customer-1
+n:11	customer-2	eleven
+n:12	order:123/item:7	a key with colons
+n:13	customer-3	thirteen
+n:14	customer-4	fourteen
+n:15	NULL	no key again
+n:16	customer-5	sixteen
+n:17	customer-6	seventeen
+n:18	customer-1	fourth for customer-1
+n:19	customer-2	nineteen
+n:20	kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	a 200-byte key
+n:21	customer-3	twenty-one
+n:22,bin:é	customer-4	a non-ASCII header value
+n:23	customer-5	

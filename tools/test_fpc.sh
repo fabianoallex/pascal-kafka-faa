@@ -42,6 +42,26 @@ case "${KAFKA_IT:-auto}" in
 esac
 if docker inspect -f '{{.State.Running}}' pascal-kafka-faa-broker 2>/dev/null | grep -q true; then
   run_suite tests/Integration/fpc KafkaIntegrationTestsFpc
+  # The interoperability test with the Java client (tools/interop.py).
+  if ! "$LAZBUILD" -B tests/Interop/fpc/KafkaInteropFpc.lpi > tests/Interop/fpc/build.log 2>&1; then
+    grep -E "Error|Fatal" tests/Interop/fpc/build.log | head -30
+    exit 1
+  fi
+  echo "== interop with the Java client"
+  RC=0
+  MSYS_NO_PATHCONV=1 "${PYTHON:-python}" -I tools/interop.py \
+    --pascal tests/Interop/fpc/KafkaInteropFpc.exe > tests/Interop/fpc/run.log 2>&1 || RC=$?
+  grep -vE "memory blocks|heap|Heap dump" tests/Interop/fpc/run.log
+  [ "$RC" -eq 0 ]
+  # The K1 sample, against the SASL_SSL listener (its defaults).
+  if ! "$LAZBUILD" -B samples/ProduceConsume/KafkaSample.lpi > samples/ProduceConsume/build.log 2>&1; then
+    grep -E "Error|Fatal" samples/ProduceConsume/build.log | head -30
+    exit 1
+  fi
+  echo "== sample (samples/ProduceConsume, SASL_SSL + SCRAM)"
+  samples/ProduceConsume/KafkaSample.exe > samples/ProduceConsume/run.log 2>&1 || true
+  grep -E "^(localhost|done)|Error|failed|unfreed" samples/ProduceConsume/run.log
+  grep -q "^done" samples/ProduceConsume/run.log && grep -qE "^0 unfreed memory blocks" samples/ProduceConsume/run.log
 elif [ "${KAFKA_IT:-auto}" = require ]; then
   echo "== integration: the broker is not running (docker compose -f docker/docker-compose.yml up -d)"
   exit 1

@@ -18,10 +18,14 @@ linux/
 # ELF binaries (no extension) produced by lazbuild on Linux in the project folder
 tests/Unit/fpc/KafkaUnitTestsFpc
 tests/Integration/fpc/KafkaIntegrationTestsFpc
+tests/Interop/fpc/KafkaInteropFpc
+samples/ProduceConsume/KafkaSample
 
 # test script logs
 tests/*/fpc/build.log
 tests/*/fpc/run.log
+samples/*/build.log
+samples/*/run.log
 
 # NUnit report produced by the DUnitX runner
 dunitx-results.xml

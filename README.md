@@ -9,7 +9,8 @@ Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOf
 SaslHandshake, SaslAuthenticate), record batch v2 with gzip, murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer and a consumer of manually assigned
-partitions. Consumer groups come in K2. The plan is [`docs/design.md`](docs/design.md).
+partitions, checked against the Java client in both directions. Consumer groups come in K2. The
+plan is [`docs/design.md`](docs/design.md).
 
 ## What works today
 
@@ -122,6 +123,26 @@ begin
 end;
 ```
 
+## Sample
+
+[`samples/ProduceConsume`](samples/ProduceConsume/KafkaSample.dpr): a producer and a consumer
+over TLS and SASL, one source for Delphi (`.dproj`) and Lazarus (`.lpi`). With no arguments it
+uses the SASL_SSL listener of `docker/docker-compose.yml`; against Confluent Cloud:
+
+```sh
+KafkaSample --bootstrap pkc-xxxxx.region.provider.confluent.cloud:9092 --sasl plain \
+  --user <API key> --password-env CC_SECRET --ca "" --topic <an existing topic>
+```
+
+## Works with the Java client
+
+`tools/interop.py` checks both directions against the Java client 4.4.0: records the Java
+console producer sends (gzip, keys with accents and CJK, null keys, headers with null values,
+an empty value) read by this library field by field, each keyed record in the partition both
+murmur2 implementations agree on; and records this library sends read back by the Java console
+consumer with the same timestamp, partition, offset, headers, key and value, every batch gzip
+with a valid CRC according to `kafka-dump-log.sh`.
+
 ## Requirements
 
 - Delphi 12, or FPC 3.2.2 / Lazarus 4.
@@ -137,10 +158,16 @@ end;
 
 ## Tests
 
-See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Windows),
-`sh tools/test_fpc_docker.sh` (Linux in Docker), `Kafka.groupproj` in the Delphi IDE; the
-integration suite needs `docker compose -f docker/docker-compose.yml up -d` (plaintext 9092, TLS
-9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, and 9098 with 2-second SASL sessions).
+See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Windows: the
+suites, the Java interoperability test and the sample), `sh tools/test_fpc_docker.sh` and
+`sh tools/test_interop_docker.sh` (the same on Linux in Docker), `Kafka.groupproj` in the Delphi
+IDE. Everything but the unit suite needs `docker compose -f docker/docker-compose.yml up -d`
+(plaintext 9092, TLS 9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, and 9098 with 2-second SASL
+sessions).
+
+The Confluent Cloud test (`Kafka.CloudIntegrationTests`) runs only with credentials in the
+environment: `KAFKA_CLOUD_BOOTSTRAP`, `KAFKA_CLOUD_API_KEY`, `KAFKA_CLOUD_API_SECRET` and an
+existing topic in `KAFKA_CLOUD_TOPIC`. Without them it prints a notice and passes.
 
 ## License
 

@@ -25,7 +25,8 @@ uses
   {$ENDIF}
   Classes, consoletestrunner, testregistry,
   Kafka.IntegrationTests,
-  Kafka.SaslIntegrationTests;
+  Kafka.SaslIntegrationTests,
+  Kafka.CloudIntegrationTests;
 
 var
   ConsoleApp: TTestRunner;
