@@ -126,9 +126,12 @@ What waiting doesn't save: the classic assignor is the largest piece (cooperativ
 delicate) and costs the same now or later. Estimated extra, from the siblings' sizes: 1 500 to
 2 500 lines plus the rebalance test suite.
 
-**Not verified:** whether Redpanda, Amazon MSK, Confluent Cloud and Azure Event Hubs accept
-KIP-848 today. If the first real user is on one of them, that decides whether the classic
-protocol comes earlier.
+**Checked 2026-11-02** (vendor docs, not tested): Confluent Cloud has KIP-848 GA; Amazon MSK
+has it on clusters of 4.0 or later, opt-in on the client. Nothing found for Redpanda (its docs
+don't mention it) or Azure Event Hubs (documented for clients from 1.0 on, no transactions).
+A first user on either of those two would move the classic protocol up to K2; it can be
+checked against Redpanda in a container before then. The chosen brokers are in open
+question 1.
 
 ## 4. Architecture
 
@@ -248,7 +251,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | Phase | Content | Done when |
 |---|---|---|
 | **K0** | the transport in pascal-common-faa (decision 1; its migration order) | common releases the transport with pipes and redis running on it |
-| **K1** | protocol, generator, connection, cluster, producer, manual consumer, TLS, SASL PLAIN/SCRAM-256, gzip | a sample produces and consumes against Kafka 4.x over TLS + SASL; interoperability tests green |
+| **K1** | protocol, generator, connection, cluster, producer, manual consumer, TLS, SASL PLAIN/SCRAM-256, gzip | a sample produces and consumes against Kafka 4.x over TLS + SASL, and against Confluent Cloud (SASL PLAIN over TLS); interoperability tests green |
 | **K2** | KIP-848 consumer group, commits, incremental event API | two consumers share a topic and rebalance without loss, and with no duplicates beyond at-least-once |
 | **K3** | idempotence, snappy/lz4/zstd, SCRAM-512, OAUTHBEARER, tracing and metrics | consumes what Java produces with each codec; idempotent producer with no duplicate after a retry |
 | **K4** | transactions, outbox | on demand |
@@ -309,13 +312,20 @@ build from the command line): 91 unit and 8 integration tests, 0 leaks, SChannel
 
 **Next in K1** (section 5): Produce, Fetch and ListOffsets in the generator (with the
 `records` type) and record batch v2 by hand; `Kafka.Cluster`; the producer and the manual
-consumer; SASL PLAIN and SCRAM-SHA-256; gzip; murmur2. Open question 1 (the first real broker)
-hasn't been needed yet.
+consumer; SASL PLAIN and SCRAM-SHA-256; gzip; murmur2. Open question 1 is answered: Apache
+4.4.0 in CI, Confluent Cloud as the first managed broker.
 
 ## 8. Open questions
 
 1. **First real user:** which broker (Apache 4.x? Confluent Cloud? MSK? Redpanda?). It decides
-   whether the classic group protocol moves up to K2.
+   whether the classic group protocol moves up to K2. *Answered 2026-11-02:* **Apache Kafka
+   4.4.0** (`docker/`) stays the reference, run in CI on every commit; **Confluent Cloud** is
+   the first managed broker. It has KIP-848 and uses SASL PLAIN over TLS, so it needs nothing
+   beyond K1's plan, and it is the first broker this project didn't set up. Its test is manual
+   and opt-in (credentials from the environment, never in the repository), not part of CI.
+   The classic protocol stays after K2. MSK (SCRAM-SHA-512 or IAM), Redpanda (KIP-848
+   unknown) and Event Hubs (classic protocol only, as far as its docs say) wait for a user who
+   needs them.
 2. **zstd:** opt-in libzstd (proposed) or a pure-Pascal decoder (~2 000 to 3 000 lines).
 3. **Version of the JSON definitions** for the generator: the latest stable 4.x on the day K1
    starts. *Answered 2026-11-02: 4.4.0* (the user chose it; 4.3.2 was the other candidate). The
