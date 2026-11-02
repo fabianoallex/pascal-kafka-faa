@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{2D88982F-BDE8-47F5-8F03-997DDBCB5ECB}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="tests\Unit\Kafka.UnitTests.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="tests\Integration\Kafka.IntegrationSuite.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="Kafka_UnitTests">
+        <MSBuild Projects="tests\Unit\Kafka.UnitTests.dproj"/>
+    </Target>
+    <Target Name="Kafka_UnitTests:Clean">
+        <MSBuild Projects="tests\Unit\Kafka.UnitTests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Kafka_UnitTests:Make">
+        <MSBuild Projects="tests\Unit\Kafka.UnitTests.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Kafka_IntegrationSuite">
+        <MSBuild Projects="tests\Integration\Kafka.IntegrationSuite.dproj"/>
+    </Target>
+    <Target Name="Kafka_IntegrationSuite:Clean">
+        <MSBuild Projects="tests\Integration\Kafka.IntegrationSuite.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Kafka_IntegrationSuite:Make">
+        <MSBuild Projects="tests\Integration\Kafka.IntegrationSuite.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="Kafka_UnitTests;Kafka_IntegrationSuite"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="Kafka_UnitTests:Clean;Kafka_IntegrationSuite:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="Kafka_UnitTests:Make;Kafka_IntegrationSuite:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

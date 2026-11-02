@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="5">
+    <PathDelim Value="\"/>
+    <Name Value="pascal_kafka_faa"/>
+    <Author Value="Fabiano Arndt"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <PathDelim Value="\"/>
+      <SearchPaths>
+        <IncludeFiles Value="..\src"/>
+        <OtherUnitFiles Value="..\src"/>
+        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
+      </SearchPaths>
+    </CompilerOptions>
+    <Description Value="Native Apache Kafka client for Delphi and Free Pascal/Lazarus (dual-compiler), with no external dependency: the protocol codecs generated from Kafka's message definitions, and a broker connection over TCP or TLS (SChannel or OpenSSL, from pascal-common-faa)."/>
+    <License Value="MIT"/>
+    <Version Minor="1"/>
+    <Files>
+      <Item>
+        <Filename Value="..\src\kafka.inc"/>
+        <Type Value="Include"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Types.pas"/>
+        <UnitName Value="Kafka.Types"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Protocol.Crc32c.pas"/>
+        <UnitName Value="Kafka.Protocol.Crc32c"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Protocol.Primitives.pas"/>
+        <UnitName Value="Kafka.Protocol.Primitives"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Protocol.Envelope.pas"/>
+        <UnitName Value="Kafka.Protocol.Envelope"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Errors.pas"/>
+        <UnitName Value="Kafka.Errors"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.Apis.pas"/>
+        <UnitName Value="Kafka.Messages.Apis"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.ApiVersions.pas"/>
+        <UnitName Value="Kafka.Messages.ApiVersions"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.Metadata.pas"/>
+        <UnitName Value="Kafka.Messages.Metadata"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Transport.pas"/>
+        <UnitName Value="Kafka.Transport"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Connection.pas"/>
+        <UnitName Value="Kafka.Connection"/>
+      </Item>
+    </Files>
+    <RequiredPkgs>
+      <!-- By name only, with no DefaultFilename: the application provides the
+           one copy of pascal-common-faa (one registered pascal_common_faa.lpk).
+           A DefaultFilename into external/ would let Lazarus fall back to this
+           library's private copy, the diamond pascal-common-faa forbids. The
+           test .lpi files point at external/ with Prefer="True". -->
+      <Item>
+        <PackageName Value="pascal_common_faa"/>
+        <MinVersion Major="1" Minor="27" Release="1" Valid="True"/>
+      </Item>
+      <Item>
+        <PackageName Value="FCL"/>
+      </Item>
+    </RequiredPkgs>
+    <UsageOptions>
+      <UnitPath Value="$(PkgOutDir)"/>
+    </UsageOptions>
+    <PublishOptions>
+      <Version Value="2"/>
+      <UseFileFilters Value="True"/>
+    </PublishOptions>
+  </Package>
+</CONFIG>

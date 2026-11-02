@@ -1,0 +1,8 @@
+# LF for every text file, in the repository and in the working tree,
+# regardless of the machine's core.autocrlf. FPC and Delphi 12+ read LF
+# without issues (default recommended by the dual-compiler-delphi-lazarus skill).
+* text=auto eol=lf
+
+# Binary test material: a line-ending conversion would corrupt it.
+*.pfx binary
+*.bin binary

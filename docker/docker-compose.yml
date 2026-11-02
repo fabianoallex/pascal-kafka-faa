@@ -1,0 +1,63 @@
+# One Apache Kafka 4.4.0 broker in KRaft mode (broker and controller in one
+# process), for the integration tests and the codec captures.
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Listeners, all advertised as localhost so that the same addresses work from
+# the Windows host (published ports) and from a Linux test container started
+# with --network container:pascal-kafka-faa-broker (tools/test_fpc_docker.sh):
+#
+#   9092  PLAINTEXT
+#   9093  TLS: TLS without client authentication. The server certificate and
+#         key are the pascal-common-faa test PKI (external/pascal-common-faa/
+#         tests/pki: srv_cert.pem, CN=localhost, SAN localhost and 127.0.0.1,
+#         signed by ca_cert.pem). Public test keys: no security value.
+#   9094  the KRaft controller (not published)
+#
+# The TLS listener is named TLS, not SSL: the image's configure script asks for
+# the JKS-style KAFKA_SSL_KEYSTORE_FILENAME/... variables as soon as an
+# advertised listener contains "SSL://". Kafka reads a PEM keystore (KIP-651)
+# as one file with the key and the chain, so the command concatenates the two
+# PEM files of the PKI before starting the broker.
+#
+# Topics are auto-created on first metadata request (the default), so a test
+# can ask for a topic it never created.
+name: pascal-kafka-faa
+
+services:
+  kafka:
+    image: apache/kafka:4.4.0
+    container_name: pascal-kafka-faa-broker
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - ../external/pascal-common-faa/tests/pki:/pki:ro
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,TLS://:9093,CONTROLLER://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,TLS://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,TLS:SSL,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9094
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_NAME_TLS_SSL_KEYSTORE_TYPE: PEM
+      KAFKA_LISTENER_NAME_TLS_SSL_KEYSTORE_LOCATION: /tmp/tls/server.pem
+      KAFKA_LISTENER_NAME_TLS_SSL_CLIENT_AUTH: none
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    command:
+      - sh
+      - -c
+      - mkdir -p /tmp/tls && cat /pki/srv_key.pem /pki/srv_cert.pem > /tmp/tls/server.pem && exec /etc/kafka/docker/run
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 20s
+      retries: 30
