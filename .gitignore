@@ -43,3 +43,4 @@ packagefiles.xml
 # the broker's TLS material is generated from the common's tests/pki CA
 # (tools/gen_broker_certs.sh)
 docker/certs/
+__pycache__/

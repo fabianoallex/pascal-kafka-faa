@@ -271,7 +271,8 @@ with ApiVersions and Metadata only, the connection, and a milestone against a re
 - Repository: dual-compiler skeleton (`src/kafka.inc` with `KAFKA_WINDOWS`, `Kafka.groupproj`
   and `Kafka.lpg`, `packages/pascal_kafka_faa.lpk`, DUnitX + FPCUnit runners), the skill's test
   kit (`check_test_kit.py --install Kafka`), `CLAUDE.md`, `CHANGELOG.md`. pascal-common-faa as a
-  submodule at `v1.27.1`; `Kafka.Types` and the `.lpk` require 1.27.1. No GitHub repository yet.
+  submodule at `v1.27.1`; `Kafka.Types` and the `.lpk` require 1.27.1. Published at
+  https://github.com/fabianoallex/pascal-kafka-faa (MIT), CI on FPC Linux.
 - `Kafka.Protocol.*` by hand (decision 3): primitives, CRC32C, the envelope.
 - `tools/gen_messages.py` from Kafka 4.4.0's JSON: ApiVersions v0-v5, Metadata v0-v13, the API
   table, and `Kafka.Errors` from `Errors.java`.
@@ -310,10 +311,59 @@ build from the command line): 91 unit and 8 integration tests, 0 leaks, SChannel
   `EKafkaUnsupportedVersion`, as Java's `UnsupportedVersionException`. The generator refuses
   what it doesn't support yet (`records`, nullable or tagged structs).
 
-**Next in K1** (section 5): Produce, Fetch and ListOffsets in the generator (with the
-`records` type) and record batch v2 by hand; `Kafka.Cluster`; the producer and the manual
-consumer; SASL PLAIN and SCRAM-SHA-256; gzip; murmur2. Open question 1 is answered: Apache
-4.4.0 in CI, Confluent Cloud as the first managed broker.
+### Records: Produce, Fetch, ListOffsets, record batch v2, gzip (2026-11-02)
+
+**Done:**
+
+- The generator takes the `records` type (raw nullable bytes, null by default, as Java's) and
+  tagged struct fields (written when they differ from a fresh `Init`, Java's `equals` against
+  `new X()`: every record now has `IsDefault`). Generated: Produce v3-v13, Fetch v4-v18,
+  ListOffsets v1-v11. Nullable structs are still refused; no API so far has one.
+- `Kafka.Protocol.RecordBatch` by hand: record batch v2 with its CRC32C, records with their
+  deltas kept (decode then encode gives the same bytes) and the absolute offset and timestamp
+  filled in (LogAppendTime as Java: the batch's MaxTimestamp), headers, null against empty key
+  and value. Reading a Fetch's records skips a last batch the broker cut short at the byte
+  limit, as Java's iterator does. Magic 0 and 1 are refused (Kafka 4 dropped them, KIP-724).
+- `Kafka.Compression`: none and gzip. RFC 1952 framing written and read here, over raw deflate
+  from `System.ZLib` (Delphi) and paszlib's `ZStream` (FPC), so the gzip detail is the same
+  code on both; trailer checked (CRC-32 and size), output bounded while it comes out (a zip
+  bomb fails without allocating). snappy, lz4 and zstd raise `EKafkaCompression` until K3.
+- `TKafkaConnection.Produce`, `Fetch` and `ListOffsets`. Produce with acks=0 goes out through
+  `SendOneWay` (a correlation id, no entry in the table: the broker never answers it). Fetch
+  waits `RequestTimeoutMs + MaxWaitMs`, as Java's client.
+- Captures: 130 frames (from 48). By hand, every version of the three new requests, with
+  Python's own record batches (uncompressed, and gzip from Python's `gzip` for Produce v13), all
+  accepted by the broker, and a Fetch the broker cut inside a batch. From Java, through a
+  listener that advertises the capture proxy (`docker/docker-compose.capture.yml`), so Produce
+  and Fetch were recorded too and not only the bootstrap connection: the console producer's
+  gzip batch (idempotent, keys, headers, a null key, a null header value, `olá`) and the console
+  consumer's ListOffsets and Fetch of it.
+
+**Checked against the captures:** the generated requests encode to the hand-built bytes, and
+the batches `TKafkaRecordBatch` writes are byte for byte Python's; every Fetch answer decodes
+to the eleven batches produced; the Java batch the consumer fetched is the one the producer
+sent, the same bytes except the partition leader epoch, which the broker sets and the CRC
+doesn't cover. Integration: a batch produced by the library and fetched back, in plaintext
+and gzip over TLS; acks=0 found by a long-polling Fetch (no `Sleep`).
+
+**Measured:** FPC 3.2.2 Windows x64: 121 unit and 11 integration tests, 0 leaks. Linux (Docker):
+the same, 0 leaks, and both suites 5 times in three containers at once with `--cpus=1` (30
+runs). Delphi 12 Win32 and Win64: 121 unit and 11 integration tests, 0 leaks.
+
+**Decided while writing:**
+
+- **`EKafkaCompression`** under `EKafka`: a codec the library doesn't have, or data that
+  doesn't decompress. Not under `EKafkaProtocol`: the bytes followed the protocol.
+- **One gzip member.** Java, librdkafka and the Go clients write one; a second member fails the
+  trailer check with a message that names the possibility, rather than being read.
+- **A header key that isn't UTF-8 raises `EKafkaProtocol`**, as every string in this codec.
+  Java decodes such a key with replacement characters; a consumer that needs to read past such a
+  record will need an option (not before someone asks).
+
+**Next in K1** (section 5): `Kafka.Cluster` (bootstrap, metadata, a connection per broker,
+leaders); murmur2; the producer (accumulator, linger, sender thread, acks, retries) and the
+manual consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and SCRAM-SHA-256. Open question 1 is
+answered: Apache 4.4.0 in CI, Confluent Cloud as the first managed broker.
 
 ## 8. Open questions
 

@@ -37,10 +37,16 @@ MessageDataGenerator.java), which is the reference when in doubt:
   - a version marked "latestVersionUnstable" is not offered (Java only offers
     it with unstable.api.versions.enable).
 
+The "records" type (Produce and Fetch) is carried as raw bytes, nullable, null
+by default, as Java's generator does: the record batches inside are written
+and read by hand in Kafka.Protocol.RecordBatch (decision 3).
+
+A struct field (tagged or not) holds its default when it equals a fresh
+Init'ed record, unknown tagged fields included; each record has IsDefault for
+that (Java compares with equals against "new X()").
+
 Not supported yet, and refused here with a message rather than generated
-wrong: the "records" type (Produce and Fetch; record batch v2 is written by
-hand, decision 3), nullable struct fields, and tagged struct fields. Each
-comes with the first API that needs it.
+wrong: nullable struct fields. It comes with the first API that needs it.
 
 Usage:
     python tools/gen_messages.py           write the units
@@ -59,7 +65,7 @@ SRC = ROOT / "src"
 
 # The APIs generated, by the name of their JSON files without
 # Request/Response. Adding one here is all it takes to generate it.
-APIS = ["ApiVersions", "Metadata"]
+APIS = ["ApiVersions", "Metadata", "Produce", "Fetch", "ListOffsets"]
 
 BOM = "﻿"
 
@@ -72,7 +78,7 @@ PASCAL_RESERVED = {
     "program", "property", "raise", "record", "repeat", "resourcestring", "set", "shl",
     "shr", "string", "then", "threadvar", "to", "try", "type", "unit", "until", "uses",
     "var", "while", "with", "xor", "self", "result", "length", "high", "low",
-    "init", "encode", "decode", "tobytes", "frombytes", "unknowntaggedfields",
+    "init", "encode", "decode", "tobytes", "frombytes", "unknowntaggedfields", "isdefault",
 }
 
 SCALARS = {
@@ -269,8 +275,13 @@ class Field:
         self.default_raw = raw.get("default")
         if raw.get("flexibleVersions") is not None:
             raise GenError(f"{msg.name}.{self.name}: per-field flexibleVersions is not supported")
-        if self.type == "records":
-            raise GenError(f"{msg.name}.{self.name}: the records type is not supported yet")
+        # records: raw nullable bytes, null by default (Java's generator).
+        self.is_records = self.type == "records"
+        if self.is_records:
+            if self.nullable.empty():
+                raise GenError(f"{msg.name}.{self.name}: a records field must be nullable")
+            if self.default_raw is None:
+                self.default_raw = "null"
         if (self.tag is None) != self.tagged.empty():
             raise GenError(f"{msg.name}.{self.name}: tag and taggedVersions go together")
         if not self.tagged.empty():
@@ -285,12 +296,12 @@ class Field:
             self.kind = "scalar"
         elif self.type in ("string", "bytes", "uuid"):
             self.kind = self.type
+        elif self.is_records:
+            self.kind = "bytes"
         else:
             self.kind = "struct"
         if self.kind == "struct" and not self.nullable.empty():
             raise GenError(f"{msg.name}.{self.name}: nullable struct fields are not supported yet")
-        if self.kind == "struct" and self.tag is not None:
-            raise GenError(f"{msg.name}.{self.name}: tagged struct fields are not supported yet")
         if self.kind in ("scalar", "uuid") and not self.nullable.empty():
             raise GenError(f"{msg.name}.{self.name}: a {self.type} can't be nullable")
 
@@ -364,7 +375,7 @@ class Field:
                 return f"not {n}"
             e = f"System.Length({f}) > 0"
             return f"{n} or ({e})" if self.has_null_flag else e
-        return None  # struct: never checked
+        return f"not {f}.IsDefault"  # struct
 
 
 class Struct:
@@ -749,6 +760,15 @@ def gen_init(s):
     return out
 
 
+def gen_is_default(s):
+    terms = [f"({f.differs_from_default()})" for f in s.fields]
+    terms.append("(System.Length(UnknownTaggedFields) > 0)")
+    out = [f"function {s.type_name}.IsDefault: Boolean;", "begin", "  Result := not ("]
+    out += [f"    {t}" + (" or" if i < len(terms) - 1 else ");") for i, t in enumerate(terms)]
+    out.append("end;")
+    return out
+
+
 def msg_const_prefix(msg):
     return "KAFKA_" + re.sub(r"(?<!^)(?=[A-Z])", "_", msg.name).upper()
 
@@ -769,6 +789,8 @@ def gen_struct_decl(s, msg):
     out.append("    /// Every field to its default (the definition's \"default\").")
     out.append("    procedure Init;")
     out.append("    procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);")
+    out.append("    /// Every field holds its default, unknown tagged fields included.")
+    out.append("    function IsDefault: Boolean;")
     out.append("    /// Init, then the fields of AVersion.")
     out.append("    procedure Decode(AReader: TKafkaReader; AVersion: Int16);")
     if s is msg.root:
@@ -853,12 +875,17 @@ def gen_api_unit(api, req, rsp):
               f"{req.flexible.lo if not req.flexible.empty() else -1};",
               "", "type"]
     impl = ["implementation", ""]
+    names = [s.type_name for m in (req, rsp) for s in m.structs]
+    dups = sorted({n for n in names if names.count(n) > 1})
+    if dups:
+        raise GenError(f"{api}: request and response both define {', '.join(dups)}")
     for m in (req, rsp):
         for s in m.structs:
             lines += gen_struct_decl(s, m)
             impl.append(f"{{ {s.type_name} }}")
             impl.append("")
             impl += gen_init(s) + [""]
+            impl += gen_is_default(s) + [""]
             impl += gen_encode(s, m) + [""]
             impl += gen_decode(s, m) + [""]
             if s is m.root:

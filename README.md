@@ -4,9 +4,11 @@ A native Apache Kafka client for **Delphi** and **Free Pascal/Lazarus** from one
 with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, chosen at run
 time.
 
-**Status: early, not released.** Phase K1 has its foundation: the protocol, the codecs generated
-from Kafka 4.4.0's message definitions, and a connection to one broker (ApiVersions, Metadata).
-Producer, consumer, the cluster layer, SASL and compression come next. The plan is
+**Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
+Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets), record
+batch v2 with gzip, and a connection to one broker. The cluster layer, the producer and consumer
+APIs, and SASL come next; today records are produced and fetched with the protocol's own
+requests. The plan is
 [`docs/design.md`](docs/design.md).
 
 ## What works today

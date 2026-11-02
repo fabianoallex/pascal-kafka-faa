@@ -28,6 +28,18 @@ the rest of K1 (cluster, producer, consumer, SASL, gzip).
 - `Kafka.Transport`: the exception boundary (no `EPcTransport*` leaves the library).
 - `Kafka.Types`: the exception tree, the version, and the check for pascal-common-faa 1.27.1 or
   later.
-- Tests: 91 unit tests (codecs against 48 frames captured from a Kafka 4.4.0 broker and the Java
-  client, a fake broker in process, plain and TLS) and 8 integration tests against
-  `docker/docker-compose.yml` (plaintext and TLS with a private CA, every TLS backend).
+- `Kafka.Protocol.RecordBatch`: record batch v2 (magic 2) by hand, CRC32C checked, headers,
+  null against empty key and value, absolute offsets and timestamps (LogAppendTime as Java), a
+  Fetch's last batch cut by the byte limit skipped.
+- `Kafka.Compression`: none and gzip (RFC 1952 over raw deflate from `System.ZLib` and
+  paszlib, the same framing code on both compilers; trailer checked, output bounded).
+  `EKafkaCompression` for the other codecs (until K3) and data that doesn't decompress.
+- Generated: `Kafka.Messages.Produce` (v3-v13), `Kafka.Messages.Fetch` (v4-v18),
+  `Kafka.Messages.ListOffsets` (v1-v11). The generator now reads the `records` type and tagged
+  struct fields; every record has `IsDefault`.
+- `TKafkaConnection.Produce`, `Fetch`, `ListOffsets`, `SendOneWay` (Produce with acks=0, which
+  the broker doesn't answer) and `Request` with a deadline of its own.
+- Tests: 121 unit tests (codecs and record batches against 130 frames captured from a Kafka
+  4.4.0 broker and the Java client, gzip against Python's, a fake broker in process, plain and
+  TLS) and 11 integration tests against `docker/docker-compose.yml` (plaintext and TLS with a
+  private CA, every TLS backend; records produced and fetched back, gzip, acks=0).

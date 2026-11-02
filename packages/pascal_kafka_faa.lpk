@@ -38,6 +38,14 @@
         <UnitName Value="Kafka.Protocol.Envelope"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Compression.pas"/>
+        <UnitName Value="Kafka.Compression"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Protocol.RecordBatch.pas"/>
+        <UnitName Value="Kafka.Protocol.RecordBatch"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Errors.pas"/>
         <UnitName Value="Kafka.Errors"/>
       </Item>
@@ -52,6 +60,18 @@
       <Item>
         <Filename Value="..\src\Kafka.Messages.Metadata.pas"/>
         <UnitName Value="Kafka.Messages.Metadata"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.Produce.pas"/>
+        <UnitName Value="Kafka.Messages.Produce"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.Fetch.pas"/>
+        <UnitName Value="Kafka.Messages.Fetch"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.ListOffsets.pas"/>
+        <UnitName Value="Kafka.Messages.ListOffsets"/>
       </Item>
       <Item>
         <Filename Value="..\src\Kafka.Transport.pas"/>

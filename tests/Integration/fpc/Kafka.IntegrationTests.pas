@@ -18,6 +18,15 @@
   certificate, a plaintext client on the TLS port (EKafkaProtocol at once,
   with a message that says the bytes look like TLS).
 
+  Records: a batch written by this library (Kafka.Protocol.RecordBatch),
+  produced to partition 0 and fetched back from the offset the broker gave
+  it, in plaintext and, gzip-compressed, over TLS; ListOffsets sees the
+  partition's end move. With acks=0 the broker sends no answer: the test
+  asks for the partition's end first, then a Fetch from there with a
+  MaxWaitMs, which the broker holds until the record arrives (no Sleep). Each
+  record carries a marker of its own, so the tests don't depend on what
+  earlier runs left in the topic.
+
   The broker's address: KAFKA_TEST_HOST (default localhost), KAFKA_TEST_PORT
   (9092) and KAFKA_TEST_TLS_PORT (9093). The certificates: KafkaTestPkiDir.
 
@@ -43,7 +52,14 @@ uses
   Kafka.Messages.Apis,
   Kafka.Messages.ApiVersions,
   Kafka.Messages.Metadata,
+  Kafka.Messages.Produce,
+  Kafka.Messages.Fetch,
+  Kafka.Messages.ListOffsets,
+  Kafka.Compression,
+  Kafka.Protocol.RecordBatch,
   Kafka.Connection,
+  PascalCommon.Utf8,
+  PascalCommon.Tracing,
   Kafka.TestHelpers;
 
 type
@@ -57,6 +73,7 @@ type
     function ReadTopic(AConnection: TKafkaConnection): TKafkaMetadataResponse;
     procedure CheckTopic(const R: TKafkaMetadataResponse; AExpectedPort: Integer);
     function OpenSslMissing(const AParams: TKafkaConnectionParams): Boolean;
+    procedure ProduceAndFetchBack(ACodec: TKafkaCompression);
   protected
     procedure TearDown; override;
   published
@@ -68,6 +85,9 @@ type
     procedure Tls_OpenSsl_PrivateCa;
     procedure Tls_CaThatDidntSignTheBroker_IsEKafkaTls;
     procedure PlaintextClientOnTheTlsPort_FailsWithoutHanging;
+    procedure Plaintext_ProducesAndFetchesTheRecordsBack;
+    procedure Tls_ProducesAndFetchesBackGzip;
+    procedure Plaintext_AcksZero_TheFetchWaitsForTheRecord;
   end;
 
 implementation
@@ -95,6 +115,158 @@ end;
 function TestTlsPort: Word;
 begin
   Result := StrToInt(EnvOr('KAFKA_TEST_TLS_PORT', '9093'));
+end;
+
+function NowUnixMs: Int64;
+begin
+  Result := PcUnixNanoOfLocal(Now) div 1000000;
+end;
+
+function Marker: string;
+begin
+  Result := Format('it-%d-%d', [NowUnixMs, Random(1000000000)]);
+end;
+
+/// Two records under AMarker: one with key, value and headers, one with a
+/// null key.
+function MarkedBatch(const AMarker: string; ACodec: TKafkaCompression): TKafkaRecordBatch;
+var
+  R: TKafkaRecord;
+  T: Int64;
+begin
+  T := NowUnixMs;
+  Result.Init;
+  R := KafkaRecord(PcStringToUtf8Bytes(AMarker), PcStringToUtf8Bytes('São Paulo ' + AMarker), T);
+  KafkaAddRecordHeader(R, 'marker', PcStringToUtf8Bytes(AMarker));
+  KafkaAddRecordHeader(R, 'none', nil, True);
+  Result.Append(R);
+  R := KafkaRecord(nil, PcStringToUtf8Bytes('second ' + AMarker), T + 1);
+  R.KeyIsNull := True;
+  Result.Append(R);
+  Result.SetCompression(ACodec);
+end;
+
+function ProduceRequest(const ATopicId: TKafkaUuid; const ABatch: TKafkaRecordBatch;
+  AAcks: Int16): TKafkaProduceRequest;
+begin
+  Result.Init;
+  Result.Acks := AAcks;
+  Result.TimeoutMs := 10000;
+  SetLength(Result.TopicData, 1);
+  Result.TopicData[0].Init;
+  // Name up to v12, TopicId from v13 (both ignorable): whatever version
+  // the connection negotiated.
+  Result.TopicData[0].Name := TOPIC;
+  Result.TopicData[0].TopicId := ATopicId;
+  SetLength(Result.TopicData[0].PartitionData, 1);
+  Result.TopicData[0].PartitionData[0].Init;
+  Result.TopicData[0].PartitionData[0].Index := 0;
+  Result.TopicData[0].PartitionData[0].Records := ABatch.Encode;
+  Result.TopicData[0].PartitionData[0].RecordsIsNull := False;
+end;
+
+function FetchRequest(const ATopicId: TKafkaUuid; AOffset: Int64;
+  AMaxWaitMs: Integer): TKafkaFetchRequest;
+begin
+  Result.Init;
+  Result.MaxWaitMs := AMaxWaitMs;
+  Result.MinBytes := 1;
+  SetLength(Result.Topics, 1);
+  Result.Topics[0].Init;
+  Result.Topics[0].Topic := TOPIC;
+  Result.Topics[0].TopicId := ATopicId;
+  SetLength(Result.Topics[0].Partitions, 1);
+  Result.Topics[0].Partitions[0].Init;
+  Result.Topics[0].Partitions[0].Partition := 0;
+  Result.Topics[0].Partitions[0].FetchOffset := AOffset;
+  Result.Topics[0].Partitions[0].PartitionMaxBytes := 1 shl 20;
+end;
+
+/// The end of partition 0 (ListOffsets, timestamp -1).
+function PartitionEnd(AConnection: TKafkaConnection): Int64;
+var
+  Req: TKafkaListOffsetsRequest;
+  Rsp: TKafkaListOffsetsResponse;
+begin
+  Req.Init;
+  Req.ReplicaId := -1;
+  Req.TimeoutMs := 10000;
+  SetLength(Req.Topics, 1);
+  Req.Topics[0].Init;
+  Req.Topics[0].Name := TOPIC;
+  SetLength(Req.Topics[0].Partitions, 1);
+  Req.Topics[0].Partitions[0].Init;
+  Req.Topics[0].Partitions[0].PartitionIndex := 0;
+  Req.Topics[0].Partitions[0].Timestamp := -1;
+  Rsp := AConnection.ListOffsets(Req);
+  TAssert.AssertEquals('ListOffsets error', 0, Integer(Rsp.Topics[0].Partitions[0].ErrorCode));
+  Result := Rsp.Topics[0].Partitions[0].Offset;
+end;
+
+/// The first batch of a Fetch from AOffset: the one this test produced.
+function FetchedBatch(AConnection: TKafkaConnection; const ATopicId: TKafkaUuid;
+  AOffset: Int64; AMaxWaitMs: Integer): TKafkaRecordBatch;
+var
+  Rsp: TKafkaFetchResponse;
+  P: TKafkaFetchResponsePartitionData;
+  Batches: TKafkaRecordBatchArray;
+  Trailing: Integer;
+begin
+  Rsp := AConnection.Fetch(FetchRequest(ATopicId, AOffset, AMaxWaitMs));
+  P := Rsp.Responses[0].Partitions[0];
+  TAssert.AssertEquals('Fetch error', 0, Integer(P.ErrorCode));
+  Batches := KafkaDecodeRecordBatches(P.Records, 1 shl 24, Trailing);
+  TAssert.AssertTrue('a batch came back', Length(Batches) > 0);
+  // A fetch starts at the batch holding AOffset; this test's batch starts
+  // there, since it was produced on its own.
+  TAssert.AssertEquals('base offset', AOffset, Batches[0].BaseOffset);
+  Result := Batches[0];
+end;
+
+/// The batch whose first key is AMarker, at AFrom or after: fetch after
+/// fetch, each held by the broker until there is data. Fails after 30 s.
+function FindMarkedBatch(AConnection: TKafkaConnection; const ATopicId: TKafkaUuid;
+  AFrom: Int64; const AMarker: string): TKafkaRecordBatch;
+var
+  Rsp: TKafkaFetchResponse;
+  Batches: TKafkaRecordBatchArray;
+  Trailing, I: Integer;
+  Offset: Int64;
+  Deadline: TDateTime;
+  Key: string;
+begin
+  Offset := AFrom;
+  Deadline := Now + 30 / SecsPerDay;
+  repeat
+    Rsp := AConnection.Fetch(FetchRequest(ATopicId, Offset, 10000));
+    TAssert.AssertEquals('Fetch error', 0, Integer(Rsp.Responses[0].Partitions[0].ErrorCode));
+    Batches := KafkaDecodeRecordBatches(Rsp.Responses[0].Partitions[0].Records, 1 shl 24, Trailing);
+    for I := 0 to High(Batches) do
+    begin
+      if (Length(Batches[I].Records) > 0) and
+         PcTryUtf8BytesToString(Batches[I].Records[0].Key, Key) and (Key = AMarker) then
+        Exit(Batches[I]);
+      Offset := Batches[I].NextOffset;
+    end;
+  until Now > Deadline;
+  TAssert.Fail('No batch with marker ' + AMarker + ' from offset ' + IntToStr(AFrom));
+  Result.Init;
+end;
+
+procedure CheckMarkedBatch(const AMarker: string; const ABatch: TKafkaRecordBatch);
+var
+  Value: string;
+begin
+  TAssert.AssertEquals(2, Length(ABatch.Records));
+  TAssert.AssertTrue(PcTryUtf8BytesToString(ABatch.Records[0].Key, Value));
+  TAssert.AssertEquals(AMarker, Value);
+  TAssert.AssertTrue(PcTryUtf8BytesToString(ABatch.Records[0].Value, Value));
+  TAssert.AssertEquals('São Paulo ' + AMarker, Value);
+  TAssert.AssertEquals(2, Length(ABatch.Records[0].Headers));
+  TAssert.AssertEquals('marker', ABatch.Records[0].Headers[0].Key);
+  TAssert.AssertTrue(ABatch.Records[0].Headers[1].ValueIsNull);
+  TAssert.AssertTrue('null key', ABatch.Records[1].KeyIsNull);
+  TAssert.AssertEquals(ABatch.BaseOffset + 1, ABatch.Records[1].Offset);
 end;
 
 function TopicRequest(const ATopic: string; AAutoCreate: Boolean): TKafkaMetadataRequest;
@@ -221,6 +393,9 @@ begin
   TAssert.AssertEquals(5, Integer(FConnection.ApiVersionsVersion));
   TAssert.AssertEquals(5, Integer(FConnection.NegotiatedVersion(KAFKA_API_KEY_API_VERSIONS)));
   TAssert.AssertEquals(13, Integer(FConnection.NegotiatedVersion(KAFKA_API_KEY_METADATA)));
+  TAssert.AssertEquals(13, Integer(FConnection.NegotiatedVersion(KAFKA_API_KEY_PRODUCE)));
+  TAssert.AssertEquals(18, Integer(FConnection.NegotiatedVersion(KAFKA_API_KEY_FETCH)));
+  TAssert.AssertEquals(11, Integer(FConnection.NegotiatedVersion(KAFKA_API_KEY_LIST_OFFSETS)));
   Av := FConnection.BrokerApiVersions;
   TAssert.AssertEquals(0, Integer(Av.ErrorCode));
   TAssert.AssertTrue('the broker lists its APIs', Length(Av.ApiKeys) > 40);
@@ -310,6 +485,58 @@ begin
   end;
   TAssert.AssertTrue('EKafkaProtocol naming TLS: ' + Message, Pos('TLS', Message) > 0);
   TAssert.AssertFalse(FConnection.IsOpen);
+end;
+
+procedure TKafkaIntegrationTests.ProduceAndFetchBack(ACodec: TKafkaCompression);
+var
+  TopicId: TKafkaUuid;
+  M: string;
+  Rsp: TKafkaProduceResponse;
+  P: TKafkaProduceResponsePartitionProduceResponse;
+  Batch: TKafkaRecordBatch;
+begin
+  TopicId := ReadTopic(FConnection).Topics[0].TopicId;
+  M := Marker;
+  Rsp := FConnection.Produce(ProduceRequest(TopicId, MarkedBatch(M, ACodec), -1));
+  TAssert.AssertEquals(1, Length(Rsp.Responses));
+  P := Rsp.Responses[0].PartitionResponses[0];
+  TAssert.AssertEquals('Produce error', 0, Integer(P.ErrorCode));
+  TAssert.AssertTrue('an offset', P.BaseOffset >= 0);
+  TAssert.AssertTrue('the end moved past the batch', PartitionEnd(FConnection) >= P.BaseOffset + 2);
+  Batch := FetchedBatch(FConnection, TopicId, P.BaseOffset, 0);
+  TAssert.AssertEquals('codec kept', Ord(ACodec), Ord(Batch.Compression));
+  CheckMarkedBatch(M, Batch);
+end;
+
+procedure TKafkaIntegrationTests.Plaintext_ProducesAndFetchesTheRecordsBack;
+begin
+  Open(Plain);
+  ProduceAndFetchBack(kcNone);
+end;
+
+procedure TKafkaIntegrationTests.Tls_ProducesAndFetchesBackGzip;
+begin
+  Open(Tls(tbDefault, 'ca_cert.pem'));
+  ProduceAndFetchBack(kcGzip);
+end;
+
+procedure TKafkaIntegrationTests.Plaintext_AcksZero_TheFetchWaitsForTheRecord;
+var
+  TopicId: TKafkaUuid;
+  M: string;
+  EndBefore: Int64;
+  Rsp: TKafkaProduceResponse;
+begin
+  Open(Plain);
+  TopicId := ReadTopic(FConnection).Topics[0].TopicId;
+  EndBefore := PartitionEnd(FConnection);
+  M := Marker;
+  Rsp := FConnection.Produce(ProduceRequest(TopicId, MarkedBatch(M, kcNone), 0));
+  TAssert.AssertEquals('no answer with acks=0', 0, Length(Rsp.Responses));
+  TAssert.AssertEquals('nothing left waiting', 0, FConnection.InFlightCount);
+  // The broker holds each fetch until there is data (up to 10 s). Another
+  // producer may have written first, hence the search by marker.
+  CheckMarkedBatch(M, FindMarkedBatch(FConnection, TopicId, EndBefore, M));
 end;
 
 initialization

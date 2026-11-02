@@ -1,0 +1,22 @@
+# Only for recording the Java client's frames (docs/codec-captures.md), on top
+# of docker-compose.yml:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d
+#
+# Adds a listener, CAPTURE on 9095, advertised as host.docker.internal:19092:
+# where tools/capture_proxy.py listens on the Windows host, forwarding to
+# localhost:9095. A Java tool in the broker's container bootstrapped through
+# the proxy then finds the proxy in Metadata too, so every connection it
+# opens (Produce and Fetch included) is recorded, not only the first.
+#
+# Compose merges this into the base file: the ports add up, and the
+# environment keys below replace the base file's. The tests never use 9095;
+# go back to the base file alone afterwards.
+services:
+  kafka:
+    ports:
+      - "9095:9095"
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://:9092,TLS://:9093,CONTROLLER://:9094,CAPTURE://:9095
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,TLS://localhost:9093,CAPTURE://host.docker.internal:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,TLS:SSL,CONTROLLER:PLAINTEXT,CAPTURE:PLAINTEXT

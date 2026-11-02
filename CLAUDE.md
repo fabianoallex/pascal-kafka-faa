@@ -78,8 +78,10 @@ first).
   unit to the `.lpk`, the `.pas` package file and both `.dpr`. Then capture it (the doc above).
 - **The Kafka tag is 4.4.0** (`KAFKA_TAG` in `gen_messages.py`, decided 2026-11-02: the newest
   stable 4.x that day). The broker in `docker/` runs the same tag.
-- What the generator doesn't support yet (the `records` type, nullable structs, tagged structs)
-  it refuses with a message; add the support with the first API that needs it.
+- `records` fields are raw bytes (nullable, null by default): the batches inside are
+  `Kafka.Protocol.RecordBatch`'s, by hand. Tagged structs are written when not `IsDefault`.
+  What the generator doesn't support yet (nullable structs) it refuses with a message; add the
+  support with the first API that needs it.
 
 ---
 
@@ -89,7 +91,11 @@ first).
   written in **FPCUnit's assertion dialect** (`TAssert.AssertEquals/AssertTrue/...`), provided on
   Delphi by `tests/Unit/Kafka.DUnitXCompat.pas` (the skill's canonical copy:
   `check_test_kit.py` reports drift). Helpers whose names don't end in `Tests`
-  (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`) are shared, not mirrored.
+  (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`) are
+  shared, not mirrored.
+- **A new test unit** ends with `initialization TDUnitX.RegisterTestFixture(...)` (the mirror
+  turns it into `RegisterTest`) and goes into the `.dpr`, the `.dproj` and the FPC `.lpr`.
+  Without the registration both runners compile it and run none of it, silently.
 - **Unit suite**: no network beyond loopback. `Kafka.ConnectionTests` runs against an
   in-process fake broker (`Kafka.TestFakeBroker`), plain and TLS (pascal-common-faa's
   `tests/pki`).
@@ -137,3 +143,17 @@ first).
    sides.
 7. **Delphi: `WriteLn` inside a DUnitX test class** resolves to a one-parameter `WriteLn` that
    DUnitX brings into scope (E2034 "Too many actual parameters"). Write `System.WriteLn`.
+8. **`kafka-console-producer.sh` ignores `--producer-property compression.type=gzip`**: its own
+   `--compression-codec` (default none) overrides it. Use `--compression-codec gzip`. Also: with
+   `parse.headers=true` a line must have a header (`k:v`); `--reader-property null.marker=NULL`
+   gives a null key or header value.
+9. **Only the bootstrap connection went through the capture proxy**: Metadata advertises
+   `localhost:9092`, so Produce and Fetch went to the broker directly.
+   `docker/docker-compose.capture.yml` adds a listener advertised as the proxy's address
+   (`docs/codec-captures.md`).
+10. **Python on Windows writes CRLF** in text mode: the capture scripts open their output with
+    `newline="\n"`. Python edits sent through a Bash heredoc also had a `\n` inside a string
+    turn into a real line break (twice); a script file written with the Write tool avoids it.
+11. **The broker cuts a Fetch at the byte limit inside a batch** (measured: `fetch-v18-cut`, 2
+    whole batches and 58 bytes of the third). `KafkaDecodeRecordBatches` returns the whole ones
+    and the size of the tail.

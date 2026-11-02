@@ -58,12 +58,73 @@ python tools/gen_test_captures.py
 The broker accepted all 20 requests (ApiVersions answered error 0; every Metadata answer
 describes the topic with no error, which `Kafka.MessagesTests` checks).
 
+## Records: Produce, Fetch, ListOffsets (2026-11-02, same file)
+
+**By hand, every version.** The same script, for the three APIs, against a topic of its own
+(`captured-records`, auto-created; the script waits for partition 0's leader):
+
+```sh
+python -I tools/capture_versions.py --broker localhost:9092 \
+  --apis produce,list-offsets,fetch --out tests/data/captures-4.4.0.jsonl
+```
+
+Produce v3-v13, one request each, each with a record batch of two records that the script
+builds itself (its own CRC-32C; fixed timestamps from 2026-01-01T00:00:00Z, so a new capture has
+the same requests): uncompressed up to v12, gzip from Python's `gzip` module (`mtime=0`) in v13.
+Then ListOffsets v1-v11 (the end of partition 0: 22) and Fetch v4-v18 from offset 0, each answer
+holding the eleven batches, and `fetch-v18-cut`, a Fetch with a 300-byte partition limit, which
+the broker answers with two whole batches and 58 bytes of the third. Produce v13 and Fetch v13+
+name the topic by id; the script reads it from a Metadata v12 answer it parses itself. It checks
+every answer's error code and stops on one that isn't 0: all 38 were 0.
+
+**The Java client, Produce and Fetch.** The proxy alone records only the bootstrap connection
+(above). `docker/docker-compose.capture.yml` adds a listener, `CAPTURE` on 9095, advertised as
+`host.docker.internal:19092`, where the proxy listens: a Java tool bootstrapped through the
+proxy finds the proxy in Metadata too, and every connection it opens is recorded.
+
+```sh
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d --wait
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --topic captured-java --partitions 1
+python -I tools/capture_proxy.py --listen 19092 --target localhost:9095 --out .ci/cap2.jsonl &
+printf 'trace:00-abc-01,lang:pt\tk1\tolá mundo\ntrace:00-def-01\tk2\tsecond value\nempty:NULL\tNULL\tnull key, null header value\n' |
+  docker exec -i pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server host.docker.internal:19092 --topic captured-java --compression-codec gzip \
+    --reader-property parse.key=true --reader-property parse.headers=true \
+    --reader-property null.marker=NULL --producer-property linger.ms=200
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server host.docker.internal:19092 --topic captured-java \
+  --partition 0 --offset earliest --max-messages 3
+python -I tools/captures_from_proxy.py --in .ci/cap2.jsonl --conn 2 --apis produce \
+  --prefix java-producer-gzip --source "java kafka-console-producer.sh 4.4.0, --compression-codec gzip" \
+  --out tests/data/captures-4.4.0.jsonl
+python -I tools/captures_from_proxy.py --in .ci/cap2.jsonl --conn 4 --apis list-offsets,fetch \
+  --prefix java-consumer --source "java kafka-console-consumer.sh 4.4.0, --partition 0 --offset earliest" \
+  --out tests/data/captures-4.4.0.jsonl
+python tools/gen_test_captures.py
+docker compose -f docker/docker-compose.yml up -d --wait   # back to the tests' broker
+```
+
+Connection numbers are the proxy's, in the order the tool opened them (the producer's
+bootstrap was 1 and its Produce went on 2; the consumer's were 3 and 4); look them up in the
+proxy's file before running `captures_from_proxy.py`. `--compression-codec` matters: the console
+producer sets `compression.type` from it, over `--producer-property` (the first try recorded an
+uncompressed batch). A topic of one partition, so the consumer reads everything from partition 0.
+
 ## What the tests do with them
 
-`Kafka.MessagesTests`: every capture decodes and encodes back to the same bytes (header and
-body); the hand-built requests and the Java producer's Metadata request are rebuilt with the
-generated records and must encode to the captured bytes; the decoded answers are checked field by
-field (APIs and versions offered, features in tagged fields, the topic's id, partitions, leader).
+`Kafka.MessagesTests`: every capture, of the five APIs, decodes and encodes back to the same
+bytes (header and body); the hand-built ApiVersions and Metadata requests and the Java producer's
+Metadata request are rebuilt with the generated records and must encode to the captured bytes;
+the decoded answers are checked field by field (APIs and versions offered, features in tagged
+fields, the topic's id, partitions, leader).
+
+`Kafka.ProduceFetchTests`: the hand-built Produce, ListOffsets and Fetch requests rebuilt with
+the generated records, and Produce's batches with `TKafkaRecordBatch`, encode to the captured
+bytes (the uncompressed batches byte for byte; v13's gzip batch by its records); each Produce
+answer at the next offset; every Fetch holds the eleven batches; the cut Fetch keeps two; the
+Java gzip batch fetched back is the one sent. `Kafka.RecordBatchTests` reads the broker's
+batches back to the same bytes.
 
 The topic id in the captures (`gIIkYqBfQzW_O9gEpXKFuQ`) belongs to the broker the captures came
 from; a new capture has a new id, and the tests that name it change with it.

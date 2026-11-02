@@ -2,7 +2,8 @@
 """Turns tools/capture_proxy.py's records into test captures.
 
 Pairs each response of one recorded connection with its request (by
-correlation id), keeps the APIs the library generates, and appends them to
+correlation id), keeps the APIs the library generates (or those --apis
+names), and appends them to
 --out in the format of tests/data/captures-<tag>.jsonl:
 
     {"name": "java-producer-metadata-v13", "source": "java console-producer 4.4.0",
@@ -18,7 +19,7 @@ import argparse
 import json
 import struct
 
-API_NAMES = {18: "api-versions", 3: "metadata"}
+API_NAMES = {18: "api-versions", 3: "metadata", 0: "produce", 1: "fetch", 2: "list-offsets"}
 
 
 def main():
@@ -27,8 +28,11 @@ def main():
     ap.add_argument("--conn", type=int, required=True)
     ap.add_argument("--prefix", required=True)
     ap.add_argument("--source", required=True)
+    ap.add_argument("--apis", default=",".join(API_NAMES.values()),
+                    help="the APIs to keep, by name (default: every one generated)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    keep = {k for k, n in API_NAMES.items() if n in args.apis.split(",")}
 
     requests = {}
     pairs = []
@@ -43,15 +47,15 @@ def main():
         else:
             (corr,) = struct.unpack(">i", content[:4])
             key, ver, req = requests.pop(corr)
-            if key in API_NAMES:
+            if key in keep:
                 pairs.append((key, ver, req, content))
 
     seen = set()
-    with open(args.out, "a", encoding="ascii") as out:
+    with open(args.out, "a", encoding="ascii", newline="\n") as out:
         for key, ver, req, rsp in pairs:
             name = f"{args.prefix}-{API_NAMES[key]}-v{ver}"
             if name in seen:
-                continue  # the Java client repeats Metadata; one is enough
+                continue  # the Java client repeats Metadata and Fetch; the first is kept
             seen.add(name)
             for direction, data in (("request", req), ("response", rsp)):
                 out.write(json.dumps({"name": name, "source": args.source, "dir": direction,

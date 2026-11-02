@@ -27,6 +27,8 @@ uses
   Kafka.Crc32cTests,
   Kafka.EnvelopeTests,
   Kafka.MessagesTests,
+  Kafka.ProduceFetchTests,
+  Kafka.RecordBatchTests,
   Kafka.ConnectionTests;
 
 var

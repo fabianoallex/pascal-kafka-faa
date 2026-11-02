@@ -31,8 +31,14 @@ type
 const
   KAFKA_API_KEY_API_VERSIONS = 18;
   KAFKA_API_KEY_METADATA = 3;
+  KAFKA_API_KEY_PRODUCE = 0;
+  KAFKA_API_KEY_FETCH = 1;
+  KAFKA_API_KEY_LIST_OFFSETS = 2;
 
-  KAFKA_SUPPORTED_APIS: array[0..1] of TKafkaApiInfo = (
+  KAFKA_SUPPORTED_APIS: array[0..4] of TKafkaApiInfo = (
+    (ApiKey: 0; Name: 'Produce'; MinVersion: 3; MaxVersion: 13; FirstFlexibleVersion: 9),
+    (ApiKey: 1; Name: 'Fetch'; MinVersion: 4; MaxVersion: 18; FirstFlexibleVersion: 12),
+    (ApiKey: 2; Name: 'ListOffsets'; MinVersion: 1; MaxVersion: 11; FirstFlexibleVersion: 6),
     (ApiKey: 3; Name: 'Metadata'; MinVersion: 0; MaxVersion: 13; FirstFlexibleVersion: 9),
     (ApiKey: 18; Name: 'ApiVersions'; MinVersion: 0; MaxVersion: 5; FirstFlexibleVersion: 3)
   );

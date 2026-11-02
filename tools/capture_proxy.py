@@ -10,8 +10,8 @@ Lines file, one object per frame:
 
 Kafka frames are length-prefixed and a connection's responses come back in
 the order of its requests, so cutting the byte stream at the size prefixes is
-enough; nothing is parsed here. tools/captures_to_data.py turns the records
-into tests/data/captures-<kafka version>.txt.
+enough; nothing is parsed here. tools/captures_from_proxy.py turns the
+records into tests/data/captures-<kafka tag>.jsonl.
 
 Typical use (docs/codec-captures.md has the full recipe): run this on the
 host, then point a Java tool in the broker's container at it:
@@ -22,7 +22,10 @@ host, then point a Java tool in the broker's container at it:
 
 The Java client then reads Metadata, which advertises localhost:9092, and
 opens its next connections to the broker directly: only the bootstrap
-connection is recorded, and that one holds ApiVersions and Metadata.
+connection is recorded, and that one holds ApiVersions and Metadata. To record
+Produce and Fetch too, run the broker with docker/docker-compose.capture.yml
+and forward to its CAPTURE listener (--target localhost:9095), which
+advertises the proxy itself.
 """
 
 import argparse
@@ -81,7 +84,7 @@ def main():
     srv.bind(("0.0.0.0", args.listen))
     srv.listen(16)
     print(f"listening on {args.listen}, forwarding to {args.target}", file=sys.stderr)
-    with open(args.out, "a", encoding="ascii") as out:
+    with open(args.out, "a", encoding="ascii", newline="\n") as out:
         while True:
             client, _ = srv.accept()
             upstream = socket.create_connection((host, int(port)))

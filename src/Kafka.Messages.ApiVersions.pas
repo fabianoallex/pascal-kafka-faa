@@ -53,6 +53,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
     function ToBytes(AVersion: Int16): TBytes;
@@ -76,6 +78,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -97,6 +101,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -118,6 +124,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -151,6 +159,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
     function ToBytes(AVersion: Int16): TBytes;
@@ -167,6 +177,16 @@ begin
   Self := Default(TKafkaApiVersionsRequest);
   ClusterIdIsNull := True;
   NodeId := -1;
+end;
+
+function TKafkaApiVersionsRequest.IsDefault: Boolean;
+begin
+  Result := not (
+    (ClientSoftwareName <> '') or
+    (ClientSoftwareVersion <> '') or
+    (not ClusterIdIsNull) or
+    (NodeId <> -1) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaApiVersionsRequest.Encode(AWriter: TKafkaWriter; AVersion: Int16);
@@ -302,6 +322,15 @@ begin
   Self := Default(TKafkaApiVersionsResponseApiVersion);
 end;
 
+function TKafkaApiVersionsResponseApiVersion.IsDefault: Boolean;
+begin
+  Result := not (
+    (ApiKey <> 0) or
+    (MinVersion <> 0) or
+    (MaxVersion <> 0) or
+    (System.Length(UnknownTaggedFields) > 0));
+end;
+
 procedure TKafkaApiVersionsResponseApiVersion.Encode(AWriter: TKafkaWriter; AVersion: Int16);
 var
   LFlex: Boolean;
@@ -356,6 +385,15 @@ end;
 procedure TKafkaApiVersionsResponseSupportedFeatureKey.Init;
 begin
   Self := Default(TKafkaApiVersionsResponseSupportedFeatureKey);
+end;
+
+function TKafkaApiVersionsResponseSupportedFeatureKey.IsDefault: Boolean;
+begin
+  Result := not (
+    (Name <> '') or
+    (MinVersion <> 0) or
+    (MaxVersion <> 0) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaApiVersionsResponseSupportedFeatureKey.Encode(AWriter: TKafkaWriter; AVersion: Int16);
@@ -447,6 +485,15 @@ begin
   Self := Default(TKafkaApiVersionsResponseFinalizedFeatureKey);
 end;
 
+function TKafkaApiVersionsResponseFinalizedFeatureKey.IsDefault: Boolean;
+begin
+  Result := not (
+    (Name <> '') or
+    (MaxVersionLevel <> 0) or
+    (MinVersionLevel <> 0) or
+    (System.Length(UnknownTaggedFields) > 0));
+end;
+
 procedure TKafkaApiVersionsResponseFinalizedFeatureKey.Encode(AWriter: TKafkaWriter; AVersion: Int16);
 var
   LFlex: Boolean;
@@ -535,6 +582,19 @@ procedure TKafkaApiVersionsResponse.Init;
 begin
   Self := Default(TKafkaApiVersionsResponse);
   FinalizedFeaturesEpoch := -1;
+end;
+
+function TKafkaApiVersionsResponse.IsDefault: Boolean;
+begin
+  Result := not (
+    (ErrorCode <> 0) or
+    (System.Length(ApiKeys) > 0) or
+    (ThrottleTimeMs <> 0) or
+    (System.Length(SupportedFeatures) > 0) or
+    (FinalizedFeaturesEpoch <> -1) or
+    (System.Length(FinalizedFeatures) > 0) or
+    (ZkMigrationReady <> False) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaApiVersionsResponse.Encode(AWriter: TKafkaWriter; AVersion: Int16);

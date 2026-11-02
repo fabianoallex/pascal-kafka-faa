@@ -15,6 +15,9 @@
         EKafkaTls                handshake, certificate, TLS library missing
       EKafkaTimeout              a request got no response in time
       EKafkaProtocol             bytes that don't follow the protocol
+      EKafkaCompression          a codec the library doesn't have (snappy,
+                                 lz4, zstd until phase K3), or compressed
+                                 data that doesn't decompress
       EKafkaUnsupportedVersion   no version both sides know, or a field that
                                  a version can't carry
       EKafkaBrokerError          the broker answered with an error code
@@ -60,6 +63,7 @@ type
   EKafkaTimeout = class(EKafka);
   EKafkaProtocol = class(EKafka);
   EKafkaUnsupportedVersion = class(EKafka);
+  EKafkaCompression = class(EKafka);
 
   { An error code in a broker's answer. The message names the code
     (Kafka.Errors); ErrorCode keeps the number for a caller that decides on

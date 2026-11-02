@@ -6,18 +6,19 @@
   tests/Unit/Kafka.MessagesTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
   master and run the script again. }
 
-{ Tests for the generated codecs (Kafka.Messages.ApiVersions and
-  Kafka.Messages.Metadata) against real bytes: the captures of
+{ Tests for the generated codecs (Kafka.Messages.*) against real bytes: the captures of
   Kafka.TestCaptures, recorded from an Apache Kafka 4.4.0 broker and from the
   Java client of the same version (docs/codec-captures.md).
 
-  - Every capture, request and response, of every version: the header and
+  - Every capture, request and response, of every version and every API
+    (ApiVersions, Metadata, Produce, Fetch, ListOffsets): the header and
     body decode, and encoding them again gives back the same bytes.
-  - The hand-built requests (tools/capture_versions.py: ApiVersions v0-v5,
-    Metadata v0-v13), which the broker accepted: the same logical request
+  - The hand-built ApiVersions (v0-v5) and Metadata (v0-v13) requests
+    (tools/capture_versions.py), which the broker accepted: the same logical request
     built with the generated records encodes to the same bytes.
   - What the broker said: the APIs and versions it supports, its features in
     the tagged fields, the topic's id, partitions and leader.
+    (Produce, Fetch and ListOffsets, field by field: Kafka.ProduceFetchTests.)
   - The version rules: a null or a non-default value where a version can't
     carry it, an unsupported version, trailing bytes, unknown tagged fields
     kept through decode and encode.
@@ -36,7 +37,11 @@ uses
   Kafka.Messages.Apis,
   Kafka.Messages.ApiVersions,
   Kafka.Messages.Metadata,
+  Kafka.Messages.Produce,
+  Kafka.Messages.Fetch,
+  Kafka.Messages.ListOffsets,
   Kafka.TestCaptures,
+  Kafka.TestMessages,
   Kafka.TestHelpers;
 
 type
@@ -75,47 +80,6 @@ implementation
 const
   TOPIC = 'captured-topic';
 
-function CaptureBytes(const AName: string; AIsRequest: Boolean): TBytes;
-var
-  I: Integer;
-begin
-  I := KafkaFindCapture(AName, AIsRequest);
-  if I < 0 then
-    raise Exception.CreateFmt('No capture "%s" (%s)', [AName, BoolToStr(AIsRequest, True)]);
-  Result := KafkaCaptureBytes(KAFKA_CAPTURES[I]);
-end;
-
-/// The body of a captured request: after its header.
-function RequestBody(const AContent: TBytes; out AHeader: TKafkaRequestHeader): TBytes;
-var
-  R: TKafkaReader;
-  Key, Version: Int16;
-begin
-  KafkaPeekRequestApi(AContent, Key, Version);
-  R := TKafkaReader.Create(AContent);
-  try
-    AHeader := KafkaReadRequestHeader(R, KafkaRequestHeaderVersion(KafkaApiIsFlexible(Key, Version)));
-    Result := BytesFrom(AContent, R.Position);
-  finally
-    R.Free;
-  end;
-end;
-
-function ResponseBody(const AContent: TBytes; AKey, AVersion: Int16;
-  out AHeader: TKafkaResponseHeader): TBytes;
-var
-  R: TKafkaReader;
-begin
-  R := TKafkaReader.Create(AContent);
-  try
-    AHeader := KafkaReadResponseHeader(R,
-      KafkaResponseHeaderVersion(AKey, KafkaApiIsFlexible(AKey, AVersion)));
-    Result := BytesFrom(AContent, R.Position);
-  finally
-    R.Free;
-  end;
-end;
-
 function DecodeApiVersions(const AName: string; AVersion: Int16): TKafkaApiVersionsResponse;
 var
   H: TKafkaResponseHeader;
@@ -137,6 +101,12 @@ var
   AvRsp: TKafkaApiVersionsResponse;
   MdReq: TKafkaMetadataRequest;
   MdRsp: TKafkaMetadataResponse;
+  PrReq: TKafkaProduceRequest;
+  PrRsp: TKafkaProduceResponse;
+  FeReq: TKafkaFetchRequest;
+  FeRsp: TKafkaFetchResponse;
+  LoReq: TKafkaListOffsetsRequest;
+  LoRsp: TKafkaListOffsetsResponse;
 begin
   case AKey of
     KAFKA_API_KEY_API_VERSIONS:
@@ -160,6 +130,39 @@ begin
       begin
         MdRsp.FromBytes(ABody, AVersion);
         Result := MdRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_PRODUCE:
+      if AIsRequest then
+      begin
+        PrReq.FromBytes(ABody, AVersion);
+        Result := PrReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        PrRsp.FromBytes(ABody, AVersion);
+        Result := PrRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_FETCH:
+      if AIsRequest then
+      begin
+        FeReq.FromBytes(ABody, AVersion);
+        Result := FeReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        FeRsp.FromBytes(ABody, AVersion);
+        Result := FeRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_LIST_OFFSETS:
+      if AIsRequest then
+      begin
+        LoReq.FromBytes(ABody, AVersion);
+        Result := LoReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        LoRsp.FromBytes(ABody, AVersion);
+        Result := LoRsp.ToBytes(AVersion);
       end;
   else
     raise Exception.CreateFmt('No codec for API key %d', [AKey]);
@@ -197,8 +200,9 @@ end;
 
 procedure TKafkaMessagesTests.Captures_AreThere;
 begin
-  // 4 Java exchanges + 6 ApiVersions + 14 Metadata, a request and a response each.
-  TAssert.AssertEquals(48, KAFKA_CAPTURE_COUNT);
+  // A request and a response each: 7 Java exchanges, and by hand 6 ApiVersions,
+  // 14 Metadata, 11 Produce, 11 ListOffsets and 16 Fetch.
+  TAssert.AssertEquals(130, KAFKA_CAPTURE_COUNT);
   TAssert.AssertEquals('4.4.0', KAFKA_CAPTURES[0].KafkaTag);
 end;
 

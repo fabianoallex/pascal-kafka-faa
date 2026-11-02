@@ -72,10 +72,15 @@
         <DCCReference Include="..\..\src\Kafka.Protocol.Crc32c.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Primitives.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Envelope.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Compression.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Protocol.RecordBatch.pas"/>
         <DCCReference Include="..\..\src\Kafka.Errors.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.Apis.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.ApiVersions.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.Metadata.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.Produce.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.Fetch.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.ListOffsets.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
         <DCCReference Include="..\Unit\Kafka.DUnitXCompat.pas"/>

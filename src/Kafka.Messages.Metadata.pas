@@ -47,6 +47,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -73,6 +75,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
     function ToBytes(AVersion: Int16): TBytes;
@@ -101,6 +105,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -134,6 +140,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -166,6 +174,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
   end;
@@ -201,6 +211,8 @@ type
     /// Every field to its default (the definition's "default").
     procedure Init;
     procedure Encode(AWriter: TKafkaWriter; AVersion: Int16);
+    /// Every field holds its default, unknown tagged fields included.
+    function IsDefault: Boolean;
     /// Init, then the fields of AVersion.
     procedure Decode(AReader: TKafkaReader; AVersion: Int16);
     function ToBytes(AVersion: Int16): TBytes;
@@ -215,6 +227,14 @@ implementation
 procedure TKafkaMetadataRequestTopic.Init;
 begin
   Self := Default(TKafkaMetadataRequestTopic);
+end;
+
+function TKafkaMetadataRequestTopic.IsDefault: Boolean;
+begin
+  Result := not (
+    (not TopicId.IsZero) or
+    (NameIsNull or (Name <> '')) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaMetadataRequestTopic.Encode(AWriter: TKafkaWriter; AVersion: Int16);
@@ -293,6 +313,16 @@ procedure TKafkaMetadataRequest.Init;
 begin
   Self := Default(TKafkaMetadataRequest);
   AllowAutoTopicCreation := True;
+end;
+
+function TKafkaMetadataRequest.IsDefault: Boolean;
+begin
+  Result := not (
+    (TopicsIsNull or (System.Length(Topics) > 0)) or
+    (AllowAutoTopicCreation <> True) or
+    (IncludeClusterAuthorizedOperations <> False) or
+    (IncludeTopicAuthorizedOperations <> False) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaMetadataRequest.Encode(AWriter: TKafkaWriter; AVersion: Int16);
@@ -459,6 +489,16 @@ begin
   RackIsNull := True;
 end;
 
+function TKafkaMetadataResponseBroker.IsDefault: Boolean;
+begin
+  Result := not (
+    (NodeId <> 0) or
+    (Host <> '') or
+    (Port <> 0) or
+    (not RackIsNull) or
+    (System.Length(UnknownTaggedFields) > 0));
+end;
+
 procedure TKafkaMetadataResponseBroker.Encode(AWriter: TKafkaWriter; AVersion: Int16);
 var
   LFlex: Boolean;
@@ -541,6 +581,19 @@ begin
   LeaderEpoch := -1;
 end;
 
+function TKafkaMetadataResponsePartition.IsDefault: Boolean;
+begin
+  Result := not (
+    (ErrorCode <> 0) or
+    (PartitionIndex <> 0) or
+    (LeaderId <> 0) or
+    (LeaderEpoch <> -1) or
+    (System.Length(ReplicaNodes) > 0) or
+    (System.Length(IsrNodes) > 0) or
+    (System.Length(OfflineReplicas) > 0) or
+    (System.Length(UnknownTaggedFields) > 0));
+end;
+
 procedure TKafkaMetadataResponsePartition.Encode(AWriter: TKafkaWriter; AVersion: Int16);
 var
   LFlex: Boolean;
@@ -616,6 +669,18 @@ procedure TKafkaMetadataResponseTopic.Init;
 begin
   Self := Default(TKafkaMetadataResponseTopic);
   TopicAuthorizedOperations := Low(Int32);
+end;
+
+function TKafkaMetadataResponseTopic.IsDefault: Boolean;
+begin
+  Result := not (
+    (ErrorCode <> 0) or
+    (NameIsNull or (Name <> '')) or
+    (not TopicId.IsZero) or
+    (IsInternal <> False) or
+    (System.Length(Partitions) > 0) or
+    (TopicAuthorizedOperations <> Low(Int32)) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaMetadataResponseTopic.Encode(AWriter: TKafkaWriter; AVersion: Int16);
@@ -732,6 +797,19 @@ begin
   ClusterIdIsNull := True;
   ControllerId := -1;
   ClusterAuthorizedOperations := Low(Int32);
+end;
+
+function TKafkaMetadataResponse.IsDefault: Boolean;
+begin
+  Result := not (
+    (ThrottleTimeMs <> 0) or
+    (System.Length(Brokers) > 0) or
+    (not ClusterIdIsNull) or
+    (ControllerId <> -1) or
+    (System.Length(Topics) > 0) or
+    (ClusterAuthorizedOperations <> Low(Int32)) or
+    (ErrorCode <> 0) or
+    (System.Length(UnknownTaggedFields) > 0));
 end;
 
 procedure TKafkaMetadataResponse.Encode(AWriter: TKafkaWriter; AVersion: Int16);

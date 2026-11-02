@@ -180,8 +180,13 @@ begin
   TAssert.AssertTrue(KafkaApiIsFlexible(KAFKA_API_KEY_API_VERSIONS, 3));
   TAssert.AssertFalse(KafkaApiIsFlexible(KAFKA_API_KEY_API_VERSIONS, 2));
   TAssert.AssertEquals('ApiVersions', KafkaApiName(18));
-  TAssert.AssertEquals('ApiKey(0)', KafkaApiName(0));
-  TAssert.AssertFalse(KafkaFindApi(0, Info));
+  TAssert.AssertEquals('Produce', KafkaApiName(0));
+  TAssert.AssertTrue(KafkaFindApi(KAFKA_API_KEY_PRODUCE, Info));
+  TAssert.AssertEquals(3, Integer(Info.MinVersion));
+  TAssert.AssertEquals(9, Integer(Info.FirstFlexibleVersion));
+  // DescribeTopicPartitions: no codec in this library.
+  TAssert.AssertEquals('ApiKey(75)', KafkaApiName(75));
+  TAssert.AssertFalse(KafkaFindApi(75, Info));
 end;
 
 initialization

@@ -29,6 +29,10 @@
   the owner closes it and opens a new one (reconnect.backoff is the
   cluster's).
 
+  Requests with no answer. A Produce with acks=0 gets none from the broker:
+  SendOneWay writes it with a correlation id of its own but registers no
+  future, so nothing waits and nothing is left in the table.
+
   ApiVersions (KIP-511, KIP-896). Open sends ApiVersions at the highest
   version this library has. A broker that doesn't know it answers
   UNSUPPORTED_VERSION in the v0 format, with the versions of ApiVersions it
@@ -58,7 +62,10 @@ uses
   PascalCommon.Transport,
   Kafka.Types,
   Kafka.Messages.ApiVersions,
-  Kafka.Messages.Metadata;
+  Kafka.Messages.Metadata,
+  Kafka.Messages.Produce,
+  Kafka.Messages.Fetch,
+  Kafka.Messages.ListOffsets;
 
 const
   /// TKafkaConnectionParams.RequestTimeoutMs = 0: Java's request.timeout.ms.
@@ -210,7 +217,13 @@ type
     /// and returns its future at once. Thread-safe.
     function Send(AApiKey, AApiVersion: Int16; const ABody: TBytes): IKafkaResponseFuture;
     /// Send, then wait up to RequestTimeoutMs; the response's body.
-    function Request(AApiKey, AApiVersion: Int16; const ABody: TBytes): TBytes;
+    function Request(AApiKey, AApiVersion: Int16; const ABody: TBytes): TBytes; overload;
+    /// The same with a deadline of its own (Fetch adds its MaxWaitMs).
+    function Request(AApiKey, AApiVersion: Int16; const ABody: TBytes;
+      ATimeoutMs: Cardinal): TBytes; overload;
+    /// Writes a request the broker won't answer (Produce with acks=0);
+    /// returns its correlation id. Thread-safe.
+    function SendOneWay(AApiKey, AApiVersion: Int16; const ABody: TBytes): Int32;
     /// Forgets a request (after its own timeout): its response, if it comes,
     /// is discarded, and its future fails with EKafkaTimeout.
     procedure Abandon(const AFuture: IKafkaResponseFuture);
@@ -230,6 +243,20 @@ type
     /// (v13+) raises EKafkaBrokerError; errors per topic and partition are in
     /// the response, for the caller.
     function Metadata(const ARequest: TKafkaMetadataRequest): TKafkaMetadataResponse;
+    /// A Produce request at the negotiated version. With Acks 0 the broker
+    /// doesn't answer: the request is written (SendOneWay) and the result is
+    /// an Init'ed response, with no topics. Errors per partition are in the
+    /// response.
+    function Produce(const ARequest: TKafkaProduceRequest): TKafkaProduceResponse;
+    /// A ListOffsets request at the negotiated version; errors per partition
+    /// are in the response.
+    function ListOffsets(const ARequest: TKafkaListOffsetsRequest): TKafkaListOffsetsResponse;
+    /// A Fetch request at the negotiated version, waited for up to
+    /// RequestTimeoutMs plus its MaxWaitMs (the broker may hold it that
+    /// long). A top-level error (v7+) raises EKafkaBrokerError; errors per
+    /// partition are in the response, and the records are raw bytes
+    /// (KafkaDecodeRecordBatches).
+    function Fetch(const ARequest: TKafkaFetchRequest): TKafkaFetchResponse;
 
     /// Requests waiting for their response.
     function InFlightCount: Integer;
@@ -614,17 +641,67 @@ begin
 end;
 
 function TKafkaConnection.Request(AApiKey, AApiVersion: Int16; const ABody: TBytes): TBytes;
+begin
+  Result := Request(AApiKey, AApiVersion, ABody, RequestTimeoutMs);
+end;
+
+function TKafkaConnection.Request(AApiKey, AApiVersion: Int16; const ABody: TBytes;
+  ATimeoutMs: Cardinal): TBytes;
 var
   LFuture: IKafkaResponseFuture;
 begin
   LFuture := Send(AApiKey, AApiVersion, ABody);
-  if not LFuture.Wait(RequestTimeoutMs) then
+  if not LFuture.Wait(ATimeoutMs) then
   begin
     Abandon(LFuture);
     raise EKafkaTimeout.CreateFmt('%s v%d to %s: no response in %d ms',
-      [KafkaApiName(AApiKey), AApiVersion, FAddress, RequestTimeoutMs]);
+      [KafkaApiName(AApiKey), AApiVersion, FAddress, ATimeoutMs]);
   end;
   Result := LFuture.Body;
+end;
+
+function TKafkaConnection.SendOneWay(AApiKey, AApiVersion: Int16; const ABody: TBytes): Int32;
+var
+  LHeader: TKafkaRequestHeader;
+  LFlexible: Boolean;
+  LFrame: TBytes;
+begin
+  LFlexible := KafkaApiIsFlexible(AApiKey, AApiVersion);
+  LHeader := Default(TKafkaRequestHeader);
+  LHeader.ApiKey := AApiKey;
+  LHeader.ApiVersion := AApiVersion;
+  LHeader.ClientId := FParams.ClientId;
+  FWriteLock.Enter;
+  try
+    FPendingLock.Enter;
+    try
+      if not FOpen then
+        raise EKafkaConnection.CreateFmt('Connection to %s is not open', [FAddress]);
+      if FBroken then
+        raise FBrokenClass.Create(FBrokenReason);
+      while FPending.ContainsKey(FNextCorrelationId) do
+        FNextCorrelationId := NextCorrelationId(FNextCorrelationId);
+      Result := FNextCorrelationId;
+      FNextCorrelationId := NextCorrelationId(FNextCorrelationId);
+    finally
+      FPendingLock.Leave;
+    end;
+    LHeader.CorrelationId := Result;
+    LFrame := KafkaEncodeRequestFrame(LHeader, KafkaRequestHeaderVersion(LFlexible), ABody);
+    try
+      KafkaWriteExactly(FEndpoint, LFrame[0], Length(LFrame), 'Writing to ' + FAddress);
+    except
+      on E: EKafka do
+      begin
+        // As in Send: a partial frame leaves the stream out of step.
+        MarkBroken(EKafkaClass(E.ClassType), E.Message);
+        FEndpoint.CloseAbort;
+        raise;
+      end;
+    end;
+  finally
+    FWriteLock.Leave;
+  end;
 end;
 
 procedure TKafkaConnection.Abandon(const AFuture: IKafkaResponseFuture);
@@ -825,6 +902,48 @@ begin
   Result.FromBytes(Request(KAFKA_API_KEY_METADATA, LVersion, ARequest.ToBytes(LVersion)), LVersion);
   if Result.ErrorCode <> 0 then
     raise EKafkaBrokerError.Create(Result.ErrorCode, Format('Metadata v%d to %s: %s',
+      [LVersion, FAddress, KafkaErrorText(Result.ErrorCode)]));
+end;
+
+function TKafkaConnection.Produce(const ARequest: TKafkaProduceRequest): TKafkaProduceResponse;
+var
+  LVersion: Int16;
+  LBody: TBytes;
+begin
+  LVersion := NegotiatedVersion(KAFKA_API_KEY_PRODUCE);
+  LBody := ARequest.ToBytes(LVersion);
+  if ARequest.Acks = 0 then
+  begin
+    SendOneWay(KAFKA_API_KEY_PRODUCE, LVersion, LBody);
+    Result.Init;
+  end
+  else
+    Result.FromBytes(Request(KAFKA_API_KEY_PRODUCE, LVersion, LBody), LVersion);
+end;
+
+function TKafkaConnection.ListOffsets(
+  const ARequest: TKafkaListOffsetsRequest): TKafkaListOffsetsResponse;
+var
+  LVersion: Int16;
+begin
+  LVersion := NegotiatedVersion(KAFKA_API_KEY_LIST_OFFSETS);
+  Result.FromBytes(Request(KAFKA_API_KEY_LIST_OFFSETS, LVersion, ARequest.ToBytes(LVersion)),
+    LVersion);
+end;
+
+function TKafkaConnection.Fetch(const ARequest: TKafkaFetchRequest): TKafkaFetchResponse;
+var
+  LVersion: Int16;
+  LWait: Cardinal;
+begin
+  LVersion := NegotiatedVersion(KAFKA_API_KEY_FETCH);
+  LWait := RequestTimeoutMs;
+  if ARequest.MaxWaitMs > 0 then
+    Inc(LWait, Cardinal(ARequest.MaxWaitMs));
+  Result.FromBytes(Request(KAFKA_API_KEY_FETCH, LVersion, ARequest.ToBytes(LVersion), LWait),
+    LVersion);
+  if Result.ErrorCode <> 0 then
+    raise EKafkaBrokerError.Create(Result.ErrorCode, Format('Fetch v%d to %s: %s',
       [LVersion, FAddress, KafkaErrorText(Result.ErrorCode)]));
 end;
 
