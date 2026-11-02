@@ -7,8 +7,8 @@ time.
 **Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets), record
 batch v2 with gzip, murmur2 partitioning compatible with Java, a connection per broker, the
-cluster layer (bootstrap, metadata, leaders) and the producer. The consumer and SASL come next;
-today records are fetched with the protocol's own Fetch request. The plan is
+cluster layer (bootstrap, metadata, leaders), the producer and a consumer of manually assigned
+partitions. Consumer groups (K2) and SASL come next. The plan is
 [`docs/design.md`](docs/design.md).
 
 ## What works today
@@ -36,6 +36,38 @@ begin
     // then Producer.Flush.
   finally
     Producer.Free;                                  // Close: flushes, then stops
+  end;
+end;
+```
+
+Reading partitions assigned by hand (consumer groups are phase K2):
+
+```pascal
+uses
+  Kafka.Types, Kafka.Consumer, PascalCommon.Utf8;
+
+var
+  Params: TKafkaConsumerParams;
+  Consumer: TKafkaConsumer;
+  Records: TKafkaConsumerRecordArray;
+  I: Integer;
+  Text: string;
+begin
+  Params := KafkaConsumerParams('localhost:9092');
+  Params.AutoOffsetReset := korEarliest;            // Java's default is latest
+  Consumer := TKafkaConsumer.Create(Params);
+  try
+    Consumer.Open;
+    Consumer.Assign([KafkaTopicPartition('orders', 0), KafkaTopicPartition('orders', 1)]);
+    while Running do                                // Consumer.Wakeup from another thread
+    begin                                           // ends a Poll (EKafkaWakeup)
+      Records := Consumer.Poll(1000);
+      for I := 0 to High(Records) do
+        if PcTryUtf8BytesToString(Records[I].Value, Text) then
+          Writeln(Records[I].Partition, '/', Records[I].Offset, ': ', Text);
+    end;
+  finally
+    Consumer.Free;
   end;
 end;
 ```

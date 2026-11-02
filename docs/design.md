@@ -452,10 +452,50 @@ linger rounds up).
   `RetryBackoffMs`, connecting to a broker without blocking the sender (the sender opens
   connections itself, one at a time), metrics.
 
-**Next in K1** (section 5): the manual consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and
-SCRAM-SHA-256; the interoperability tests (consume with the Java client what this producer
-sent, and the reverse); the opt-in Confluent Cloud test. Open question 1 is answered: Apache
-4.4.0 in CI, Confluent Cloud as the first managed broker.
+### The manual consumer (2026-11-02)
+
+**Done:**
+
+- `Kafka.Consumer`: `Assign`, `Seek`, `SeekToBeginning`, `SeekToEnd`, `Position`, `Poll`,
+  `Wakeup`, `BeginningOffsets`, `EndOffsets`. Positions from `AutoOffsetReset` (latest,
+  earliest, none) through ListOffsets, and again after OFFSET_OUT_OF_RANGE. `Poll` returns what
+  is fetched (up to `MaxPollRecords`) and sends the next fetches before returning; one Fetch
+  at a time per broker, waited on through the connection's signal, so `Wakeup` from another
+  thread ends a `Poll` at once (`EKafkaWakeup`). Control batches skipped, the records of a
+  compressed batch before the position dropped, the position moved past a batch's end
+  (compaction gaps). Retriable errors retried (after a metadata refresh when the error calls
+  for one: the partition isn't fetched again until the refresh); others raise from `Poll`.
+  Java's parameter names and defaults (`KafkaConsumerParams`).
+- `EKafkaWakeup`; `KAFKA_WAIT_INFINITE` moved to `Kafka.Types`.
+- The fake broker answers Fetch (with a long poll: a Fetch with nothing to return waits for
+  records or its MaxWaitMs, on a thread of its own) and ListOffsets, keeps batches as written
+  (control ones too), and has a log start.
+
+**Measured:** FPC 3.2.2 Windows x64: 183 unit and 21 integration tests, 0 leaks. Linux (Docker):
+the same, and both suites 5 times in three containers at once with `--cpus=1`. Delphi 12
+Win32 and Win64: 183 and 21, 0 leaks. Two mutations (the records before the position kept; control
+batches returned) make three tests fail.
+
+**Decided while writing:**
+
+- **Poll runs on the caller's thread**, as Java's: no background fetcher. The next fetches are
+  sent before `Poll` returns, so they travel while the caller works.
+- **Full fetches, no fetch session** (KIP-227, `SessionEpoch` -1): simpler, and correct with
+  every broker; a session saves bytes when many partitions are idle. Partitions are listed in a
+  rotating order, so a partition whose batch exceeds `MaxPartitionFetchBytes` comes first in a
+  later Fetch (a broker always returns the first batch whole).
+- **read_uncommitted only** (Java's default); read_committed waits for transactions (K4).
+- **Not thread-safe, as Java's**: a second thread inside the consumer gets `EKafka` at once;
+  `Wakeup` is the one method any thread may call.
+- **`KafkaConsumerParams` turns off auto topic creation** for the consumer's metadata (Java
+  creates topics only for a group's subscription, never for `assign`).
+- **Not done yet:** pause/resume, `OffsetsForTimes`, the preferred read replica (KIP-392),
+  leader epochs in Fetch (fencing, KIP-320), metrics.
+
+**Next in K1** (section 5): SASL PLAIN and SCRAM-SHA-256; the interoperability tests (consume
+with the Java client what this producer sent, and the reverse); the opt-in Confluent Cloud
+test; then the K1 sample over TLS + SASL. Open question 1 is answered: Apache 4.4.0 in CI,
+Confluent Cloud as the first managed broker.
 
 ## 8. Open questions
 

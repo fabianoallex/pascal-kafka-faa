@@ -86,6 +86,7 @@
         <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Consumer.pas"/>
         <DCCReference Include="Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.TestCaptures.pas"/>
@@ -101,6 +102,7 @@
         <DCCReference Include="Kafka.PartitionerTests.pas"/>
         <DCCReference Include="Kafka.ClusterTests.pas"/>
         <DCCReference Include="Kafka.ProducerTests.pas"/>
+        <DCCReference Include="Kafka.ConsumerTests.pas"/>
         <DCCReference Include="Kafka.ConnectionTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

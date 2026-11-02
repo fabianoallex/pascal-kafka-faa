@@ -32,6 +32,7 @@ uses
   Kafka.PartitionerTests,
   Kafka.ClusterTests,
   Kafka.ProducerTests,
+  Kafka.ConsumerTests,
   Kafka.ConnectionTests;
 
 var

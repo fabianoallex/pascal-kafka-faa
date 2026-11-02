@@ -95,8 +95,6 @@ uses
 const
   /// TKafkaProducerRecord.Partition: let the producer choose.
   KAFKA_ANY_PARTITION = -1;
-  /// No timeout, for Flush, Close and the futures' Wait.
-  KAFKA_WAIT_INFINITE = PC_WAIT_INFINITE;
 
   KAFKA_DEFAULT_LINGER_MS = 5;
   KAFKA_DEFAULT_BATCH_SIZE = 16384;

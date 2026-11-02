@@ -36,6 +36,7 @@ uses
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
+  Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
   Kafka.DUnitXCompat in 'Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in 'Kafka.TestHelpers.pas',
   Kafka.TestCaptures in 'Kafka.TestCaptures.pas',
@@ -51,6 +52,7 @@ uses
   Kafka.PartitionerTests in 'Kafka.PartitionerTests.pas',
   Kafka.ClusterTests in 'Kafka.ClusterTests.pas',
   Kafka.ProducerTests in 'Kafka.ProducerTests.pas',
+  Kafka.ConsumerTests in 'Kafka.ConsumerTests.pas',
   Kafka.ConnectionTests in 'Kafka.ConnectionTests.pas';
 
 var

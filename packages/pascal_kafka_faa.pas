@@ -8,7 +8,7 @@ unit pascal_kafka_faa;
 interface
 
 uses
-  Kafka.Types, Kafka.Protocol.Crc32c, Kafka.Protocol.Primitives, Kafka.Protocol.Envelope, Kafka.Compression, Kafka.Protocol.RecordBatch, Kafka.Errors, Kafka.Messages.Apis, Kafka.Messages.ApiVersions, Kafka.Messages.Metadata, Kafka.Messages.Produce, Kafka.Messages.Fetch, Kafka.Messages.ListOffsets, Kafka.Transport, Kafka.Connection, Kafka.Partitioner, Kafka.Cluster, Kafka.Producer;
+  Kafka.Types, Kafka.Protocol.Crc32c, Kafka.Protocol.Primitives, Kafka.Protocol.Envelope, Kafka.Compression, Kafka.Protocol.RecordBatch, Kafka.Errors, Kafka.Messages.Apis, Kafka.Messages.ApiVersions, Kafka.Messages.Metadata, Kafka.Messages.Produce, Kafka.Messages.Fetch, Kafka.Messages.ListOffsets, Kafka.Transport, Kafka.Connection, Kafka.Partitioner, Kafka.Cluster, Kafka.Producer, Kafka.Consumer;
 
 implementation
 

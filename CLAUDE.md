@@ -103,9 +103,11 @@ first).
 - **Unit suite**: no network beyond loopback. `Kafka.ConnectionTests` runs against an
   in-process fake broker (`Kafka.TestFakeBroker`), plain and TLS (pascal-common-faa's
   `tests/pki`); `Kafka.ClusterTests` and `Kafka.ProducerTests` against several, given the same
-  `ClusterView` (`KafkaFakeClusterView`, `KafkaFakeUseView`). The fake also answers Produce,
-  keeps a log per partition, and can fail, hold or drop Produce requests. It serves one
-  connection at a time: a test that needs two to the same broker hangs.
+  `ClusterView` (`KafkaFakeClusterView`, `KafkaFakeUseView`); `Kafka.ConsumerTests` too. The
+  fake also answers Produce (and can fail, hold or drop it), Fetch (with a long poll, on a
+  thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
+  the batches per partition (`AppendBatch`, `SetLogStart`). It serves one connection at a
+  time: a test that needs two to the same broker (a producer and a consumer, say) hangs.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI):
   `docker compose -f docker/docker-compose.yml up -d`.
@@ -171,3 +173,7 @@ first).
     so a lone record with the default `LingerMs` of 5 takes ~15 ms to go (measured). Through
     Docker Desktop's port forwarding the broker's round trip is also several times Linux's
     (20 000 records: 3 s against 0.79 s). Measure throughput on Linux.
+14. **The Delphi IDE once missed that a `.dpr`/`.dproj` changed on disk** (two units added by a
+    script while the group was open): it built its loaded copy, without them, and said nothing;
+    the suite ran 167 tests instead of 183. A later build asked to reload. After adding units,
+    compare the Delphi runner's "Tests Found" with FPC's count.

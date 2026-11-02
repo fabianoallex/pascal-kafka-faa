@@ -33,6 +33,12 @@
   sticky partition; and 20 000 records through Flush, every one delivered,
   in order within each partition.
 
+  The consumer (Kafka.Consumer): every partition assigned and sought to
+  its end, then records from the producer (keyed, gzip; and over TLS)
+  polled back: each where the producer's report said, in order, with key,
+  value and headers; a record produced from another thread while the
+  consumer polls.
+
   The broker's address: KAFKA_TEST_HOST (default localhost), KAFKA_TEST_PORT
   (9092) and KAFKA_TEST_TLS_PORT (9093). The certificates: KafkaTestPkiDir.
 
@@ -51,6 +57,7 @@ uses
   DUnitX.TestFramework,
   Kafka.DUnitXCompat,
   SysUtils,
+  Classes,
   SyncObjs,
   PascalCommon.Transport,
   Kafka.Types,
@@ -68,8 +75,10 @@ uses
   Kafka.Partitioner,
   Kafka.Cluster,
   Kafka.Producer,
+  Kafka.Consumer,
   PascalCommon.Utf8,
   PascalCommon.Tracing,
+  PascalCommon.Threading,
   Kafka.TestHelpers;
 
 type
@@ -79,6 +88,7 @@ type
     FConnection: TKafkaConnection;
     FCluster: TKafkaCluster;
     FProducer: TKafkaProducer;
+    FConsumer: TKafkaConsumer;
     function Plain: TKafkaConnectionParams;
     function Tls(ABackend: TPcTlsBackend; const ACaFile: string): TKafkaConnectionParams;
     function Open(const AParams: TKafkaConnectionParams): TKafkaConnection;
@@ -90,6 +100,8 @@ type
     function NewCluster(const ABootstrap: string; ATls: Boolean): TKafkaCluster;
     function NewProducer(ATls: Boolean; AAcks: TKafkaAcks;
       ACodec: TKafkaCompression): TKafkaProducer;
+    function NewConsumer(ATls: Boolean): TKafkaConsumer;
+    procedure ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression);
     function FetchRecordAt(APartition: Int32; AOffset: Int64; out ACodec: TKafkaCompression): TKafkaRecord;
   public
     [TearDown] procedure TearDown;
@@ -111,12 +123,48 @@ type
     [Test] procedure Producer_KeyedGzip_InMurmur2Partitions_FetchedBack;
     [Test] procedure Producer_Tls_AcksLeader_NoKey_OneStickyPartition;
     [Test] procedure Producer_ManyRecords_AllDelivered_InOrder;
+    [Test] procedure Consumer_PollsWhatTheProducerSent_Gzip;
+    [Test] procedure Consumer_Tls_PollsWhatTheProducerSent;
+    [Test] procedure Consumer_RecordProducedFromAnotherThread_IsPolled;
   end;
 
 implementation
 
 const
   TOPIC = 'pascal-kafka-faa-it';
+
+type
+  /// Sends one record with value AMarker, from its own thread.
+  TProducerOnFetch = class(TThread)
+  private
+    FProducer: TKafkaProducer;
+    FTopic, FMarker: string;
+  protected
+    procedure Execute; override;
+  public
+    ErrorClass: string;
+    constructor Create(AProducer: TKafkaProducer; const ATopic, AMarker: string);
+  end;
+
+constructor TProducerOnFetch.Create(AProducer: TKafkaProducer; const ATopic, AMarker: string);
+begin
+  inherited Create(True);
+  FreeOnTerminate := False;
+  FProducer := AProducer;
+  FTopic := ATopic;
+  FMarker := AMarker;
+end;
+
+procedure TProducerOnFetch.Execute;
+begin
+  try
+    FProducer.Send(KafkaProducerRecord(FTopic, PcStringToUtf8Bytes(FMarker))).Get(30000);
+    ErrorClass := 'none';
+  except
+    on E: Exception do
+      ErrorClass := E.ClassName;
+  end;
+end;
 
 function EnvOr(const AName, ADefault: string): string;
 begin
@@ -305,6 +353,7 @@ end;
 
 procedure TKafkaIntegrationTests.TearDown;
 begin
+  FreeAndNil(FConsumer);
   FreeAndNil(FProducer);
   FreeAndNil(FCluster);
   FreeAndNil(FConnection);
@@ -827,6 +876,151 @@ begin
   end;
   TAssert.AssertTrue('batched: far fewer requests than records', FProducer.RequestsSent < N div 20);
   F := nil;
+end;
+
+function TKafkaIntegrationTests.NewConsumer(ATls: Boolean): TKafkaConsumer;
+var
+  P: TKafkaConsumerParams;
+  Ends: TKafkaInt64Array;
+  I: Integer;
+  All: array[0..2] of TKafkaTopicPartition;
+begin
+  if ATls then
+  begin
+    P := KafkaConsumerParams(Format('%s:%d', [TestHost, TestTlsPort]));
+    P.Cluster.Connection := Tls(tbDefault, 'ca_cert.pem');
+  end
+  else
+  begin
+    P := KafkaConsumerParams(Format('%s:%d', [TestHost, TestPort]));
+    P.Cluster.Connection := Plain;
+  end;
+  P.Cluster.MaxBlockMs := 30000;
+  P.FetchMaxWaitMs := 200;
+  FreeAndNil(FConsumer);
+  FConsumer := TKafkaConsumer.Create(P);
+  FConsumer.Open;
+  for I := 0 to 2 do
+    All[I] := KafkaTopicPartition(TOPIC, I);
+  FConsumer.Assign(All);
+  // From the end: only what this test produces, whatever earlier runs left.
+  Ends := FConsumer.EndOffsets(All);
+  for I := 0 to 2 do
+    FConsumer.Seek(TOPIC, I, Ends[I]);
+  Result := FConsumer;
+end;
+
+procedure TKafkaIntegrationTests.ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression);
+const
+  N = 40;
+var
+  M, Text: string;
+  F: array[0..N - 1] of IKafkaDeliveryFuture;
+  Rep: array[0..N - 1] of TKafkaDeliveryReport;
+  Rec: TKafkaProducerRecord;
+  Got: TKafkaConsumerRecordArray;
+  Mine: array of TKafkaConsumerRecord;
+  Last: array[0..2] of Int64;
+  I, K, Count: Integer;
+  Deadline: UInt64;
+  Found: Boolean;
+begin
+  NewConsumer(ATls);
+  NewProducer(ATls, kaAll, ACodec);
+  M := Marker;
+  for I := 0 to N - 1 do
+  begin
+    Rec := KafkaProducerRecord(TOPIC, PcStringToUtf8Bytes(M + '-key-' + IntToStr(I mod 5)),
+      PcStringToUtf8Bytes(M + ' ' + IntToStr(I)));
+    SetLength(Rec.Headers, 1);
+    Rec.Headers[0].Key := 'n';
+    Rec.Headers[0].Value := PcStringToUtf8Bytes(IntToStr(I));
+    F[I] := FProducer.Send(Rec);
+  end;
+  TAssert.AssertTrue('flushed', FProducer.Flush(60000));
+  for I := 0 to N - 1 do
+    Rep[I] := F[I].Get(0);
+  // Other runners may write to the topic at the same time: keep this
+  // test's records (its marker).
+  Mine := nil;
+  Count := 0;
+  Deadline := PcTickMs + 30000;
+  while (Count < N) and (PcTickMs < Deadline) do
+  begin
+    Got := FConsumer.Poll(1000);
+    for I := 0 to High(Got) do
+      if PcTryUtf8BytesToString(Got[I].Value, Text) and (Pos(M + ' ', Text) = 1) then
+      begin
+        SetLength(Mine, Count + 1);
+        Mine[Count] := Got[I];
+        Inc(Count);
+      end;
+  end;
+  TAssert.AssertEquals('all polled', N, Count);
+  for I := 0 to 2 do
+    Last[I] := -1;
+  for K := 0 to Count - 1 do
+  begin
+    TAssert.AssertTrue('in order', Mine[K].Offset > Last[Mine[K].Partition]);
+    Last[Mine[K].Partition] := Mine[K].Offset;
+    TAssert.AssertTrue(PcTryUtf8BytesToString(Mine[K].Headers[0].Value, Text));
+    I := StrToInt(Text);
+    TAssert.AssertEquals('where the report said', Rep[I].Partition, Mine[K].Partition);
+    TAssert.AssertEquals(Rep[I].Offset, Mine[K].Offset);
+    TAssert.AssertTrue(PcTryUtf8BytesToString(Mine[K].Key, Text));
+    TAssert.AssertEquals(M + '-key-' + IntToStr(I mod 5), Text);
+  end;
+  // Each record once.
+  for I := 0 to N - 1 do
+  begin
+    Found := False;
+    for K := 0 to Count - 1 do
+      if (Mine[K].Partition = Rep[I].Partition) and (Mine[K].Offset = Rep[I].Offset) then
+        Found := True;
+    TAssert.AssertTrue('record ' + IntToStr(I), Found);
+  end;
+end;
+
+procedure TKafkaIntegrationTests.Consumer_PollsWhatTheProducerSent_Gzip;
+begin
+  ProduceAndConsume(False, kcGzip);
+end;
+
+procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheProducerSent;
+begin
+  ProduceAndConsume(True, kcNone);
+end;
+
+procedure TKafkaIntegrationTests.Consumer_RecordProducedFromAnotherThread_IsPolled;
+var
+  Producer: TProducerOnFetch;
+  Got: TKafkaConsumerRecordArray;
+  M, Text: string;
+  Deadline: UInt64;
+  Seen: Boolean;
+  I: Integer;
+begin
+  NewConsumer(False);
+  NewProducer(False, kaAll, kcNone);
+  M := Marker;
+  Producer := TProducerOnFetch.Create(FProducer, TOPIC, M);
+  try
+    Producer.Start;
+    Seen := False;
+    Deadline := PcTickMs + 30000;
+    while not Seen and (PcTickMs < Deadline) do
+    begin
+      Got := FConsumer.Poll(5000);
+      for I := 0 to High(Got) do
+        if PcTryUtf8BytesToString(Got[I].Value, Text) and (Text = M) then
+          Seen := True;
+    end;
+    Producer.WaitFor;
+    TAssert.AssertTrue('polled the record', Seen);
+    TAssert.AssertEquals('none', Producer.ErrorClass);
+  finally
+    Producer.Free;
+  end;
 end;
 
 initialization

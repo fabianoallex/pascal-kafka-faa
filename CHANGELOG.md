@@ -49,17 +49,22 @@ the rest of K1 (cluster, producer, consumer, SASL, gzip).
   `BufferMemory` and `MaxBlockMs`, `Flush`, `Close` with a timeout, gzip; Java's defaults
   (`KafkaProducerParams`).
 - `TKafkaStickyPartitioner`: the partition of records without a key (KIP-480, KIP-794).
+- `Kafka.Consumer`: manually assigned partitions (`Assign`, `Seek`, `SeekToBeginning`,
+  `SeekToEnd`, `Position`, `Poll`, `Wakeup`, `BeginningOffsets`, `EndOffsets`),
+  `AutoOffsetReset`, Java's defaults (`KafkaConsumerParams`). `EKafkaWakeup`;
+  `KAFKA_WAIT_INFINITE` in `Kafka.Types`.
 - `IKafkaSignal` and `TKafkaEventSignal`: `TKafkaConnection.Send` can fire a signal when the
   future is done.
 - `KafkaErrorIsRetriable`, `KafkaErrorIsInvalidMetadata` (generated from each code's Java
   exception class, `tools/fetch_error_classes.py`). They replace
   `KafkaErrorInvalidatesMetadata`, whose hand-written list missed NETWORK_EXCEPTION and three
   leader-election codes.
-- Tests: 167 unit tests (codecs and record batches against 130 frames captured from a Kafka
+- Tests: 183 unit tests (codecs and record batches against 130 frames captured from a Kafka
   4.4.0 broker and the Java client, gzip against Python's, murmur2 against Kafka's vectors and
   the Java producer's partitions, fake brokers in process, plain and TLS, the producer against
-  fake brokers that fail, hold or drop requests) and 18 integration tests against
+  fake brokers that fail, hold or drop requests, the consumer against fake brokers that answer
+  Fetch with a long poll) and 21 integration tests against
   `docker/docker-compose.yml` (plaintext and TLS with a private CA, every TLS backend; records
   produced and fetched back, gzip, acks=0; the cluster's bootstrap, leaders, an auto-created
   topic, a keyed record through its partition's leader; the producer's keyed, sticky and bulk
-  records fetched back).
+  records fetched back; the consumer polling what the producer sent, plain and TLS).

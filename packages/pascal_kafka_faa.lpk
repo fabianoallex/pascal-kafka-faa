@@ -93,6 +93,10 @@
         <Filename Value="..\src\Kafka.Producer.pas"/>
         <UnitName Value="Kafka.Producer"/>
       </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Consumer.pas"/>
+        <UnitName Value="Kafka.Consumer"/>
+      </Item>
     </Files>
     <RequiredPkgs>
       <!-- By name only, with no DefaultFilename: the application provides the

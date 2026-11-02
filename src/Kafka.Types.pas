@@ -20,6 +20,7 @@
                                  data that doesn't decompress
       EKafkaUnsupportedVersion   no version both sides know, or a field that
                                  a version can't carry
+      EKafkaWakeup               a consumer's Poll ended by Wakeup
       EKafkaBrokerError          the broker answered with an error code (or
                                  the producer refused a record with the
                                  code the broker would give: MESSAGE_TOO_LARGE,
@@ -55,6 +56,11 @@ const
   KAFKA_FAA_VERSION = 100;
   KAFKA_FAA_VERSION_STRING = '0.1.0';
 
+  /// No timeout: Flush, Close and the delivery futures' Wait (Kafka.Producer),
+  /// Poll (Kafka.Consumer). The same value as pascal-common-faa's
+  /// PC_WAIT_INFINITE.
+  KAFKA_WAIT_INFINITE = Cardinal($FFFFFFFF);
+
   /// What the library reports in ApiVersions (ClientSoftwareName, KIP-511).
   KAFKA_CLIENT_SOFTWARE_NAME = 'pascal-kafka-faa';
 
@@ -67,6 +73,7 @@ type
   EKafkaProtocol = class(EKafka);
   EKafkaUnsupportedVersion = class(EKafka);
   EKafkaCompression = class(EKafka);
+  EKafkaWakeup = class(EKafka);
 
   { An error code in a broker's answer. The message names the code
     (Kafka.Errors); ErrorCode keeps the number for a caller that decides on
