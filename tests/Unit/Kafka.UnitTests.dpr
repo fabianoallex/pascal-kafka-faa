@@ -31,7 +31,10 @@ uses
   Kafka.Messages.Produce in '..\..\src\Kafka.Messages.Produce.pas',
   Kafka.Messages.Fetch in '..\..\src\Kafka.Messages.Fetch.pas',
   Kafka.Messages.ListOffsets in '..\..\src\Kafka.Messages.ListOffsets.pas',
+  Kafka.Messages.SaslHandshake in '..\..\src\Kafka.Messages.SaslHandshake.pas',
+  Kafka.Messages.SaslAuthenticate in '..\..\src\Kafka.Messages.SaslAuthenticate.pas',
   Kafka.Transport in '..\..\src\Kafka.Transport.pas',
+  Kafka.Sasl in '..\..\src\Kafka.Sasl.pas',
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
@@ -53,6 +56,8 @@ uses
   Kafka.ClusterTests in 'Kafka.ClusterTests.pas',
   Kafka.ProducerTests in 'Kafka.ProducerTests.pas',
   Kafka.ConsumerTests in 'Kafka.ConsumerTests.pas',
+  Kafka.SaslTests in 'Kafka.SaslTests.pas',
+  Kafka.SaslConnectionTests in 'Kafka.SaslConnectionTests.pas',
   Kafka.ConnectionTests in 'Kafka.ConnectionTests.pas';
 
 var

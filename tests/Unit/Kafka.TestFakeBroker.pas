@@ -45,6 +45,21 @@
     the log start, -1 the end, any other timestamp the first record at or
     after it.
 
+  - SASL (SaslMechanisms, e.g. 'PLAIN,SCRAM-SHA-256'; '' = a listener
+    without SASL, which answers SaslHandshake with ILLEGAL_SASL_STATE, as a
+    broker's PLAINTEXT listener does). One user (SaslUser, SaslPassword) for
+    both mechanisms. Before a client authenticates, only ApiVersions,
+    SaslHandshake and SaslAuthenticate are answered: anything else closes
+    the connection, as a broker does. A mechanism not enabled gets
+    UNSUPPORTED_SASL_MECHANISM with the list; wrong credentials get
+    SASL_AUTHENTICATION_FAILED with Java's messages. SCRAM-SHA-256 is the
+    server's side of RFC 5802, written here apart from Kafka.Sasl's client:
+    the proof is checked as a server does (the client key recovered from
+    the proof must hash to the stored key), with a fixed salt and
+    SaslIterations rounds. SaslBadServerSignature sends a wrong server
+    signature (a broker that doesn't know the password);
+    SaslSessionLifetimeMs goes into SaslAuthenticate v1+ (KIP-368).
+
   CreateTls listens with TLS instead, with the server certificate of
   pascal-common-faa's test PKI (CN=localhost, SAN localhost and 127.0.0.1):
   srv.pfx on SChannel (Windows' default backend), the PEM pair elsewhere
@@ -73,6 +88,8 @@ uses
   Kafka.Messages.Produce,
   Kafka.Messages.Fetch,
   Kafka.Messages.ListOffsets,
+  Kafka.Messages.SaslHandshake,
+  Kafka.Messages.SaslAuthenticate,
   Kafka.Protocol.RecordBatch,
   Generics.Collections;
 
@@ -130,6 +147,8 @@ type
       constructor Create(AOwner: TKafkaFakeBroker);
     end;
 
+    TSaslState = (ssNone, ssHandshaken, ssScramFirst, ssAuthenticated);
+
     TServeThread = class(TThread)
     private
       FOwner: TKafkaFakeBroker;
@@ -161,6 +180,16 @@ type
     FStopping: Boolean;
     FFetchCount: Integer;
     FListOffsetsCount: Integer;
+    // SASL, per connection (one at a time), under FMonitor.
+    FSaslState: TSaslState;
+    FSaslChosen: string;
+    FScramClientFirstBare: TBytes;
+    FScramServerFirst: TBytes;
+    FScramNonce: string;
+    FSaslAuthenticatedCount: Integer;
+    FLastSaslMechanism: string;
+    function HandleSasl(AKey, AVersion: Int16; const AContent: TBytes): Boolean;
+    function SaslAuthenticateBody(AVersion: Int16; const AAuthBytes: TBytes): TBytes;
     procedure Serve;
     procedure StoreBatch(const ATopic: string; APartition: Int32; var ABatch: TKafkaRecordBatch);
     function LogStartOf(const ATopic: string; APartition: Int32): Int64;
@@ -199,6 +228,12 @@ type
     HoldProduce: Boolean;
     FetchErrors: Integer;
     FetchErrorCode: Int16;
+    SaslMechanisms: string;
+    SaslUser: string;
+    SaslPassword: string;
+    SaslIterations: Integer;
+    SaslBadServerSignature: Boolean;
+    SaslSessionLifetimeMs: Int64;
 
     constructor Create;
     constructor CreateTls;
@@ -241,6 +276,10 @@ type
     function ListOffsetsCount: Integer;
     /// Waits up to ATimeoutMs until ACount Fetch requests are parked.
     function WaitParked(ACount: Integer; ATimeoutMs: Cardinal): Boolean;
+    /// Successful SASL exchanges, on any connection.
+    function SaslAuthenticatedCount: Integer;
+    /// The mechanism of the last SaslHandshake ('' before any).
+    function LastSaslMechanism: string;
   end;
   TKafkaFakeBrokerArray = array of TKafkaFakeBroker;
 
@@ -260,6 +299,10 @@ uses
   PascalCommon.Threading,
   PascalCommon.Transport.Tcp,
   PascalCommon.Transport.Tls,
+  PascalCommon.Crypto,
+  PascalCommon.Random,
+  PascalCommon.Utf8,
+  Kafka.Sasl,
   Kafka.Errors,
   Kafka.Transport,
   Kafka.TestHelpers;
@@ -353,6 +396,7 @@ begin
   MetadataMin := 0;
   MetadataMax := 13;
   OfferMetadata := True;
+  SaslIterations := 4096;
   FWriteLock := TCriticalSection.Create;
   FMonitor := TPcMonitor.Create;
   if FListener = nil then
@@ -401,6 +445,10 @@ begin
       FWriteLock.Enter;
       FClient := LClient;
       FWriteLock.Leave;
+      FMonitor.Enter;
+      FSaslState := ssNone;
+      FSaslChosen := '';
+      FMonitor.Leave;
       try
         ServeClient(LClient);
       finally
@@ -469,6 +517,8 @@ begin
   FMonitor.Enter;
   Inc(FRequestCount);
   FMonitor.Leave;
+  if HandleSasl(LKey, LVersion, AContent) then
+    Exit;
   if LKey = KAFKA_API_KEY_API_VERSIONS then
   begin
     LReader := TKafkaReader.Create(AContent);
@@ -622,6 +672,275 @@ begin
     Exit;
   end;
   SendResponse(LHeader.CorrelationId, LKey, LVersion, MetadataBody(LVersion, LTopic));
+end;
+
+function ConcatBytes(const A, B: TBytes): TBytes;
+begin
+  Result := nil;
+  SetLength(Result, Length(A) + Length(B));
+  if Length(A) > 0 then
+    Move(A[0], Result[0], Length(A));
+  if Length(B) > 0 then
+    Move(B[0], Result[Length(A)], Length(B));
+end;
+
+function FakeHmac(const AKey, AData: TBytes): TBytes;
+begin
+  Result := PcDigestToBytes(PcHmacSha256(AKey, AData));
+end;
+
+/// The value of attribute AName ('r', 'p'...) in a SCRAM message; '' if absent.
+function ScramAttribute(const AText: string; AName: Char): string;
+var
+  LRest: string;
+  P: Integer;
+begin
+  LRest := AText;
+  while LRest <> '' do
+  begin
+    P := Pos(',', LRest);
+    if P = 0 then
+      P := Length(LRest) + 1;
+    if (Length(LRest) >= 2) and (LRest[1] = AName) and (LRest[2] = '=') then
+      Exit(Copy(LRest, 3, P - 3));
+    Delete(LRest, 1, P);
+  end;
+  Result := '';
+end;
+
+function TKafkaFakeBroker.HandleSasl(AKey, AVersion: Int16; const AContent: TBytes): Boolean;
+var
+  LReader: TKafkaReader;
+  LHeader: TKafkaRequestHeader;
+  LBody: TBytes;
+  LHandshake: TKafkaSaslHandshakeRequest;
+  LHandshakeAnswer: TKafkaSaslHandshakeResponse;
+  LAuth: TKafkaSaslAuthenticateRequest;
+  LState: TSaslState;
+  LMechanisms: string;
+  P, N: Integer;
+begin
+  FMonitor.Enter;
+  try
+    LState := FSaslState;
+    LMechanisms := SaslMechanisms;
+  finally
+    FMonitor.Leave;
+  end;
+  Result := (AKey = KAFKA_API_KEY_SASL_HANDSHAKE) or (AKey = KAFKA_API_KEY_SASL_AUTHENTICATE);
+  if not Result then
+  begin
+    // A SASL listener answers nothing else before the client authenticated:
+    // the broker closes the connection (ServeClient ends on EKafka).
+    if (LMechanisms <> '') and (LState <> ssAuthenticated) and
+      (AKey <> KAFKA_API_KEY_API_VERSIONS) then
+      raise EKafkaConnection.Create('fake broker: a request before SASL authentication');
+    Exit;
+  end;
+  LReader := TKafkaReader.Create(AContent);
+  try
+    LHeader := KafkaReadRequestHeader(LReader,
+      KafkaRequestHeaderVersion(KafkaApiIsFlexible(AKey, AVersion)));
+    LBody := Copy(AContent, LReader.Position, Length(AContent) - LReader.Position);
+  finally
+    LReader.Free;
+  end;
+  if AKey = KAFKA_API_KEY_SASL_HANDSHAKE then
+  begin
+    LHandshake.FromBytes(LBody, AVersion);
+    LHandshakeAnswer.Init;
+    FMonitor.Enter;
+    try
+      FLastSaslMechanism := LHandshake.Mechanism;
+      if (LMechanisms = '') or (LState <> ssNone) then
+        LHandshakeAnswer.ErrorCode := KAFKA_ERROR_ILLEGAL_SASL_STATE
+      else if Pos(',' + LHandshake.Mechanism + ',', ',' + LMechanisms + ',') = 0 then
+        LHandshakeAnswer.ErrorCode := KAFKA_ERROR_UNSUPPORTED_SASL_MECHANISM
+      else
+      begin
+        FSaslChosen := LHandshake.Mechanism;
+        FSaslState := ssHandshaken;
+      end;
+    finally
+      FMonitor.Leave;
+    end;
+    // The enabled mechanisms, as a broker lists them.
+    N := 0;
+    while LMechanisms <> '' do
+    begin
+      P := Pos(',', LMechanisms);
+      if P = 0 then
+        P := Length(LMechanisms) + 1;
+      SetLength(LHandshakeAnswer.Mechanisms, N + 1);
+      LHandshakeAnswer.Mechanisms[N] := Copy(LMechanisms, 1, P - 1);
+      Inc(N);
+      Delete(LMechanisms, 1, P);
+    end;
+    SendResponse(LHeader.CorrelationId, AKey, AVersion, LHandshakeAnswer.ToBytes(AVersion));
+    Exit;
+  end;
+  LAuth.FromBytes(LBody, AVersion);
+  SendResponse(LHeader.CorrelationId, AKey, AVersion,
+    SaslAuthenticateBody(AVersion, LAuth.AuthBytes));
+end;
+
+function TKafkaFakeBroker.SaslAuthenticateBody(AVersion: Int16; const AAuthBytes: TBytes): TBytes;
+const
+  SALT = 'fake-broker-salt';
+var
+  R: TKafkaSaslAuthenticateResponse;
+  LText, LUser, LFinalWithoutProof: string;
+  LParts: array[0..2] of string;
+  LSalted, LClientKey, LStoredKey, LServerKey, LAuthMessage, LSignature, LProof: TBytes;
+  P, I, K: Integer;
+  LOk: Boolean;
+begin
+  R.Init;
+  LUser := '';
+  FMonitor.Enter;
+  try
+    if FSaslState = ssNone then
+    begin
+      R.ErrorCode := KAFKA_ERROR_ILLEGAL_SASL_STATE;
+      R.ErrorMessage := 'SaslAuthenticate before SaslHandshake';
+      R.ErrorMessageIsNull := False;
+    end
+    else if FSaslState = ssAuthenticated then
+    begin
+      R.ErrorCode := KAFKA_ERROR_ILLEGAL_SASL_STATE;
+      R.ErrorMessage := 'Already authenticated';
+      R.ErrorMessageIsNull := False;
+    end
+    else if FSaslChosen = 'PLAIN' then
+    begin
+      // authzid NUL authcid NUL passwd
+      LOk := PcTryUtf8BytesToString(AAuthBytes, LText);
+      K := 0;
+      LParts[0] := '';
+      LParts[1] := '';
+      LParts[2] := '';
+      if LOk then
+        for I := 1 to Length(LText) do
+          if LText[I] = #0 then
+          begin
+            Inc(K);
+            if K > 2 then
+              Break;
+          end
+          else
+            LParts[K] := LParts[K] + LText[I];
+      if LOk and (K = 2) and (LParts[1] = SaslUser) and (LParts[2] = SaslPassword) then
+      begin
+        FSaslState := ssAuthenticated;
+        Inc(FSaslAuthenticatedCount);
+        R.SessionLifetimeMs := SaslSessionLifetimeMs;
+      end
+      else
+      begin
+        R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
+        R.ErrorMessage := 'Authentication failed: Invalid username or password';
+        R.ErrorMessageIsNull := False;
+      end;
+    end
+    else if FSaslState = ssHandshaken then
+    begin
+      // SCRAM client-first: n,,n=<name>,r=<nonce>
+      LOk := PcTryUtf8BytesToString(AAuthBytes, LText) and (Copy(LText, 1, 3) = 'n,,');
+      FScramNonce := '';
+      if LOk then
+      begin
+        FScramClientFirstBare := Copy(AAuthBytes, 3, Length(AAuthBytes) - 3);
+        LUser := ScramAttribute(Copy(LText, 4, MaxInt), 'n');
+        LUser := StringReplace(LUser, '=2C', ',', [rfReplaceAll]);
+        LUser := StringReplace(LUser, '=3D', '=', [rfReplaceAll]);
+        FScramNonce := ScramAttribute(Copy(LText, 4, MaxInt), 'r');
+      end;
+      if not LOk or (FScramNonce = '') or (LUser <> SaslUser) then
+      begin
+        R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
+        R.ErrorMessage := 'Authentication failed: Invalid user credentials';
+        R.ErrorMessageIsNull := False;
+      end
+      else
+      begin
+        FScramNonce := FScramNonce + KafkaBase64Encode(PcRandomBytes(18));
+        FScramServerFirst := PcStringToUtf8Bytes('r=' + FScramNonce + ',s=' +
+          KafkaBase64Encode(PcStringToUtf8Bytes(SALT)) + ',i=' + IntToStr(SaslIterations));
+        R.AuthBytes := FScramServerFirst;
+        FSaslState := ssScramFirst;
+      end;
+    end
+    else
+    begin
+      // SCRAM client-final: c=biws,r=<nonce>,p=<proof>
+      LOk := PcTryUtf8BytesToString(AAuthBytes, LText);
+      P := Pos(',p=', LText);
+      LOk := LOk and (P > 0) and (ScramAttribute(LText, 'r') = FScramNonce) and
+        (ScramAttribute(LText, 'c') = 'biws');
+      LProof := nil;
+      if LOk then
+      begin
+        LFinalWithoutProof := Copy(LText, 1, P - 1);
+        LOk := KafkaTryBase64Decode(Copy(LText, P + 3, MaxInt), LProof) and
+          (Length(LProof) = 32);
+      end;
+      if LOk then
+      begin
+        LSalted := PcPbkdf2HmacSha256(PcStringToUtf8Bytes(SaslPassword),
+          PcStringToUtf8Bytes(SALT), SaslIterations, 32);
+        LStoredKey := PcDigestToBytes(PcSha256(FakeHmac(LSalted,
+          PcStringToUtf8Bytes('Client Key'))));
+        LServerKey := FakeHmac(LSalted, PcStringToUtf8Bytes('Server Key'));
+        LAuthMessage := ConcatBytes(ConcatBytes(FScramClientFirstBare, PcStringToUtf8Bytes(',')),
+          ConcatBytes(ConcatBytes(FScramServerFirst, PcStringToUtf8Bytes(',')),
+          PcStringToUtf8Bytes(LFinalWithoutProof)));
+        // A server's check: ClientKey = proof xor HMAC(StoredKey, AuthMessage),
+        // and H(ClientKey) must be the stored key.
+        LSignature := FakeHmac(LStoredKey, LAuthMessage);
+        LClientKey := nil;
+        SetLength(LClientKey, 32);
+        for I := 0 to 31 do
+          LClientKey[I] := LProof[I] xor LSignature[I];
+        LOk := PcSameBytes(PcDigestToBytes(PcSha256(LClientKey)), LStoredKey);
+      end;
+      if not LOk then
+      begin
+        R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
+        R.ErrorMessage := 'Authentication failed: Invalid user credentials';
+        R.ErrorMessageIsNull := False;
+      end
+      else
+      begin
+        LSignature := FakeHmac(LServerKey, LAuthMessage);
+        if SaslBadServerSignature then
+          LSignature[0] := LSignature[0] xor $FF;
+        R.AuthBytes := PcStringToUtf8Bytes('v=' + KafkaBase64Encode(LSignature));
+        R.SessionLifetimeMs := SaslSessionLifetimeMs;
+        FSaslState := ssAuthenticated;
+        Inc(FSaslAuthenticatedCount);
+      end;
+    end;
+    if R.ErrorCode <> 0 then
+      FSaslState := ssNone;
+  finally
+    FMonitor.Leave;
+  end;
+  // SessionLifetimeMs is ignorable: v0 drops it rather than refusing it.
+  Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaFakeBroker.SaslAuthenticatedCount: Integer;
+begin
+  FMonitor.Enter;
+  Result := FSaslAuthenticatedCount;
+  FMonitor.Leave;
+end;
+
+function TKafkaFakeBroker.LastSaslMechanism: string;
+begin
+  FMonitor.Enter;
+  Result := FLastSaslMechanism;
+  FMonitor.Leave;
 end;
 
 function TKafkaFakeBroker.TopicNameOf(AVersion: Int16;
@@ -1179,7 +1498,17 @@ begin
     N := 2;
   if OfferRecords then
     Inc(N, 3);
-  SetLength(R.ApiKeys, N);
+  // SaslHandshake and SaslAuthenticate: a broker lists them on every
+  // listener, SASL or not.
+  SetLength(R.ApiKeys, N + 2);
+  R.ApiKeys[N].Init;
+  R.ApiKeys[N].ApiKey := KAFKA_API_KEY_SASL_HANDSHAKE;
+  R.ApiKeys[N].MinVersion := 0;
+  R.ApiKeys[N].MaxVersion := 1;
+  R.ApiKeys[N + 1].Init;
+  R.ApiKeys[N + 1].ApiKey := KAFKA_API_KEY_SASL_AUTHENTICATE;
+  R.ApiKeys[N + 1].MinVersion := 0;
+  R.ApiKeys[N + 1].MaxVersion := 2;
   R.ApiKeys[0].Init;
   R.ApiKeys[0].ApiKey := KAFKA_API_KEY_API_VERSIONS;
   R.ApiKeys[0].MinVersion := ApiVersionsMin;

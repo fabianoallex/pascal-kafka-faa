@@ -5,8 +5,10 @@
   Java client of the same version (docs/codec-captures.md).
 
   - Every capture, request and response, of every version and every API
-    (ApiVersions, Metadata, Produce, Fetch, ListOffsets): the header and
-    body decode, and encoding them again gives back the same bytes.
+    (ApiVersions, Metadata, Produce, Fetch, ListOffsets, SaslHandshake,
+    SaslAuthenticate): the header and body decode, and encoding them again
+    gives back the same bytes. (The SASL ones field by field:
+    Kafka.SaslTests.)
   - The hand-built ApiVersions (v0-v5) and Metadata (v0-v13) requests
     (tools/capture_versions.py), which the broker accepted: the same logical request
     built with the generated records encodes to the same bytes.
@@ -35,6 +37,8 @@ uses
   Kafka.Messages.Produce,
   Kafka.Messages.Fetch,
   Kafka.Messages.ListOffsets,
+  Kafka.Messages.SaslHandshake,
+  Kafka.Messages.SaslAuthenticate,
   Kafka.TestCaptures,
   Kafka.TestMessages,
   Kafka.TestHelpers;
@@ -103,6 +107,10 @@ var
   FeRsp: TKafkaFetchResponse;
   LoReq: TKafkaListOffsetsRequest;
   LoRsp: TKafkaListOffsetsResponse;
+  ShReq: TKafkaSaslHandshakeRequest;
+  ShRsp: TKafkaSaslHandshakeResponse;
+  SaReq: TKafkaSaslAuthenticateRequest;
+  SaRsp: TKafkaSaslAuthenticateResponse;
 begin
   case AKey of
     KAFKA_API_KEY_API_VERSIONS:
@@ -160,6 +168,28 @@ begin
         LoRsp.FromBytes(ABody, AVersion);
         Result := LoRsp.ToBytes(AVersion);
       end;
+    KAFKA_API_KEY_SASL_HANDSHAKE:
+      if AIsRequest then
+      begin
+        ShReq.FromBytes(ABody, AVersion);
+        Result := ShReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        ShRsp.FromBytes(ABody, AVersion);
+        Result := ShRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_SASL_AUTHENTICATE:
+      if AIsRequest then
+      begin
+        SaReq.FromBytes(ABody, AVersion);
+        Result := SaReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        SaRsp.FromBytes(ABody, AVersion);
+        Result := SaRsp.ToBytes(AVersion);
+      end;
   else
     raise Exception.CreateFmt('No codec for API key %d', [AKey]);
   end;
@@ -196,9 +226,10 @@ end;
 
 procedure TKafkaMessagesTests.Captures_AreThere;
 begin
-  // A request and a response each: 7 Java exchanges, and by hand 6 ApiVersions,
-  // 14 Metadata, 11 Produce, 11 ListOffsets and 16 Fetch.
-  TAssert.AssertEquals(130, KAFKA_CAPTURE_COUNT);
+  // A request and a response each: 12 Java exchanges (5 of them SASL), and
+  // by hand 6 ApiVersions, 14 Metadata, 11 Produce, 11 ListOffsets, 16 Fetch
+  // and 9 SASL.
+  TAssert.AssertEquals(158, KAFKA_CAPTURE_COUNT);
   TAssert.AssertEquals('4.4.0', KAFKA_CAPTURES[0].KafkaTag);
 end;
 

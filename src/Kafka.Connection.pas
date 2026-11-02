@@ -55,9 +55,35 @@
   it. It must not be called from a future's waiter on the reader thread;
   nothing in the library calls user code on that thread.
 
+  SASL. With a SaslMechanism, Open authenticates right after ApiVersions,
+  before anything else is sent, as Java's client does: SaslHandshake v1
+  names the mechanism, then SaslAuthenticate carries the mechanism's
+  messages (Kafka.Sasl) until it is complete. The same over plaintext
+  (SASL_PLAINTEXT) and TLS (SASL_SSL). SaslHandshake v0, where the tokens
+  went unframed on the socket, isn't spoken: Kafka 4 brokers still offer it,
+  but every broker since 1.0 has v1. A failure raises EKafkaAuthentication
+  with the broker's error code and message (the user name, never the
+  password); the broker closes the connection after a failed exchange, and
+  Open closes it on its side too.
+
+  Re-authentication (KIP-368). A broker with connections.max.reauth.ms
+  answers SaslAuthenticate (v1+) with a session lifetime, and closes the
+  connection when a request arrives after it ran out. Java's client
+  re-authenticates on the same socket at a random point between 85% and 95%
+  of the lifetime. This connection doesn't: it notes that point
+  (ReauthenticationDue), and Kafka.Cluster opens a new connection to that
+  broker the next time one is asked for, while requests already sent on the
+  old one finish there. That costs a TCP (and TLS) handshake per session
+  instead of a SASL exchange, and it needs no pause of the writers while
+  the exchange runs; with sessions measured in minutes or hours, the
+  difference doesn't show. Someone holding the connection itself past its
+  lifetime (not through the cluster) gets EKafkaConnection when the broker
+  hangs up.
+
   Exceptions: EKafkaConnection/EKafkaTls for the socket (Kafka.Transport is
   the boundary: no EPcTransport* leaves), EKafkaTimeout, EKafkaProtocol,
-  EKafkaUnsupportedVersion, EKafkaBrokerError (Kafka.Types). }
+  EKafkaUnsupportedVersion, EKafkaBrokerError, EKafkaAuthentication
+  (Kafka.Types). }
 
 interface
 
@@ -68,6 +94,7 @@ uses
   Generics.Collections,
   PascalCommon.Transport,
   Kafka.Types,
+  Kafka.Sasl,
   Kafka.Messages.ApiVersions,
   Kafka.Messages.Metadata,
   Kafka.Messages.Produce,
@@ -118,6 +145,13 @@ type
     TlsBackend: TPcTlsBackend;
     /// 0 = the common's default (15 s).
     TlsHandshakeTimeoutMs: Cardinal;
+
+    /// SASL (security.protocol SASL_PLAINTEXT, or SASL_SSL with UseTls).
+    /// ksmNone: no authentication. The user name and password are sent as
+    /// their UTF-8 bytes (Kafka.Sasl).
+    SaslMechanism: TKafkaSaslMechanism;
+    SaslUsername: string;
+    SaslPassword: string;
   end;
 
   { Fired by a response future once it is done (the unit's header). }
@@ -217,6 +251,8 @@ type
     FApiVersions: TKafkaApiVersionsResponse;
     FApiVersionsVersion: Int16;
     FNegotiated: array of TVersionRange;  // indexed by API key
+    FSessionLifetimeMs: Int64;
+    FReauthenticateAt: UInt64;            // PcTickMs; 0 = never
     procedure ReaderLoop;
     procedure HandleFrame(const AContent: TBytes);
     procedure MarkBroken(AClass: EKafkaClass; const AReason: string);
@@ -224,6 +260,7 @@ type
     function TakePending(ACorrelationId: Int32): TPending;
     procedure Negotiate;
     procedure BuildNegotiatedTable;
+    procedure Authenticate;
     function RequestTimeoutMs: Cardinal;
     function MaxResponseBytes: Integer;
   public
@@ -270,6 +307,14 @@ type
     /// The version of ApiVersions that answer was read in.
     property ApiVersionsVersion: Int16 read FApiVersionsVersion;
 
+    /// The SASL session's lifetime the broker gave (KIP-368); 0 when it gave
+    /// none (no connections.max.reauth.ms, or no SASL).
+    property SessionLifetimeMs: Int64 read FSessionLifetimeMs;
+    /// The SASL session is past 85-95% of its lifetime (the point is chosen
+    /// at random, as Java's): the cluster replaces the connection (the
+    /// unit's header). Always False without a lifetime.
+    function ReauthenticationDue: Boolean;
+
     /// A Metadata request at the negotiated version. A top-level error
     /// (v13+) raises EKafkaBrokerError; errors per topic and partition are in
     /// the response, for the caller.
@@ -304,7 +349,11 @@ implementation
 uses
   PascalCommon.Transport.Tcp,
   PascalCommon.Transport.Tls,
+  PascalCommon.Threading,
+  PascalCommon.Random,
   Kafka.Errors,
+  Kafka.Messages.SaslHandshake,
+  Kafka.Messages.SaslAuthenticate,
   Kafka.Transport,
   Kafka.Protocol.Primitives,
   Kafka.Protocol.Envelope,
@@ -531,6 +580,8 @@ begin
     FReader := TReaderThread.Create(Self);
     FReader.Start;
     Negotiate;
+    if FParams.SaslMechanism <> ksmNone then
+      Authenticate;
   except
     Close;
     raise;
@@ -925,6 +976,116 @@ begin
     FNegotiated[LKey].Min := LMin;
     FNegotiated[LKey].Max := LMax;
   end;
+end;
+
+procedure TKafkaConnection.Authenticate;
+const
+  // PLAIN takes one, SCRAM two; a broker asking for more is not following
+  // the mechanism.
+  MAX_ROUNDS = 8;
+var
+  LClient: TKafkaSaslClient;
+  LHandshake: TKafkaSaslHandshakeRequest;
+  LHandshakeAnswer: TKafkaSaslHandshakeResponse;
+  LAuth: TKafkaSaslAuthenticateRequest;
+  LAnswer: TKafkaSaslAuthenticateResponse;
+  LHandshakeVersion, LAuthVersion: Int16;
+  LToken: TBytes;
+  LRounds, I: Integer;
+  LSentAt: UInt64;
+  LLifetime: Int64;
+  LContext, LDetail: string;
+begin
+  LContext := Format('SASL %s to %s as "%s"', [KafkaSaslMechanismName(FParams.SaslMechanism),
+    FAddress, FParams.SaslUsername]);
+  if not TryNegotiatedVersion(KAFKA_API_KEY_SASL_HANDSHAKE, LHandshakeVersion) or
+    (LHandshakeVersion < 1) then
+    raise EKafkaAuthentication.Create(LContext + ': the broker offers no SaslHandshake v1');
+  if not TryNegotiatedVersion(KAFKA_API_KEY_SASL_AUTHENTICATE, LAuthVersion) then
+    raise EKafkaAuthentication.Create(LContext + ': the broker offers no SaslAuthenticate');
+  LClient := KafkaCreateSaslClient(FParams.SaslMechanism, FParams.SaslUsername,
+    FParams.SaslPassword);
+  try
+    LHandshake.Init;
+    LHandshake.Mechanism := LClient.Mechanism;
+    LHandshakeAnswer.FromBytes(Request(KAFKA_API_KEY_SASL_HANDSHAKE, LHandshakeVersion,
+      LHandshake.ToBytes(LHandshakeVersion)), LHandshakeVersion);
+    if LHandshakeAnswer.ErrorCode <> 0 then
+    begin
+      LDetail := '';
+      if LHandshakeAnswer.ErrorCode = KAFKA_ERROR_UNSUPPORTED_SASL_MECHANISM then
+      begin
+        for I := 0 to High(LHandshakeAnswer.Mechanisms) do
+        begin
+          if I > 0 then
+            LDetail := LDetail + ', ';
+          LDetail := LDetail + LHandshakeAnswer.Mechanisms[I];
+        end;
+        LDetail := ' (the broker enables: ' + LDetail + ')';
+      end
+      else if LHandshakeAnswer.ErrorCode = KAFKA_ERROR_ILLEGAL_SASL_STATE then
+        // What a broker answers on a listener without SASL.
+        LDetail := ' (is this a SASL listener?)';
+      raise EKafkaAuthentication.CreateCode(LHandshakeAnswer.ErrorCode, Format('%s: %s%s',
+        [LContext, KafkaErrorText(LHandshakeAnswer.ErrorCode), LDetail]));
+    end;
+    try
+      LToken := LClient.InitialResponse;
+    except
+      on E: EKafkaAuthentication do
+        raise EKafkaAuthentication.Create(LContext + ': ' + E.Message);
+    end;
+    LRounds := 0;
+    LSentAt := 0;
+    LAnswer.Init;
+    repeat
+      Inc(LRounds);
+      if LRounds > MAX_ROUNDS then
+        raise EKafkaAuthentication.CreateFmt('%s: not complete after %d rounds',
+          [LContext, MAX_ROUNDS]);
+      LAuth.Init;
+      LAuth.AuthBytes := LToken;
+      LSentAt := PcTickMs;
+      LAnswer.FromBytes(Request(KAFKA_API_KEY_SASL_AUTHENTICATE, LAuthVersion,
+        LAuth.ToBytes(LAuthVersion)), LAuthVersion);
+      if LAnswer.ErrorCode <> 0 then
+      begin
+        LDetail := '';
+        if not LAnswer.ErrorMessageIsNull and (LAnswer.ErrorMessage <> '') then
+          LDetail := ': ' + LAnswer.ErrorMessage;
+        raise EKafkaAuthentication.CreateCode(LAnswer.ErrorCode, Format('%s: %s%s',
+          [LContext, KafkaErrorText(LAnswer.ErrorCode), LDetail]));
+      end;
+      try
+        LToken := LClient.Evaluate(LAnswer.AuthBytes);
+      except
+        on E: EKafkaAuthentication do
+          raise EKafkaAuthentication.Create(LContext + ': ' + E.Message);
+      end;
+    until LClient.IsComplete;
+  finally
+    LClient.Free;
+  end;
+  // KIP-368. The broker counts the lifetime from its check, which comes
+  // after the last SaslAuthenticate was sent: counting from the send is safe.
+  LLifetime := LAnswer.SessionLifetimeMs;
+  if LLifetime > 0 then
+  begin
+    FSessionLifetimeMs := LLifetime;
+    if LLifetime > High(Int64) div 1000 then
+      LLifetime := High(Int64) div 1000;
+    // 85% to 95% (Java's window), the point chosen at random so that many
+    // connections opened together don't all reconnect together.
+    FReauthenticateAt := LSentAt +
+      UInt64(LLifetime * (850 + PcRandomBytes(1)[0] mod 101) div 1000);
+    if FReauthenticateAt = 0 then
+      FReauthenticateAt := 1;
+  end;
+end;
+
+function TKafkaConnection.ReauthenticationDue: Boolean;
+begin
+  Result := (FReauthenticateAt <> 0) and (PcTickMs >= FReauthenticateAt);
 end;
 
 function TKafkaConnection.TryNegotiatedVersion(AApiKey: Int16; out AVersion: Int16): Boolean;

@@ -34,13 +34,17 @@ const
   KAFKA_API_KEY_PRODUCE = 0;
   KAFKA_API_KEY_FETCH = 1;
   KAFKA_API_KEY_LIST_OFFSETS = 2;
+  KAFKA_API_KEY_SASL_HANDSHAKE = 17;
+  KAFKA_API_KEY_SASL_AUTHENTICATE = 36;
 
-  KAFKA_SUPPORTED_APIS: array[0..4] of TKafkaApiInfo = (
+  KAFKA_SUPPORTED_APIS: array[0..6] of TKafkaApiInfo = (
     (ApiKey: 0; Name: 'Produce'; MinVersion: 3; MaxVersion: 13; FirstFlexibleVersion: 9),
     (ApiKey: 1; Name: 'Fetch'; MinVersion: 4; MaxVersion: 18; FirstFlexibleVersion: 12),
     (ApiKey: 2; Name: 'ListOffsets'; MinVersion: 1; MaxVersion: 11; FirstFlexibleVersion: 6),
     (ApiKey: 3; Name: 'Metadata'; MinVersion: 0; MaxVersion: 13; FirstFlexibleVersion: 9),
-    (ApiKey: 18; Name: 'ApiVersions'; MinVersion: 0; MaxVersion: 5; FirstFlexibleVersion: 3)
+    (ApiKey: 17; Name: 'SaslHandshake'; MinVersion: 0; MaxVersion: 1; FirstFlexibleVersion: -1),
+    (ApiKey: 18; Name: 'ApiVersions'; MinVersion: 0; MaxVersion: 5; FirstFlexibleVersion: 3),
+    (ApiKey: 36; Name: 'SaslAuthenticate'; MinVersion: 0; MaxVersion: 2; FirstFlexibleVersion: 2)
   );
 
 /// The entry for AApiKey; False when the library has no codec for it.

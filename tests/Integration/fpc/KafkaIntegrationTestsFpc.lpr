@@ -24,7 +24,8 @@ uses
   Interfaces, Forms, GuiTestRunner,
   {$ENDIF}
   Classes, consoletestrunner, testregistry,
-  Kafka.IntegrationTests;
+  Kafka.IntegrationTests,
+  Kafka.SaslIntegrationTests;
 
 var
   ConsoleApp: TTestRunner;

@@ -10,13 +10,16 @@
 # opens (Produce and Fetch included) is recorded, not only the first.
 #
 # Compose merges this into the base file: the ports add up, and the
-# environment keys below replace the base file's. The tests never use 9095;
-# go back to the base file alone afterwards.
+# environment keys below replace the base file's (so they repeat its
+# listeners). The tests never use 9095; go back to the base file alone
+# afterwards. The SASL frames need no listener of their own: SASL runs on
+# every connection, the bootstrap one included, so the proxy forwarding to
+# 9096 records them.
 services:
   kafka:
     ports:
       - "9095:9095"
     environment:
-      KAFKA_LISTENERS: PLAINTEXT://:9092,TLS://:9093,CONTROLLER://:9094,CAPTURE://:9095
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,TLS://localhost:9093,CAPTURE://host.docker.internal:19092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,TLS:SSL,CONTROLLER:PLAINTEXT,CAPTURE:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://:9092,TLS://:9093,CONTROLLER://:9094,SASL://:9096,SASLTLS://:9097,REAUTH://:9098,CAPTURE://:9095
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,TLS://localhost:9093,SASL://localhost:9096,SASLTLS://localhost:9097,REAUTH://localhost:9098,CAPTURE://host.docker.internal:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,TLS:SSL,CONTROLLER:PLAINTEXT,SASL:SASL_PLAINTEXT,SASLTLS:SASL_SSL,REAUTH:SASL_PLAINTEXT,CAPTURE:PLAINTEXT

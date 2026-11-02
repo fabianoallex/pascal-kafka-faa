@@ -11,6 +11,10 @@ names), and appends them to
 
 "hex" drops the 4-byte size prefix, as capture_versions.py does.
 
+A repeated API keeps its first exchange (the Java client asks Metadata and
+Fetch again and again), except SaslAuthenticate: SCRAM sends it twice in the
+same version, and both steps are kept, named "-step1", "-step2".
+
     python -I tools/captures_from_proxy.py --in .ci/cap.jsonl --conn 3 \\
         --prefix java-producer --source "java console-producer 4.4.0" --out FILE
 """
@@ -19,7 +23,9 @@ import argparse
 import json
 import struct
 
-API_NAMES = {18: "api-versions", 3: "metadata", 0: "produce", 1: "fetch", 2: "list-offsets"}
+API_NAMES = {18: "api-versions", 3: "metadata", 0: "produce", 1: "fetch", 2: "list-offsets",
+             17: "sasl-handshake", 36: "sasl-authenticate"}
+SASL_AUTHENTICATE = 36
 
 
 def main():
@@ -51,9 +57,13 @@ def main():
                 pairs.append((key, ver, req, content))
 
     seen = set()
+    steps = 0
     with open(args.out, "a", encoding="ascii", newline="\n") as out:
         for key, ver, req, rsp in pairs:
             name = f"{args.prefix}-{API_NAMES[key]}-v{ver}"
+            if key == SASL_AUTHENTICATE:
+                steps += 1
+                name += f"-step{steps}"
             if name in seen:
                 continue  # the Java client repeats Metadata and Fetch; the first is kept
             seen.add(name)

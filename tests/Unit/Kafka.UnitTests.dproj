@@ -81,7 +81,10 @@
         <DCCReference Include="..\..\src\Kafka.Messages.Produce.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.Fetch.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.ListOffsets.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.SaslHandshake.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.SaslAuthenticate.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Sasl.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
         <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
@@ -103,6 +106,8 @@
         <DCCReference Include="Kafka.ClusterTests.pas"/>
         <DCCReference Include="Kafka.ProducerTests.pas"/>
         <DCCReference Include="Kafka.ConsumerTests.pas"/>
+        <DCCReference Include="Kafka.SaslTests.pas"/>
+        <DCCReference Include="Kafka.SaslConnectionTests.pas"/>
         <DCCReference Include="Kafka.ConnectionTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

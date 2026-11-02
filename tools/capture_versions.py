@@ -26,6 +26,17 @@ to record a batch cut short by the broker.
 Produce v13 and Fetch v13 and later name the topic by id: the script reads
 it from a Metadata v12 answer it parses by hand.
 
+SASL (--apis sasl) needs several requests on one connection, so it has
+exchanges of its own, on the SASL_PLAINTEXT listener (--sasl-broker) and
+the one whose sessions last 2 s (--reauth-broker): SaslHandshake v0 and v1
+(PLAIN), SaslAuthenticate v0, v1 and v2 with PLAIN (alice / alice-secret,
+docker/docker-compose.yml), v1 and v2 again where the broker gives a session
+lifetime, a mechanism the broker doesn't enable (GSSAPI: error 33 and the
+list) and a wrong password (error 58 and the broker's message). The
+expected error code of each is checked. SCRAM's exchanges come from the
+Java client instead (docs/codec-captures.md): its proof needs the nonce,
+which a test can only replay from a recorded exchange.
+
 Output: JSON Lines appended to --out, one object per frame, in the format of
 tests/data/captures-<tag>.jsonl (docs/codec-captures.md):
 
@@ -36,6 +47,7 @@ tests/data/captures-<tag>.jsonl (docs/codec-captures.md):
 
     python -I tools/capture_versions.py --broker localhost:9092 \\
         --apis produce,list-offsets,fetch --out FILE
+    python -I tools/capture_versions.py --apis sasl --out FILE
 """
 
 import argparse
@@ -46,7 +58,8 @@ import struct
 import time
 
 CLIENT_ID = "pascal-kafka-faa-capture"
-ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch"]
+ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl"]
+SASL_HANDSHAKE, SASL_AUTHENTICATE = 17, 36
 
 
 # ---------------------------------------------------------------- primitives
@@ -349,6 +362,69 @@ def topic_id_and_leader(host, port, topic):
     raise SystemExit(f"topic {topic}: no leader for partition 0")
 
 
+# ---------------------------------------------------------------- SASL
+
+def sasl_handshake_body(mechanism):
+    return string(mechanism, False)  # v0 and v1, never flexible
+
+
+def sasl_authenticate_body(v, auth):
+    flex = v >= 2
+    return nbytes(auth, flex) + tags(flex)
+
+
+def plain_token(user, password):
+    return b"\0" + user.encode() + b"\0" + password.encode()
+
+
+def sasl_jobs(sasl, reauth):
+    """Connections, each a list of (name or None, key, version, body, expected
+    error); a name of None is sent but not recorded (the handshake again)."""
+    good = plain_token("alice", "alice-secret")
+    hs = (None, SASL_HANDSHAKE, 1, sasl_handshake_body("PLAIN"), 0)
+    return [
+        (sasl, [("sasl-handshake-v0", SASL_HANDSHAKE, 0, sasl_handshake_body("PLAIN"), 0)]),
+        (sasl, [("sasl-handshake-v1", SASL_HANDSHAKE, 1, sasl_handshake_body("PLAIN"), 0),
+                ("sasl-authenticate-v0", SASL_AUTHENTICATE, 0, sasl_authenticate_body(0, good), 0)]),
+        (sasl, [hs, ("sasl-authenticate-v1", SASL_AUTHENTICATE, 1, sasl_authenticate_body(1, good), 0)]),
+        (sasl, [hs, ("sasl-authenticate-v2", SASL_AUTHENTICATE, 2, sasl_authenticate_body(2, good), 0)]),
+        (reauth, [hs, ("sasl-authenticate-v1-lifetime", SASL_AUTHENTICATE, 1,
+                       sasl_authenticate_body(1, good), 0)]),
+        (reauth, [hs, ("sasl-authenticate-v2-lifetime", SASL_AUTHENTICATE, 2,
+                       sasl_authenticate_body(2, good), 0)]),
+        (sasl, [("sasl-handshake-v1-unsupported", SASL_HANDSHAKE, 1,
+                 sasl_handshake_body("GSSAPI"), 33)]),
+        (sasl, [hs, ("sasl-authenticate-v2-failed", SASL_AUTHENTICATE, 2,
+                     sasl_authenticate_body(2, plain_token("alice", "wrong")), 58)]),
+    ]
+
+
+def run_sasl(jobs, out):
+    corr = 2000
+    for (host, port), steps in jobs:
+        with socket.create_connection((host, port), timeout=10) as s:
+            for name, key, v, body, expected in steps:
+                corr += 1
+                flex = key == SASL_AUTHENTICATE and v >= 2
+                req = header(key, v, corr, flex) + body
+                s.sendall(struct.pack(">i", len(req)) + req)
+                rsp = recv_exact(s, struct.unpack(">i", recv_exact(s, 4))[0])
+                (rcorr,) = struct.unpack(">i", rsp[:4])
+                if rcorr != corr:
+                    raise SystemExit(f"{name}: correlation {rcorr}, expected {corr}")
+                # Response header v1 (a tagged-field count) for a flexible body.
+                (err,) = struct.unpack(">h", rsp[5:7] if flex else rsp[4:6])
+                if err != expected:
+                    raise SystemExit(f"{name or 'handshake'}: error code {err}, expected {expected}")
+                if name is None:
+                    continue
+                for direction, data in (("request", req), ("response", rsp)):
+                    out.write(json.dumps({"name": name, "source": "hand-built",
+                                          "dir": direction, "api_key": key, "api_version": v,
+                                          "hex": data.hex()}) + "\n")
+                print(f"{name}: {len(req)} -> {len(rsp)} bytes")
+
+
 # ---------------------------------------------------------------- the exchange
 
 def exchange(host, port, content):
@@ -374,7 +450,11 @@ def main():
     ap.add_argument("--topic", default="captured-topic", help="the Metadata requests' topic")
     ap.add_argument("--records-topic", default="captured-records",
                     help="the topic Produce writes to and Fetch reads from")
-    ap.add_argument("--apis", default=",".join(ALL_APIS))
+    ap.add_argument("--apis", default=",".join(a for a in ALL_APIS if a != "sasl"))
+    ap.add_argument("--sasl-broker", default="localhost:9096",
+                    help="a SASL_PLAINTEXT listener with PLAIN (--apis sasl)")
+    ap.add_argument("--reauth-broker", default="localhost:9098",
+                    help="the same with connections.max.reauth.ms set (--apis sasl)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     host, port = args.broker.rsplit(":", 1)
@@ -419,6 +499,11 @@ def main():
                      fetch_body(18, args.records_topic, topic_id, 300), fetch_error))
 
     with open(args.out, "a", encoding="ascii", newline="\n") as out:
+        if "sasl" in apis:
+            def addr(a):
+                h, p = a.rsplit(":", 1)
+                return h, int(p)
+            run_sasl(sasl_jobs(addr(args.sasl_broker), addr(args.reauth_broker)), out)
         for name, key, v, first_flex, body, check in jobs:
             # 1000 + version, as when the first captures were made; each
             # request has a connection of its own, so APIs may share one.

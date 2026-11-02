@@ -21,6 +21,10 @@
       EKafkaUnsupportedVersion   no version both sides know, or a field that
                                  a version can't carry
       EKafkaWakeup               a consumer's Poll ended by Wakeup
+      EKafkaAuthentication       SASL failed: a mechanism the broker doesn't
+                                 enable, wrong credentials, a listener
+                                 without SASL, or a broker answer that fails
+                                 the mechanism's checks (SCRAM's signature)
       EKafkaBrokerError          the broker answered with an error code (or
                                  the producer refused a record with the
                                  code the broker would give: MESSAGE_TOO_LARGE,
@@ -32,6 +36,13 @@
   history, and a TLS failure is a failure to connect. EKafkaTimeout is a
   request's deadline (TKafkaConnectionParams.RequestTimeoutMs); a transport
   deadline (the connect budget, for instance) is an EKafkaConnection.
+
+  EKafkaAuthentication is not an EKafkaConnection, on purpose: the producer
+  and the consumer retry a connection failure, and credentials don't fix
+  themselves (Java's AuthenticationException isn't retriable either). It
+  carries the broker's error code (UNSUPPORTED_SASL_MECHANISM,
+  SASL_AUTHENTICATION_FAILED, ILLEGAL_SASL_STATE), or 0 when the client's
+  own check failed.
 
   PASCALCOMMON_VERSION 12701 is pascal-common-faa 1.27.1: the transport came
   in 1.27.0, and 1.27.1 fixed its SChannel server, which waited out the whole
@@ -75,6 +86,15 @@ type
   EKafkaCompression = class(EKafka);
   EKafkaWakeup = class(EKafka);
 
+  EKafkaAuthentication = class(EKafka)
+  private
+    FErrorCode: Int16;
+  public
+    constructor CreateCode(AErrorCode: Int16; const AMessage: string);
+    /// The broker's error code; 0 when the client's own check failed.
+    property ErrorCode: Int16 read FErrorCode;
+  end;
+
   { An error code in a broker's answer. The message names the code
     (Kafka.Errors); ErrorCode keeps the number for a caller that decides on
     it (retry on a retriable error, refresh metadata on
@@ -92,6 +112,12 @@ type
   EKafkaClass = class of EKafka;
 
 implementation
+
+constructor EKafkaAuthentication.CreateCode(AErrorCode: Int16; const AMessage: string);
+begin
+  inherited Create(AMessage);
+  FErrorCode := AErrorCode;
+end;
 
 constructor EKafkaBrokerError.Create(AErrorCode: Int16; const AMessage: string);
 begin

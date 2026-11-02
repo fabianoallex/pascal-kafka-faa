@@ -74,8 +74,20 @@
         <UnitName Value="Kafka.Messages.ListOffsets"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Messages.SaslHandshake.pas"/>
+        <UnitName Value="Kafka.Messages.SaslHandshake"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.SaslAuthenticate.pas"/>
+        <UnitName Value="Kafka.Messages.SaslAuthenticate"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Transport.pas"/>
         <UnitName Value="Kafka.Transport"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Sasl.pas"/>
+        <UnitName Value="Kafka.Sasl"/>
       </Item>
       <Item>
         <Filename Value="..\src\Kafka.Connection.pas"/>

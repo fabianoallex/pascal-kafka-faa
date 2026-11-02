@@ -67,7 +67,8 @@ SRC = ROOT / "src"
 
 # The APIs generated, by the name of their JSON files without
 # Request/Response. Adding one here is all it takes to generate it.
-APIS = ["ApiVersions", "Metadata", "Produce", "Fetch", "ListOffsets"]
+APIS = ["ApiVersions", "Metadata", "Produce", "Fetch", "ListOffsets", "SaslHandshake",
+        "SaslAuthenticate"]
 
 BOM = "﻿"
 

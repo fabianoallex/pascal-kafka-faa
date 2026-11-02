@@ -28,7 +28,10 @@ uses
   Kafka.Messages.Produce in '..\..\src\Kafka.Messages.Produce.pas',
   Kafka.Messages.Fetch in '..\..\src\Kafka.Messages.Fetch.pas',
   Kafka.Messages.ListOffsets in '..\..\src\Kafka.Messages.ListOffsets.pas',
+  Kafka.Messages.SaslHandshake in '..\..\src\Kafka.Messages.SaslHandshake.pas',
+  Kafka.Messages.SaslAuthenticate in '..\..\src\Kafka.Messages.SaslAuthenticate.pas',
   Kafka.Transport in '..\..\src\Kafka.Transport.pas',
+  Kafka.Sasl in '..\..\src\Kafka.Sasl.pas',
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
@@ -36,7 +39,8 @@ uses
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
-  Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas';
+  Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
+  Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas';
 
 var
   runner: ITestRunner;

@@ -208,8 +208,10 @@ type
     FQueues: TObjectDictionary<string, TObject>;
     FQueueList: TList<TObject>;
     FInFlight: TList<TObject>;
-    /// Batches the sender took from their queue and hasn't put in flight,
-    /// back in the queue or completed yet, so Flush sees them.
+    /// Batches out of their queue and not in flight: on their way to a
+    /// request, or out of one (answered, expired, aborted) until every
+    /// future is done or the batch is queued again. Flush sees them here;
+    /// a batch in none of the three lists would let it return early.
     FTransit: TList<TObject>;
     FBuffered: Int64;
     FFlushing: Integer;
@@ -245,6 +247,7 @@ type
     procedure FailBatch(ABatch: TObject; AClass: EKafkaClass; ACode: Int16;
       const AMessage: string);
     procedure ReleaseBatch(ABatch: TObject);
+    procedure LeaveTransit(ABatch: TObject);
     procedure AbortAll;
   public
     /// Checks the parameters (EArgumentException); no I/O.
@@ -1167,6 +1170,10 @@ begin
   FMonitor.Enter;
   try
     FInFlight.Remove(F);
+    // In transit until completed or queued again, so that a Flush starting
+    // now waits for them (CompleteBatch and FailBatch take them out).
+    for B in F.Batches do
+      FTransit.Add(B);
   finally
     FMonitor.Leave;
   end;
@@ -1275,6 +1282,7 @@ begin
           end;
           Q.Batches.Delete(0);
           LExpired.Add(B);
+          FTransit.Add(B);
         end;
       end;
     finally
@@ -1580,11 +1588,20 @@ begin
   FMonitor.Enter;
   try
     Dec(FBuffered, B.Bytes);
-    FTransit.Remove(B);
     if FQueues.TryGetValue(QueueKey(B.Topic, B.Partition), LObj) then
       TPartitionQueue(LObj).Muted := False;
     // Sends waiting for memory.
     FMonitor.PulseAll;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaProducer.LeaveTransit(ABatch: TObject);
+begin
+  FMonitor.Enter;
+  try
+    FTransit.Remove(ABatch);
   finally
     FMonitor.Leave;
   end;
@@ -1615,6 +1632,7 @@ begin
       B.Entries[I].Delivery.Complete(R);
     end;
   finally
+    LeaveTransit(B);
     B.Free;
   end;
   FWake.Signal;
@@ -1637,6 +1655,7 @@ begin
       B.Entries[I].Delivery.Complete(R);
     end;
   finally
+    LeaveTransit(B);
     B.Free;
   end;
   FWake.Signal;
@@ -1660,10 +1679,15 @@ begin
     try
       LFlights.AddRange(FInFlight);
       FInFlight.Clear;
+      for I := 0 to LFlights.Count - 1 do
+        for B in TInFlight(LFlights[I]).Batches do
+          FTransit.Add(B);
       for I := 0 to FQueueList.Count - 1 do
       begin
         Q := TPartitionQueue(FQueueList[I]);
         LQueued.AddRange(Q.Batches);
+        for B in Q.Batches do
+          FTransit.Add(B);
         Q.Batches.Clear;
       end;
     finally

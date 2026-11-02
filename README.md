@@ -5,11 +5,11 @@ with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, ch
 time.
 
 **Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
-Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets), record
-batch v2 with gzip, murmur2 partitioning compatible with Java, a connection per broker, the
+Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets,
+SaslHandshake, SaslAuthenticate), record batch v2 with gzip, murmur2 partitioning compatible
+with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer and a consumer of manually assigned
-partitions. Consumer groups (K2) and SASL come next. The plan is
-[`docs/design.md`](docs/design.md).
+partitions. Consumer groups come in K2. The plan is [`docs/design.md`](docs/design.md).
 
 ## What works today
 
@@ -39,6 +39,26 @@ begin
   end;
 end;
 ```
+
+With SASL (here SASL_SSL with SCRAM-SHA-256; `ksmPlain` is PLAIN, as Confluent Cloud uses):
+
+```pascal
+uses
+  Kafka.Types, Kafka.Sasl, Kafka.Producer;
+...
+  Params := KafkaProducerParams('broker1:9094,broker2:9094');
+  Params.Cluster.Connection.UseTls := True;         // SASL_SSL; without it, SASL_PLAINTEXT
+  Params.Cluster.Connection.SaslMechanism := ksmScramSha256;
+  Params.Cluster.Connection.SaslUsername := 'orders-service';
+  Params.Cluster.Connection.SaslPassword := Secret;  // from the environment, not the source
+```
+
+The same three fields on `TKafkaConsumerParams.Cluster.Connection` and on
+`TKafkaConnectionParams`. Wrong credentials, a mechanism the broker doesn't enable or a
+listener without SASL raise `EKafkaAuthentication` (with the broker's error code and message;
+never retried); a client without SASL on a SASL listener is hung up on by the broker
+(`EKafkaConnection`). A broker with `connections.max.reauth.ms` (KIP-368) gets a new
+connection before each session ends.
 
 Reading partitions assigned by hand (consumer groups are phase K2):
 
@@ -89,7 +109,7 @@ begin
   Params.TlsCaFile := 'ca.pem';          // a private CA; '' = the system store
   Conn := TKafkaConnection.Create(Params);
   try
-    Conn.Open;                           // connects and negotiates ApiVersions
+    Conn.Open;                           // connects, negotiates ApiVersions, SASL if set
     Req.Init;
     SetLength(Req.Topics, 1);
     Req.Topics[0].Init;
@@ -109,6 +129,8 @@ end;
   provided once by the application (one search path in Delphi; one registered
   `pascal_common_faa.lpk` in Lazarus). Lazarus: `packages/pascal_kafka_faa.lpk`.
 - A Kafka broker of 2.1 or later; developed and tested against Apache Kafka 4.4.0.
+- SASL: PLAIN and SCRAM-SHA-256. User name and password are sent as their UTF-8 bytes, without
+  SASLprep (as Java's client). SCRAM-SHA-512, OAUTHBEARER: phase K3. GSSAPI/Kerberos: no plan.
 - TLS certificates (the common library's rule): CA files are PEM on both backends; a client
   certificate is a PEM pair on OpenSSL and a PFX on SChannel. A JKS keystore must be converted
   (`keytool -importkeystore ... -deststoretype PKCS12`, then `openssl pkcs12` for PEM).
@@ -117,7 +139,8 @@ end;
 
 See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Windows),
 `sh tools/test_fpc_docker.sh` (Linux in Docker), `Kafka.groupproj` in the Delphi IDE; the
-integration suite needs `docker compose -f docker/docker-compose.yml up -d`.
+integration suite needs `docker compose -f docker/docker-compose.yml up -d` (plaintext 9092, TLS
+9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, and 9098 with 2-second SASL sessions).
 
 ## License
 

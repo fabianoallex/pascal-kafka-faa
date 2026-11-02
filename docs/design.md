@@ -209,7 +209,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | Consumer with manually assigned partitions | K1 | `Assign`, `Seek`, `Poll` |
 | Record headers | K1 | tracing needs them |
 | TLS (SChannel/OpenSSL, from common), private CA, mTLS | K1 | |
-| SASL PLAIN, SCRAM-SHA-256 | K1 | PLAIN covers Confluent Cloud; SCRAM uses `PcHmacSha256`/`PcPbkdf2HmacSha256` |
+| SASL PLAIN, SCRAM-SHA-256 | K1 | done; PLAIN covers Confluent Cloud; SCRAM uses `PcHmacSha256`/`PcPbkdf2HmacSha256`; KIP-368 by a new connection |
 | Compression none + gzip | K1 | |
 | Minimal admin (create and delete topics) | K1/K2 | for the integration tests |
 | KIP-848 consumer group, OffsetCommit/OffsetFetch | K2 | decision 4's seam |
@@ -492,10 +492,88 @@ batches returned) make three tests fail.
 - **Not done yet:** pause/resume, `OffsetsForTimes`, the preferred read replica (KIP-392),
   leader epochs in Fetch (fencing, KIP-320), metrics.
 
-**Next in K1** (section 5): SASL PLAIN and SCRAM-SHA-256; the interoperability tests (consume
-with the Java client what this producer sent, and the reverse); the opt-in Confluent Cloud
-test; then the K1 sample over TLS + SASL. Open question 1 is answered: Apache 4.4.0 in CI,
-Confluent Cloud as the first managed broker.
+### SASL PLAIN and SCRAM-SHA-256 (2026-11-02)
+
+**Done:**
+
+- Generated: `Kafka.Messages.SaslHandshake` (v0-v1) and `Kafka.Messages.SaslAuthenticate`
+  (v0-v2), from the same 4.4.0 definitions.
+- `Kafka.Sasl`: the client side of PLAIN (RFC 4616) and SCRAM-SHA-256 (RFC 5802, RFC 7677),
+  one object per exchange (`InitialResponse`, then `Evaluate` until `IsComplete`, Java's
+  `SaslClient` shape). SCRAM uses pascal-common-faa's `PcSha256`, `PcHmacSha256`,
+  `PcPbkdf2HmacSha256`, `PcRandomBytes` (the nonce) and `PcSameBytes` (the server signature,
+  checked before the exchange counts as complete). Standard Base64 with padding is done over the
+  common's Base64url by translating the two characters that differ and the padding.
+- `Kafka.Connection`: `SaslMechanism`, `SaslUsername`, `SaslPassword` in
+  `TKafkaConnectionParams`. `Open` runs SaslHandshake v1 and SaslAuthenticate right after
+  ApiVersions, in plaintext and over TLS. The cluster, producer and consumer take them from
+  their connection template with no change of their own.
+- `EKafkaAuthentication` (`Kafka.Types`), with the broker's error code. The cluster's refresh
+  raises it at once when a broker refused the credentials, instead of `EKafkaConnection` after
+  `MaxBlockMs`.
+- KIP-368, the cheap way: the connection keeps the lifetime from SaslAuthenticate v1+
+  (`SessionLifetimeMs`) and a point between 85% and 95% of it, chosen at random as Java's
+  (`ReauthenticationDue`); `Kafka.Cluster` stops handing out a connection past that point and
+  opens a new one. Requests already sent on the old one finish there.
+- The fake broker speaks SASL: PLAIN, and SCRAM-SHA-256 written as a server (the proof checked
+  by recovering the client key and hashing it), with right and wrong credentials, a wrong server
+  signature, a mechanism it doesn't enable, a listener without SASL, and session lifetimes.
+- `docker/`: SASL_PLAINTEXT on 9096, SASL_SSL on 9097, and 9098 with
+  `connections.max.reauth.ms` = 2000. PLAIN's user comes from the JAAS line; SCRAM's is created
+  by `kafka-storage.sh format --add-scram`, run by `docker/kafka-start.sh` before the image's
+  own format (which takes no extra arguments).
+- Captures: 28 more frames (158). From the Java client 4.4.0 through the proxy, PLAIN and SCRAM
+  (both SCRAM steps; `captures_from_proxy.py` now keeps repeated SaslAuthenticate steps). By
+  hand (`capture_versions.py --apis sasl`): SaslHandshake v0 and v1, SaslAuthenticate v0-v2,
+  v1 and v2 with a session lifetime, an unsupported mechanism and a failed authentication.
+
+**Checked against the captures and the broker:** RFC 7677's example byte for byte; given the
+nonce the Java client chose, this client writes Java's client-first and client-final (the same
+proof) and the broker's signature in that exchange verifies. The broker answers a SASL client
+on its PLAINTEXT listener with ILLEGAL_SASL_STATE, hangs up on a client without SASL at its
+first request after ApiVersions, and closes a connection whose session expired at its next
+request (the integration test sees that, then the replacement working).
+
+**Measured:** FPC 3.2.2 Windows x64: 215 unit and 31 integration tests, 0 leaks. Linux
+(Docker): the same, 0 leaks, and both suites 5 times in three containers at once with
+`--cpus=1` (30 runs). Delphi 12 Win32 and Win64: 215 and 31, 0 leaks.
+
+**Decided while writing:**
+
+- **Re-authentication is a new connection**, not a SASL exchange on the old socket (Java's
+  way). Doing it in place means pausing every writer of the connection between SaslHandshake
+  and the end of SaslAuthenticate while the reader keeps delivering earlier answers; a new
+  connection costs a TCP (and TLS) handshake per session and no new locking. Sessions are
+  minutes or hours in practice. Someone holding a `TKafkaConnection` directly past its session
+  gets `EKafkaConnection` when the broker hangs up.
+- **`EKafkaAuthentication` is not an `EKafkaConnection`**, so the producer's and consumer's
+  retry of connection failures doesn't spin on bad credentials (Java's
+  `AuthenticationException` isn't retriable either).
+- **ApiVersions v5 before SASL.** Java's client sends ApiVersions v0 before the handshake and
+  the newest version after authenticating (seen in the captures); one ApiVersions at the newest
+  version first is accepted by the broker, and the negotiated table is then known before
+  SaslHandshake needs it.
+- **No SASLprep**, as Java: names and passwords go as their UTF-8 bytes, which is what Kafka's
+  credential tools store. SCRAM user names are escaped (`=` and `,`).
+- **SCRAM iterations between 4096 and 16384**: RFC 7677's minimum (Java's check) and the most
+  Kafka's tools accept for a credential. Java has no upper bound; this one keeps a hostile
+  broker from asking for billions of PBKDF2 rounds.
+- **SaslHandshake v0 isn't spoken** (its tokens went unframed on the socket); every broker since
+  1.0 has v1.
+- **Standard Base64 stays in `Kafka.Sasl`** over the common's Base64url. A second library that
+  needs it would move it to pascal-common-faa.
+
+**Fixed on the way:** `Kafka.Producer`'s `Flush` could return True while a batch whose answer
+had just arrived was still being completed: between leaving the in-flight list and its futures
+completing, the batch was in no list `Flush` reads. Seen once as a failure of
+`BufferFull_SendWaitsMaxBlockThenFails`, in one of four runs. Such
+batches now stay in the transit list until every future is done, also when they expire or the
+producer aborts them; the producer tests then passed 25 times in a row.
+
+**Next in K1** (section 5): the interoperability tests (consume with the Java client what this
+producer sent, and the reverse); the opt-in Confluent Cloud test; then the K1 sample over TLS +
+SASL. Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first managed
+broker.
 
 ## 8. Open questions
 

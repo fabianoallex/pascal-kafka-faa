@@ -106,11 +106,16 @@ first).
   `ClusterView` (`KafkaFakeClusterView`, `KafkaFakeUseView`); `Kafka.ConsumerTests` too. The
   fake also answers Produce (and can fail, hold or drop it), Fetch (with a long poll, on a
   thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
-  the batches per partition (`AppendBatch`, `SetLogStart`). It serves one connection at a
-  time: a test that needs two to the same broker (a producer and a consumer, say) hangs.
+  the batches per partition (`AppendBatch`, `SetLogStart`), and speaks SASL (`SaslMechanisms`,
+  one user; PLAIN, and SCRAM-SHA-256 written as a server, apart from `Kafka.Sasl`): before a
+  client authenticates it answers only ApiVersions and SASL, as a broker. It serves one
+  connection at a time: a test that needs two to the same broker (a producer and a consumer, a
+  connection and its replacement) hangs.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
-  node; 9092 plaintext, 9093 TLS with the common's test PKI):
-  `docker compose -f docker/docker-compose.yml up -d`.
+  node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
+  SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
+  bob-secret): `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
+  file needs the container recreated (`up -d` does it).
 - **FPC on Windows:** `sh tools/test_fpc.sh` (both suites; the integration one is skipped with a
   notice when the broker isn't running, `KAFKA_IT=require` makes that a failure).
   **Linux:** `sh tools/test_fpc_docker.sh` (FPC 3.2.2, Debian 12, OpenSSL 3; the integration
@@ -122,9 +127,11 @@ first).
   support command line compiling." and **exits with code 0**. Don't read that as success.
 - **Acceptance criterion for every commit:** FPC Windows x64 + Linux (Docker) + Delphi 12
   Win32/Win64, every test green and **0 leaks** (heaptrc, `ReportMemoryLeaksOnShutdown`).
-- **No `Sleep` in tests**: waits have deadlines and are woken by events. The one exception is
-  the integration suite waiting for the broker to elect a leader for a new topic. Anything with
-  threads: also three Linux runners at once with `--cpus=1`.
+- **No `Sleep` in tests**: waits have deadlines and are woken by events. The exceptions, both
+  in the integration suite: waiting for the broker to elect a leader for a new topic, and the
+  KIP-368 tests waiting for a 2-second SASL session to end (in a consumer's `Poll`, looped to
+  a deadline). Anything with threads: also three Linux runners at once with `--cpus=1`
+  (`.ci/stress.sh`, `RUNS=5`).
 - Floating point always with an explicit delta.
 
 ---
@@ -177,3 +184,17 @@ first).
     script while the group was open): it built its loaded copy, without them, and said nothing;
     the suite ran 167 tests instead of 183. A later build asked to reload. After adding units,
     compare the Delphi runner's "Tests Found" with FPC's count.
+15. **The broker formatted a log directory nobody used.** With any `KAFKA_*` variable the
+    image doesn't read its own `server.properties`, so `log.dirs` is Kafka's default,
+    `/tmp/kafka-logs`, not the image's `/tmp/kraft-combined-logs`. A `kafka-storage.sh format
+    --add-scram` run on the latter had no effect, and SCRAM failed with the right password.
+    `KAFKA_LOG_DIRS` is set in the compose file (`docker/kafka-start.sh`).
+16. **What a broker does with SASL mistakes:** a SASL client on a listener without SASL gets
+    ILLEGAL_SASL_STATE in the SaslHandshake answer; a client without SASL on a SASL listener
+    gets ApiVersions answered and is hung up on at its next request (`EKafkaConnection`, no
+    error code); after a session expires (KIP-368) the broker hangs up at the next request.
+    All three measured against 4.4.0 (`Kafka.SaslIntegrationTests`).
+17. **Bash heredocs keep breaking edit scripts** (gotcha 10, three more times in the SASL
+    session): "unexpected EOF while looking for matching `'`" with nothing written, and a
+    backslash-n inside a Python string turned into a real line break in a Markdown file (and in
+    this very item). Write the script with the Write tool, then run it.

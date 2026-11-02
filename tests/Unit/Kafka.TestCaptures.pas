@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 130;
-  KAFKA_CAPTURES: array[0..129] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 158;
+  KAFKA_CAPTURES: array[0..157] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -732,7 +732,93 @@ const
      IsRequest: False; ApiKey: 1; ApiVersion: 18;
      Hex: '00000005000000000000002652fc0c02db70f7dc2fc74c72a44a93da817ee31a0200000000000000000000000000030000000000000003000000000000000000ffffffffb9010000000000000000000000ac0000000002d164104a000100000002000001' +
           'a19c309c0f000001a19c309c1f0000000000000005000000000000000000031f8b08000000000000ff0b61606060c93614c9cf39bc5021b7342f259f85aba428313955c8c04037312959d7c0902327312f9da5a0c48341818925db48a23835393f2f45a1' +
-          '2c31a7349509a13825350da83880418185d12caf342747213bb5524701ccca484d4c492d82e948cd2d28a9640400ec7c687779000000000000')
+          '2c31a7349509a13825350da83880418185d12caf342747213bb5524701ccca484d4c492d82e948cd2d28a9640400ec7c687779000000000000'),
+    (Name: 'sasl-handshake-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 0;
+     Hex: '00110000000007d1001870617363616c2d6b61666b612d6661612d636170747572650005504c41494e'),
+    (Name: 'sasl-handshake-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 0;
+     Hex: '000007d10000000000020005504c41494e000d534352414d2d5348412d323536'),
+    (Name: 'sasl-handshake-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '00110001000007d2001870617363616c2d6b61666b612d6661612d636170747572650005504c41494e'),
+    (Name: 'sasl-handshake-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '000007d20000000000020005504c41494e000d534352414d2d5348412d323536'),
+    (Name: 'sasl-authenticate-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 0;
+     Hex: '00240000000007d3001870617363616c2d6b61666b612d6661612d636170747572650000001300616c69636500616c6963652d736563726574'),
+    (Name: 'sasl-authenticate-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 0;
+     Hex: '000007d30000000000000000'),
+    (Name: 'sasl-authenticate-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 1;
+     Hex: '00240001000007d5001870617363616c2d6b61666b612d6661612d636170747572650000001300616c69636500616c6963652d736563726574'),
+    (Name: 'sasl-authenticate-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 1;
+     Hex: '000007d500000000000000000000000000000000'),
+    (Name: 'sasl-authenticate-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007d7001870617363616c2d6b61666b612d6661612d63617074757265001400616c69636500616c6963652d73656372657400'),
+    (Name: 'sasl-authenticate-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007d70000000101000000000000000000'),
+    (Name: 'sasl-authenticate-v1-lifetime'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 1;
+     Hex: '00240001000007d9001870617363616c2d6b61666b612d6661612d636170747572650000001300616c69636500616c6963652d736563726574'),
+    (Name: 'sasl-authenticate-v1-lifetime'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 1;
+     Hex: '000007d9000000000000000000000000000007d0'),
+    (Name: 'sasl-authenticate-v2-lifetime'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007db001870617363616c2d6b61666b612d6661612d63617074757265001400616c69636500616c6963652d73656372657400'),
+    (Name: 'sasl-authenticate-v2-lifetime'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007db000000010100000000000007d000'),
+    (Name: 'sasl-handshake-v1-unsupported'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '00110001000007dc001870617363616c2d6b61666b612d6661612d636170747572650006475353415049'),
+    (Name: 'sasl-handshake-v1-unsupported'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '000007dc0021000000020005504c41494e000d534352414d2d5348412d323536'),
+    (Name: 'sasl-authenticate-v2-failed'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007de001870617363616c2d6b61666b612d6661612d63617074757265000d00616c6963650077726f6e6700'),
+    (Name: 'sasl-authenticate-v2-failed'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007de00003a3441757468656e7469636174696f6e206661696c65643a20496e76616c696420757365726e616d65206f722070617373776f726401000000000000000000'),
+    (Name: 'java-plain-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL PLAIN'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '001100017ffffff9ffff0005504c41494e'),
+    (Name: 'java-plain-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL PLAIN'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '7ffffff90000000000020005504c41494e000d534352414d2d5348412d323536'),
+    (Name: 'java-plain-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL PLAIN'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffaffff001400616c69636500616c6963652d73656372657400'),
+    (Name: 'java-plain-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL PLAIN'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffa0000000101000000000000000000'),
+    (Name: 'java-scram-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '001100017ffffff9ffff000d534352414d2d5348412d323536'),
+    (Name: 'java-scram-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '7ffffff90000000000020005504c41494e000d534352414d2d5348412d323536'),
+    (Name: 'java-scram-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffaffff00256e2c2c6e3d626f622c723d6b626969666832636134377a616e723334387564723065637500'),
+    (Name: 'java-scram-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffa0000000164723d6b626969666832636134377a616e723334387564723065637531326c6c736b386d62323865326a7467346a387a6135696761322c733d64444d315a6a4e6d4d6e6f796433427a616d5a35624777795a6a4534626e6b774e413d' +
+          '3d2c693d38313932000000000000000000'),
+    (Name: 'java-scram-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffbffff006c633d626977732c723d6b626969666832636134377a616e723334387564723065637531326c6c736b386d62323865326a7467346a387a6135696761322c703d4d756d70756c2b4d56342b39493066506c7742376d344d445a' +
+          '654a3545426a392b2f4151796b2f4f5861553d00'),
+    (Name: 'java-scram-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffb000000012f763d76544e347a342f6943634d494161725269486c324d5132726e354c6f434b36374c31462f737a2f386877773d000000000000000000')
   );
 
 /// The capture's bytes.

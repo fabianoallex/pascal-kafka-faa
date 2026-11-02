@@ -33,6 +33,8 @@ uses
   Kafka.ClusterTests,
   Kafka.ProducerTests,
   Kafka.ConsumerTests,
+  Kafka.SaslTests,
+  Kafka.SaslConnectionTests,
   Kafka.ConnectionTests;
 
 var

@@ -13,9 +13,12 @@
 
   Bootstrap. Open tries the addresses of BootstrapServers in order and asks
   the first that answers for Metadata; any failure (refused, TLS, not Kafka)
-  moves on to the next, and the exception when none answers names each. That connection is temporary: it is
-  closed once the answer is in, and the brokers are reached later by the
-  addresses they advertise (which may differ from the bootstrap's). When no
+  moves on to the next, and the exception when none answers names each
+  (EKafkaAuthentication when one of them refused the credentials, which a
+  retry won't cure; EKafkaConnection otherwise). That connection is
+  temporary: it is closed once the answer is in, and the brokers are
+  reached later by the addresses they advertise (which may differ from the
+  bootstrap's). When no
   known broker answers a later refresh, the bootstrap addresses are tried
   again.
 
@@ -40,7 +43,9 @@
   broken connection, or when the cluster closes (Close closes every
   connection, which makes requests in flight fail with EKafkaConnection; the
   objects go when the last holder lets go). A broken connection is replaced
-  on the next Broker call. Connections are opened one at a time (a lock), so
+  on the next Broker call, and so is one whose SASL session is near its
+  end (ReauthenticationDue, KIP-368: Kafka.Connection's header).
+  Connections are opened one at a time (a lock), so
   two threads asking for the same broker open it once. No reconnect backoff
   yet: the producer's and consumer's retry backoff spaces the attempts.
 
@@ -652,6 +657,13 @@ begin
   Result := TBrokerConnection.Create(ANodeId, C);
 end;
 
+/// Open, not broken, and its SASL session not near its end (KIP-368,
+/// Kafka.Connection's header): a connection Broker hands out as it is.
+function Usable(const ABroker: IKafkaBrokerConnection): Boolean;
+begin
+  Result := ABroker.Connection.IsOpen and not ABroker.Connection.ReauthenticationDue;
+end;
+
 function TKafkaCluster.Broker(ANodeId: Int32): IKafkaBrokerConnection;
 var
   LInfo: TKafkaBrokerInfo;
@@ -661,7 +673,7 @@ begin
   try
     if FClosed then
       raise EKafkaConnection.Create('The cluster is closed');
-    if FBrokers.TryGetValue(ANodeId, Result) and Result.Connection.IsOpen then
+    if FBrokers.TryGetValue(ANodeId, Result) and Usable(Result) then
       Exit;
     LKnown := (FMetadata <> nil) and FMetadata.FindBroker(ANodeId, LInfo);
   finally
@@ -676,7 +688,7 @@ begin
     try
       if FClosed then
         raise EKafkaConnection.Create('The cluster is closed');
-      if FBrokers.TryGetValue(ANodeId, Result) and Result.Connection.IsOpen then
+      if FBrokers.TryGetValue(ANodeId, Result) and Usable(Result) then
         Exit;
     finally
       FLock.Leave;
@@ -732,6 +744,7 @@ var
   LBroker: IKafkaBrokerConnection;
   LErrors: string;
   LDone: Boolean;
+  LAuthFailed: Boolean;
   I: Integer;
 begin
   FRefreshLock.Enter;
@@ -749,6 +762,7 @@ begin
     LResponse.Init;
     LErrors := '';
     LDone := False;
+    LAuthFailed := False;
     // The brokers already known, then the bootstrap addresses.
     LKnown := nil;
     FLock.Enter;
@@ -768,6 +782,8 @@ begin
         on E: EKafka do
         begin
           CheckUsable;
+          if E is EKafkaAuthentication then
+            LAuthFailed := True;
           LErrors := LErrors + Format('; broker %d (%s:%d): %s',
             [LKnown[I].NodeId, LKnown[I].Host, LKnown[I].Port, E.Message]);
           Continue;
@@ -787,12 +803,20 @@ begin
         LDone := TryMetadata(LBroker, LRequest, LResponse, LErrors);
       except
         on E: EKafka do
+        begin
+          if E is EKafkaAuthentication then
+            LAuthFailed := True;
           LErrors := LErrors + Format('; %s:%d: %s', [FBootstrap[I].Host, FBootstrap[I].Port,
             E.Message]);
+        end;
       end;
       LBroker := nil; // a bootstrap connection is closed here
       Inc(I);
     end;
+    // Credentials a broker refused won't do better on a retry: the caller
+    // gets EKafkaAuthentication at once (Topic doesn't wait it out).
+    if not LDone and LAuthFailed then
+      raise EKafkaAuthentication.Create('No broker answered Metadata' + LErrors);
     if not LDone then
       raise EKafkaConnection.Create('No broker answered Metadata' + LErrors);
     Result := TClusterMetadata.Create(LResponse);
