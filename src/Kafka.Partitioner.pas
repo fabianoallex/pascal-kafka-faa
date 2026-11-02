@@ -21,9 +21,19 @@
   range checks are off for the unit because the wrap is the algorithm;
   Delphi's Debug configuration turns both on.
 
-  A record without a key isn't hashed: Java's producer sends those to a
-  "sticky" partition per batch (KIP-480), which is the producer's business
-  (Kafka.Producer), not this unit's. }
+  A record without a key isn't hashed: it goes to a "sticky" partition
+  (TKafkaStickyPartitioner), as Java's producer does since KIP-480 and in
+  the form KIP-794 gave it (Kafka 3.3): every keyless record of a topic goes
+  to the same partition until BatchSize bytes went there, then another is
+  chosen at random among the partitions that have a leader. Batches fill up
+  instead of each partition getting a record at a time, and over time the
+  load spreads evenly. Two differences from Java, neither visible to a
+  consumer: the next partition is never the one just left (when there is
+  another), and there is no adaptive weighting by queue size
+  (partitioner.adaptive.partitioning.enable, which Java turns on by default:
+  it favours the brokers that drain faster). The random numbers are an
+  xorshift32 of the partitioner's own, not the RTL's Random, whose state is
+  global and not thread-safe. }
 
 {$OVERFLOWCHECKS OFF}
 {$RANGECHECKS OFF}
@@ -31,7 +41,38 @@
 interface
 
 uses
-  SysUtils;
+  SysUtils,
+  Generics.Collections,
+  Kafka.Protocol.Primitives;
+
+type
+  { The sticky partition of each topic for records without a key (the unit's
+    header). Not thread-safe: the producer calls it under its lock. }
+  TKafkaStickyPartitioner = class
+  private type
+    TState = record
+      Partition: Int32;
+      Bytes: Int64;
+    end;
+  private
+    FBatchSize: Integer;
+    FState: TDictionary<string, TState>;
+    FRandom: Cardinal;
+    function NextRandom: Cardinal;
+    function Choose(APartitionCount: Integer; const AAvailable: TKafkaInt32Array;
+      AExclude: Int32): Int32;
+  public
+    /// ABatchSize: the bytes after which a topic moves to another partition.
+    /// ASeed = 0 seeds from the clock.
+    constructor Create(ABatchSize: Integer; ASeed: Cardinal = 0);
+    destructor Destroy; override;
+    /// The partition for a keyless record of ARecordBytes bytes, counted
+    /// towards the switch. AAvailable: the partitions with a leader (empty:
+    /// none known, any of the APartitionCount is taken). EArgumentException
+    /// for a count below 1.
+    function Partition(const ATopic: string; APartitionCount: Integer;
+      const AAvailable: TKafkaInt32Array; ARecordBytes: Integer): Int32;
+  end;
 
 /// Java's Utils.murmur2: seed $9747B28C, the result as a signed int.
 function KafkaMurmur2(const AData: TBytes): Int32;
@@ -43,6 +84,9 @@ function KafkaToPositive(AValue: Int32): Int32;
 function KafkaPartitionForKey(const AKey: TBytes; APartitionCount: Integer): Integer;
 
 implementation
+
+uses
+  PascalCommon.Threading;
 
 const
   SEED = Cardinal($9747B28C);
@@ -100,6 +144,97 @@ begin
     raise EArgumentException.CreateFmt('A topic has at least one partition, not %d',
       [APartitionCount]);
   Result := KafkaToPositive(KafkaMurmur2(AKey)) mod APartitionCount;
+end;
+
+{ TKafkaStickyPartitioner }
+
+constructor TKafkaStickyPartitioner.Create(ABatchSize: Integer; ASeed: Cardinal);
+begin
+  inherited Create;
+  FBatchSize := ABatchSize;
+  if FBatchSize < 1 then
+    FBatchSize := 1;
+  FState := TDictionary<string, TState>.Create;
+  FRandom := ASeed;
+  if FRandom = 0 then
+    FRandom := Cardinal(PcTickUs) or 1;
+end;
+
+destructor TKafkaStickyPartitioner.Destroy;
+begin
+  FState.Free;
+  inherited;
+end;
+
+function TKafkaStickyPartitioner.NextRandom: Cardinal;
+begin
+  // xorshift32 (Marsaglia); never 0 from a non-zero state.
+  FRandom := FRandom xor (FRandom shl 13);
+  FRandom := FRandom xor (FRandom shr 17);
+  FRandom := FRandom xor (FRandom shl 5);
+  Result := FRandom;
+end;
+
+function TKafkaStickyPartitioner.Choose(APartitionCount: Integer;
+  const AAvailable: TKafkaInt32Array; AExclude: Int32): Int32;
+var
+  LCandidates: TKafkaInt32Array;
+  I, N: Integer;
+  LExcludedIsAvailable: Boolean;
+begin
+  LCandidates := nil;
+  SetLength(LCandidates, APartitionCount);
+  N := 0;
+  LExcludedIsAvailable := False;
+  for I := 0 to High(AAvailable) do
+    if (AAvailable[I] >= 0) and (AAvailable[I] < APartitionCount) then
+    begin
+      if AAvailable[I] = AExclude then
+        LExcludedIsAvailable := True
+      else if N < APartitionCount then
+      begin
+        LCandidates[N] := AAvailable[I];
+        Inc(N);
+      end;
+    end;
+  if N > 0 then
+    Exit(LCandidates[NextRandom mod Cardinal(N)]);
+  // The partition just left is the only one with a leader: stay on it.
+  if LExcludedIsAvailable then
+    Exit(AExclude);
+  // No leader known: any partition but the one just left.
+  for I := 0 to APartitionCount - 1 do
+    if (I <> AExclude) or (APartitionCount = 1) then
+    begin
+      LCandidates[N] := I;
+      Inc(N);
+    end;
+  Result := LCandidates[NextRandom mod Cardinal(N)];
+end;
+
+function TKafkaStickyPartitioner.Partition(const ATopic: string; APartitionCount: Integer;
+  const AAvailable: TKafkaInt32Array; ARecordBytes: Integer): Int32;
+var
+  LState: TState;
+  LFound: Boolean;
+begin
+  if APartitionCount < 1 then
+    raise EArgumentException.CreateFmt('A topic has at least one partition, not %d',
+      [APartitionCount]);
+  LFound := FState.TryGetValue(ATopic, LState);
+  if not LFound then
+  begin
+    LState.Partition := Choose(APartitionCount, AAvailable, -1);
+    LState.Bytes := 0;
+  end
+  else if (LState.Bytes >= FBatchSize) or (LState.Partition >= APartitionCount) then
+  begin
+    LState.Partition := Choose(APartitionCount, AAvailable, LState.Partition);
+    LState.Bytes := 0;
+  end;
+  Result := LState.Partition;
+  Inc(LState.Bytes, ARecordBytes);
+  FState.AddOrSetValue(ATopic, LState);
 end;
 
 end.

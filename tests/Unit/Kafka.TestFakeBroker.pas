@@ -25,6 +25,15 @@
     Kafka.ClusterTests. NotReadyAnswers > 0: that many answers that name
     topics say LEADER_NOT_AVAILABLE for each, with no partitions (a topic
     being created).
+  - answer Produce (OfferProduce): the records of each partition are
+    decoded (gzip too) and appended to that partition's log, offsets from 0,
+    and the answer gives each batch's base offset. With acks=0 nothing is
+    answered. A topic is named (v3-12) or given by id (v13, resolved through
+    ClusterView). The next ProduceErrors requests are answered with
+    ProduceErrorCode for every partition, appending nothing; the next
+    DropProduce requests get no answer at all (and append nothing);
+    HoldProduce keeps requests unanswered and unappended until
+    ReleaseHeldProduce, which handles them in the order they came.
 
   CreateTls listens with TLS instead, with the server certificate of
   pascal-common-faa's test PKI (CN=localhost, SAN localhost and 127.0.0.1):
@@ -50,7 +59,9 @@ uses
   Kafka.Protocol.Envelope,
   Kafka.Messages.Apis,
   Kafka.Messages.ApiVersions,
-  Kafka.Messages.Metadata;
+  Kafka.Messages.Metadata,
+  Kafka.Messages.Produce,
+  Kafka.Protocol.RecordBatch;
 
 type
   TKafkaFakeBroker = class
@@ -63,6 +74,22 @@ type
     // Named: Delphi treats two separate 'array of THeld' declarations as
     // incompatible types (E2008); FPC accepts them.
     THeldArray = array of THeld;
+
+    TLoggedRecord = record
+      Topic: string;
+      Partition: Int32;
+      Offset: Int64;
+      Rec: TKafkaRecord;
+      Compression: Integer;
+    end;
+    TLoggedRecordArray = array of TLoggedRecord;
+
+    THeldProduce = record
+      CorrelationId: Int32;
+      Version: Int16;
+      Request: TKafkaProduceRequest;
+    end;
+    THeldProduceArray = array of THeldProduce;
 
     TServeThread = class(TThread)
     private
@@ -83,7 +110,15 @@ type
     FLastClientId: string;
     FLastHeaderVersion: Int16;
     FMetadataCount: Integer;
+    FProduceCount: Integer;
+    FLog: TLoggedRecordArray;
+    FLogCount: Integer;
+    FHeldProduce: THeldProduceArray;
     procedure Serve;
+    procedure HandleProduce(ACorrelationId: Int32; AVersion: Int16;
+      const ARequest: TKafkaProduceRequest);
+    function TopicNameOf(AVersion: Int16; const ATopic: TKafkaProduceRequestTopicProduceData): string;
+    function NextOffset(const ATopic: string; APartition: Int32): Int64;
     procedure ServeClient(AClient: TPcEndpoint);
     procedure HandleRequest(const AContent: TBytes);
     procedure SendResponse(ACorrelationId: Int32; AApiKey, AVersion: Int16; const ABody: TBytes);
@@ -101,6 +136,11 @@ type
     UseClusterView: Boolean;
     ClusterView: TKafkaMetadataResponse;
     NotReadyAnswers: Integer;
+    OfferProduce: Boolean;
+    ProduceErrors: Integer;
+    ProduceErrorCode: Int16;
+    DropProduce: Integer;
+    HoldProduce: Boolean;
 
     constructor Create;
     constructor CreateTls;
@@ -118,7 +158,33 @@ type
     function MetadataCount: Integer;
     function LastClientId: string;
     function LastHeaderVersion: Int16;
+    /// Produce requests received (answered or not).
+    function ProduceCount: Integer;
+    /// Records appended, in the order they were.
+    function LoggedCount: Integer;
+    /// Every record appended to ATopic-APartition, in offset order.
+    function Logged(const ATopic: string; APartition: Int32): TKafkaRecordArray;
+    /// The partition and offset of the I-th record appended (any partition).
+    procedure LoggedAt(AIndex: Integer; out ATopic: string; out APartition: Int32;
+      out AOffset: Int64; out AValue: TBytes);
+    /// The compression codec (attribute bits) the I-th record arrived with.
+    function LoggedCompression(AIndex: Integer): Integer;
+    /// Waits up to ATimeoutMs until ACount Produce requests came.
+    function WaitProduceCount(ACount: Integer; ATimeoutMs: Cardinal): Boolean;
+    /// Answers the held Produce requests, oldest first, and stops holding.
+    procedure ReleaseHeldProduce;
   end;
+  TKafkaFakeBrokerArray = array of TKafkaFakeBroker;
+
+/// A cluster of ABrokers (node ids 1..N, in order) with topic ATopic (topic id
+/// ...07) whose partition P is led by node ALeaders[P] (-1: no leader); the
+/// partitions listed in reverse order, which a client must not mind. ATopic
+/// '' gives no topic.
+function KafkaFakeClusterView(const ABrokers: TKafkaFakeBrokerArray; const ATopic: string;
+  const ALeaders: array of Int32): TKafkaMetadataResponse;
+/// Every broker of ABrokers answers with AView, and offers Produce.
+procedure KafkaFakeUseView(const ABrokers: TKafkaFakeBrokerArray;
+  const AView: TKafkaMetadataResponse);
 
 implementation
 
@@ -129,6 +195,53 @@ uses
   Kafka.Errors,
   Kafka.Transport,
   Kafka.TestHelpers;
+
+function KafkaFakeClusterView(const ABrokers: TKafkaFakeBrokerArray; const ATopic: string;
+  const ALeaders: array of Int32): TKafkaMetadataResponse;
+var
+  I, P: Integer;
+begin
+  Result.Init;
+  Result.ClusterId := 'fake-cluster';
+  Result.ClusterIdIsNull := False;
+  Result.ControllerId := 1;
+  SetLength(Result.Brokers, Length(ABrokers));
+  for I := 0 to High(ABrokers) do
+  begin
+    Result.Brokers[I].Init;
+    Result.Brokers[I].NodeId := I + 1;
+    Result.Brokers[I].Host := '127.0.0.1';
+    Result.Brokers[I].Port := ABrokers[I].Port;
+  end;
+  if ATopic = '' then
+    Exit;
+  SetLength(Result.Topics, 1);
+  Result.Topics[0].Init;
+  Result.Topics[0].Name := ATopic;
+  Result.Topics[0].TopicId.Bytes[15] := 7;
+  SetLength(Result.Topics[0].Partitions, Length(ALeaders));
+  for I := 0 to High(ALeaders) do
+  begin
+    P := High(ALeaders) - I;
+    Result.Topics[0].Partitions[I].Init;
+    Result.Topics[0].Partitions[I].PartitionIndex := P;
+    Result.Topics[0].Partitions[I].LeaderId := ALeaders[P];
+    Result.Topics[0].Partitions[I].LeaderEpoch := 3;
+  end;
+end;
+
+procedure KafkaFakeUseView(const ABrokers: TKafkaFakeBrokerArray;
+  const AView: TKafkaMetadataResponse);
+var
+  I: Integer;
+begin
+  for I := 0 to High(ABrokers) do
+  begin
+    ABrokers[I].ClusterView := AView;
+    ABrokers[I].UseClusterView := True;
+    ABrokers[I].OfferProduce := True;
+  end;
+end;
 
 { TKafkaFakeBroker.TServeThread }
 
@@ -266,6 +379,7 @@ var
   LTopic: string;
   LBig: TBytes;
   N: Integer;
+  LProduce: TKafkaProduceRequest;
 begin
   KafkaPeekRequestApi(AContent, LKey, LVersion);
   FMonitor.Enter;
@@ -292,6 +406,41 @@ begin
     FLastHeaderVersion := LHeaderVersion;
     FMonitor.Leave;
     SendResponse(LHeader.CorrelationId, LKey, LVersion, ApiVersionsBody(LVersion));
+    Exit;
+  end;
+  if LKey = KAFKA_API_KEY_PRODUCE then
+  begin
+    LHeaderVersion := KafkaRequestHeaderVersion(KafkaApiIsFlexible(LKey, LVersion));
+    LReader := TKafkaReader.Create(AContent);
+    try
+      LHeader := KafkaReadRequestHeader(LReader, LHeaderVersion);
+      LBody := Copy(AContent, LReader.Position, Length(AContent) - LReader.Position);
+    finally
+      LReader.Free;
+    end;
+    LProduce.FromBytes(LBody, LVersion);
+    FMonitor.Enter;
+    try
+      Inc(FProduceCount);
+      FMonitor.PulseAll;
+      if DropProduce > 0 then
+      begin
+        Dec(DropProduce);
+        Exit;
+      end;
+      if HoldProduce then
+      begin
+        N := Length(FHeldProduce);
+        SetLength(FHeldProduce, N + 1);
+        FHeldProduce[N].CorrelationId := LHeader.CorrelationId;
+        FHeldProduce[N].Version := LVersion;
+        FHeldProduce[N].Request := LProduce;
+        Exit;
+      end;
+    finally
+      FMonitor.Leave;
+    end;
+    HandleProduce(LHeader.CorrelationId, LVersion, LProduce);
     Exit;
   end;
   if LKey <> KAFKA_API_KEY_METADATA then
@@ -354,6 +503,196 @@ begin
   SendResponse(LHeader.CorrelationId, LKey, LVersion, MetadataBody(LVersion, LTopic));
 end;
 
+function TKafkaFakeBroker.TopicNameOf(AVersion: Int16;
+  const ATopic: TKafkaProduceRequestTopicProduceData): string;
+var
+  K: Integer;
+begin
+  // Called under FMonitor.
+  if AVersion < 13 then
+    Exit(ATopic.Name);
+  for K := 0 to High(ClusterView.Topics) do
+    if ClusterView.Topics[K].TopicId.Equals(ATopic.TopicId) then
+      Exit(ClusterView.Topics[K].Name);
+  Result := '';
+end;
+
+function TKafkaFakeBroker.NextOffset(const ATopic: string; APartition: Int32): Int64;
+var
+  I: Integer;
+begin
+  // Called under FMonitor.
+  Result := 0;
+  for I := 0 to FLogCount - 1 do
+    if (FLog[I].Topic = ATopic) and (FLog[I].Partition = APartition) then
+      Result := FLog[I].Offset + 1;
+end;
+
+procedure TKafkaFakeBroker.HandleProduce(ACorrelationId: Int32; AVersion: Int16;
+  const ARequest: TKafkaProduceRequest);
+var
+  R: TKafkaProduceResponse;
+  T, P, B, K: Integer;
+  LName: string;
+  LBatches: TKafkaRecordBatchArray;
+  LTrailing: Integer;
+  LBase: Int64;
+  LPart: TKafkaProduceResponsePartitionProduceResponse;
+begin
+  R.Init;
+  SetLength(R.Responses, Length(ARequest.TopicData));
+  FMonitor.Enter;
+  try
+    for T := 0 to High(ARequest.TopicData) do
+    begin
+      R.Responses[T].Init;
+      R.Responses[T].Name := ARequest.TopicData[T].Name;
+      R.Responses[T].TopicId := ARequest.TopicData[T].TopicId;
+      LName := TopicNameOf(AVersion, ARequest.TopicData[T]);
+      SetLength(R.Responses[T].PartitionResponses, Length(ARequest.TopicData[T].PartitionData));
+      for P := 0 to High(ARequest.TopicData[T].PartitionData) do
+      begin
+        LPart.Init;
+        LPart.Index := ARequest.TopicData[T].PartitionData[P].Index;
+        if LName = '' then
+          LPart.ErrorCode := KAFKA_ERROR_UNKNOWN_TOPIC_ID
+        else if ProduceErrors > 0 then
+          LPart.ErrorCode := ProduceErrorCode
+        else
+        begin
+          LBase := NextOffset(LName, LPart.Index);
+          LPart.BaseOffset := LBase;
+          LBatches := KafkaDecodeRecordBatches(ARequest.TopicData[T].PartitionData[P].Records,
+            16 * 1024 * 1024, LTrailing);
+          for B := 0 to High(LBatches) do
+            for K := 0 to High(LBatches[B].Records) do
+            begin
+              if FLogCount = Length(FLog) then
+                SetLength(FLog, 2 * FLogCount + 16);
+              FLog[FLogCount].Topic := LName;
+              FLog[FLogCount].Partition := LPart.Index;
+              FLog[FLogCount].Offset := LBase;
+              FLog[FLogCount].Rec := LBatches[B].Records[K];
+              FLog[FLogCount].Compression := Ord(LBatches[B].Compression);
+              Inc(FLogCount);
+              Inc(LBase);
+            end;
+        end;
+        R.Responses[T].PartitionResponses[P] := LPart;
+      end;
+    end;
+    if ProduceErrors > 0 then
+      Dec(ProduceErrors);
+    FMonitor.PulseAll;
+  finally
+    FMonitor.Leave;
+  end;
+  if ARequest.Acks <> 0 then
+    SendResponse(ACorrelationId, KAFKA_API_KEY_PRODUCE, AVersion, R.ToBytes(AVersion));
+end;
+
+function TKafkaFakeBroker.ProduceCount: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FProduceCount;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.LoggedCount: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FLogCount;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.Logged(const ATopic: string; APartition: Int32): TKafkaRecordArray;
+var
+  I, N: Integer;
+begin
+  Result := nil;
+  FMonitor.Enter;
+  try
+    N := 0;
+    for I := 0 to FLogCount - 1 do
+      if (FLog[I].Topic = ATopic) and (FLog[I].Partition = APartition) then
+      begin
+        SetLength(Result, N + 1);
+        Result[N] := FLog[I].Rec;
+        Result[N].Offset := FLog[I].Offset;
+        Inc(N);
+      end;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaFakeBroker.LoggedAt(AIndex: Integer; out ATopic: string;
+  out APartition: Int32; out AOffset: Int64; out AValue: TBytes);
+begin
+  FMonitor.Enter;
+  try
+    ATopic := FLog[AIndex].Topic;
+    APartition := FLog[AIndex].Partition;
+    AOffset := FLog[AIndex].Offset;
+    AValue := FLog[AIndex].Rec.Value;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.LoggedCompression(AIndex: Integer): Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FLog[AIndex].Compression;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.WaitProduceCount(ACount: Integer; ATimeoutMs: Cardinal): Boolean;
+var
+  LDeadline, LNow: UInt64;
+begin
+  LDeadline := PcTickMs + ATimeoutMs;
+  FMonitor.Enter;
+  try
+    while FProduceCount < ACount do
+    begin
+      LNow := PcTickMs;
+      if LNow >= LDeadline then
+        Exit(False);
+      FMonitor.Wait(Cardinal(LDeadline - LNow));
+    end;
+    Result := True;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaFakeBroker.ReleaseHeldProduce;
+var
+  LHeld: THeldProduceArray;
+  I: Integer;
+begin
+  FMonitor.Enter;
+  try
+    LHeld := Copy(FHeldProduce, 0, Length(FHeldProduce));
+    FHeldProduce := nil;
+    HoldProduce := False;
+  finally
+    FMonitor.Leave;
+  end;
+  for I := 0 to High(LHeld) do
+    HandleProduce(LHeld[I].CorrelationId, LHeld[I].Version, LHeld[I].Request);
+end;
+
 procedure TKafkaFakeBroker.SendResponse(ACorrelationId: Int32; AApiKey, AVersion: Int16;
   const ABody: TBytes);
 var
@@ -386,6 +725,8 @@ begin
   N := 1;
   if OfferMetadata then
     N := 2;
+  if OfferProduce then
+    Inc(N);
   SetLength(R.ApiKeys, N);
   R.ApiKeys[0].Init;
   R.ApiKeys[0].ApiKey := KAFKA_API_KEY_API_VERSIONS;
@@ -397,6 +738,13 @@ begin
     R.ApiKeys[1].ApiKey := KAFKA_API_KEY_METADATA;
     R.ApiKeys[1].MinVersion := MetadataMin;
     R.ApiKeys[1].MaxVersion := MetadataMax;
+  end;
+  if OfferProduce then
+  begin
+    R.ApiKeys[N - 1].Init;
+    R.ApiKeys[N - 1].ApiKey := KAFKA_API_KEY_PRODUCE;
+    R.ApiKeys[N - 1].MinVersion := 3;
+    R.ApiKeys[N - 1].MaxVersion := 13;
   end;
   if AVersion < 0 then
   begin

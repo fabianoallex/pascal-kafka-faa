@@ -377,7 +377,9 @@ runs). Delphi 12 Win32 and Win64: 121 unit and 11 integration tests, 0 leaks.
   handed out as an interface (`IKafkaBrokerConnection`) so that replacing a broken one or
   closing the cluster never frees an object a caller is using.
   `KafkaErrorInvalidatesMetadata`: the codes whose Java exception is an
-  `InvalidMetadataException`, checked class by class in the 4.4.0 sources.
+  `InvalidMetadataException`, checked class by class in the 4.4.0 sources. *Corrected in the
+  producer step:* that hand check missed four codes (13 NETWORK_EXCEPTION, 80, 83, 84); the
+  list is now generated (`KafkaErrorIsInvalidMetadata`, below).
 
 **Measured:** FPC 3.2.2 Windows x64: 141 unit and 15 integration tests, 0 leaks. Linux (Docker):
 the same, and both suites 5 times in three containers at once with `--cpus=1`. Delphi 12
@@ -394,10 +396,66 @@ Win32 and Win64: 141 and 15, 0 leaks.
 - **Brokers that leave the metadata keep their connection** until it breaks or the cluster
   closes. A cluster that shrinks is rare and the cost is a socket.
 
-**Next in K1** (section 5): the producer (accumulator per partition, linger, a sender thread,
-acks, retries, sticky partition without a key, delivery callbacks and futures) and the manual
-consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and SCRAM-SHA-256. Open question 1 is answered:
-Apache 4.4.0 in CI, Confluent Cloud as the first managed broker.
+### The producer (2026-11-02)
+
+**Done:**
+
+- `Kafka.Producer`: `Send` queues and returns a future (`IKafkaDeliveryFuture`), with an
+  optional `of object` callback and a tag; batches per partition (`BatchSize`, `LingerMs`); a
+  sender thread that groups ready batches by leader into Produce requests (`MaxRequestSize`,
+  `MaxInFlightPerBroker`); acks all, 1 and 0; retries of retriable errors after
+  `RetryBackoffMs`, with a metadata refresh first when the error calls for one, bounded by
+  `Retries` and `DeliveryTimeoutMs`; a request with no answer abandoned after the request timeout
+  and sent again; batches that wait too long expire (Java's "Expiring N record(s)");
+  `BufferMemory` and `MaxBlockMs` bound what `Send` queues and how long it may block; `Flush`;
+  `Close` with a timeout; gzip. Java's parameter names and defaults
+  (`KafkaProducerParams`).
+- `TKafkaStickyPartitioner` (`Kafka.Partitioner`): records without a key go to one partition
+  until `BatchSize` bytes went there, then to another chosen at random among those with a
+  leader (KIP-480 and KIP-794).
+- `Kafka.Connection`: `Send` can fire a signal (`IKafkaSignal`) when the future is done, so the
+  sender waits on one event for every request in flight.
+- `KafkaErrorIsRetriable` and `KafkaErrorIsInvalidMetadata`, generated in `Kafka.Errors` from
+  `tools/kafka-messages/4.4.0/error-classes.tsv`: each code's Java exception and its
+  superclasses, read from the 4.4.0 sources by `tools/fetch_error_classes.py`. The cluster uses
+  the generated one in place of its hand-written list.
+
+**Measured:** FPC 3.2.2 Windows x64: 167 unit and 18 integration tests, 0 leaks. Linux (Docker):
+the same, and both suites 5 times in three containers at once with `--cpus=1`. Delphi 12
+Win32 and Win64: 167 and 18, 0 leaks. Two mutations (no muting; a retried batch put at the tail) each
+make the order test fail. Throughput, 20 000 records of 100 bytes, acks=all, heaptrc on:
+0.79 s on Linux with the broker on the same network namespace; 3 s on Windows through Docker
+Desktop's port forwarding, where a lone record also waits for the 15.6 ms timer tick (a 5 ms
+linger rounds up).
+
+**Decided while writing:**
+
+- **One batch in flight per partition** (Java does the same without idempotence, by muting the
+  partition): a retry never reorders a partition's records. Requests to one broker still go
+  several at a time (`MaxInFlightPerBroker`, for different partitions). The cost is one round trip
+  per batch per partition; the idempotent producer (K3) can lift it, as Java does.
+- **At-least-once**: a request that timed out may have been written, and its retry writes the
+  records again. The connection stays open after a request timeout (Java closes it); with one
+  batch in flight per partition and the broker answering a connection in order, that can
+  duplicate but not reorder.
+- **Send fails the future, not the call**, as Java (metadata timeout, buffer full, a record too
+  large, a partition the topic doesn't have); the callback then runs on the caller's thread.
+  Send raises only for the caller's mistakes (no topic, a negative partition, not open,
+  closed). A record too large gets `EKafkaBrokerError` with MESSAGE_TOO_LARGE, the code the
+  broker would answer.
+- **Callbacks run on the sender thread**, then the future completes: when `Flush` returns
+  True, every callback has run. `Flush` and `Close` raise when called from a callback.
+- **Futures share one monitor** (a hub the futures keep alive), not an event each: a kernel
+  object per record would not scale on Windows.
+- **Not done yet:** splitting a batch the broker refuses as too large (Java does), the adaptive
+  partitioner (weights by queue size; Java's default), reconnect backoff beyond
+  `RetryBackoffMs`, connecting to a broker without blocking the sender (the sender opens
+  connections itself, one at a time), metrics.
+
+**Next in K1** (section 5): the manual consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and
+SCRAM-SHA-256; the interoperability tests (consume with the Java client what this producer
+sent, and the reverse); the opt-in Confluent Cloud test. Open question 1 is answered: Apache
+4.4.0 in CI, Confluent Cloud as the first managed broker.
 
 ## 8. Open questions
 

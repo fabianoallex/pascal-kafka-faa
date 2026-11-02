@@ -32,6 +32,7 @@ uses
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
+  Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas';

@@ -6,13 +6,41 @@ time.
 
 **Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets), record
-batch v2 with gzip, murmur2 partitioning compatible with Java, a connection per broker and the
-cluster layer (bootstrap, metadata, leaders). The producer and consumer APIs and SASL come next;
-today records are produced and fetched with the protocol's own requests, sent to the leader the
-cluster names. The plan is
+batch v2 with gzip, murmur2 partitioning compatible with Java, a connection per broker, the
+cluster layer (bootstrap, metadata, leaders) and the producer. The consumer and SASL come next;
+today records are fetched with the protocol's own Fetch request. The plan is
 [`docs/design.md`](docs/design.md).
 
 ## What works today
+
+```pascal
+uses
+  Kafka.Types, Kafka.Producer, PascalCommon.Utf8;
+
+var
+  Params: TKafkaProducerParams;
+  Producer: TKafkaProducer;
+  Report: TKafkaDeliveryReport;
+begin
+  Params := KafkaProducerParams('localhost:9093');  // Java's defaults: acks=all, linger.ms=5...
+  Params.Cluster.Connection.UseTls := True;
+  Params.Cluster.Connection.TlsCaFile := 'ca.pem';  // a private CA; '' = the system store
+  Producer := TKafkaProducer.Create(Params);
+  try
+    Producer.Open;                                  // the bootstrap
+    // Queued at once; the partition is murmur2 of the key, as Java's.
+    Report := Producer.Send(KafkaProducerRecord('orders',
+      PcStringToUtf8Bytes('customer-42'), PcStringToUtf8Bytes('{"total": 10}'))).Get;
+    Writeln('partition ', Report.Partition, ', offset ', Report.Offset);
+    // Or a callback per record (TKafkaDeliveryEvent, on the sender thread),
+    // then Producer.Flush.
+  finally
+    Producer.Free;                                  // Close: flushes, then stops
+  end;
+end;
+```
+
+One connection to one broker, for the protocol's requests:
 
 ```pascal
 uses

@@ -45,8 +45,6 @@ uses
   Kafka.TestHelpers;
 
 type
-  TKafkaFakeBrokerArray = array of TKafkaFakeBroker;
-
   TKafkaClusterTests = class(TTestCase)
   private
     FBrokers: TKafkaFakeBrokerArray;
@@ -81,7 +79,7 @@ type
     procedure Refresh_BrokerGone_AnotherAnswers;
     procedure Close_EndsAWaitOnAnotherThread;
     procedure Close_ClosesTheConnectionsCallersHold;
-    procedure ErrorsThatInvalidateMetadata;
+    procedure ErrorPredicates_FollowJavasExceptionClasses;
     procedure BootstrapServers_BadAddress_IsRefused;
   end;
 
@@ -527,20 +525,38 @@ begin
   B := nil;
 end;
 
-procedure TKafkaClusterTests.ErrorsThatInvalidateMetadata;
+procedure TKafkaClusterTests.ErrorPredicates_FollowJavasExceptionClasses;
 const
-  YES: array[0..8] of Int16 = (3, 5, 6, 9, 56, 72, 74, 100, 103);
-  NO: array[0..6] of Int16 = (0, -1, 1, 7, 29, 75, 16);
+  // InvalidMetadataException in Kafka 4.4.0. NETWORK_EXCEPTION (13) is one
+  // too, and so are three of the leader election's (80, 83, 84).
+  INVALID: array[0..12] of Int16 = (3, 5, 6, 9, 13, 56, 72, 74, 80, 83, 84, 100, 103);
+  // RetriableException but not InvalidMetadataException: CORRUPT_MESSAGE,
+  // REQUEST_TIMED_OUT, NOT_COORDINATOR, NOT_ENOUGH_REPLICAS(_AFTER_APPEND),
+  // UNKNOWN_LEADER_EPOCH, THROTTLING_QUOTA_EXCEEDED.
+  RETRIABLE_ONLY: array[0..6] of Int16 = (2, 7, 16, 19, 20, 75, 89);
+  // Neither: NONE, UNKNOWN_SERVER_ERROR, OFFSET_OUT_OF_RANGE,
+  // MESSAGE_TOO_LARGE, TOPIC_AUTHORIZATION_FAILED, INVALID_RECORD, and a
+  // code no table has.
+  NEITHER: array[0..6] of Int16 = (0, -1, 1, 10, 29, 87, 32000);
 var
   I: Integer;
 begin
-  for I := Low(YES) to High(YES) do
-    TAssert.AssertTrue(KafkaErrorName(YES[I]), KafkaErrorInvalidatesMetadata(YES[I]));
-  // NONE, UNKNOWN_SERVER_ERROR, OFFSET_OUT_OF_RANGE, REQUEST_TIMED_OUT,
-  // TOPIC_AUTHORIZATION_FAILED, UNKNOWN_LEADER_EPOCH (retriable, but not an
-  // InvalidMetadataException), NOT_COORDINATOR (the group's).
-  for I := Low(NO) to High(NO) do
-    TAssert.AssertFalse(KafkaErrorName(NO[I]), KafkaErrorInvalidatesMetadata(NO[I]));
+  for I := Low(INVALID) to High(INVALID) do
+  begin
+    TAssert.AssertTrue(KafkaErrorName(INVALID[I]), KafkaErrorIsInvalidMetadata(INVALID[I]));
+    TAssert.AssertTrue(KafkaErrorName(INVALID[I]), KafkaErrorIsRetriable(INVALID[I]));
+  end;
+  for I := Low(RETRIABLE_ONLY) to High(RETRIABLE_ONLY) do
+  begin
+    TAssert.AssertFalse(KafkaErrorName(RETRIABLE_ONLY[I]),
+      KafkaErrorIsInvalidMetadata(RETRIABLE_ONLY[I]));
+    TAssert.AssertTrue(KafkaErrorName(RETRIABLE_ONLY[I]), KafkaErrorIsRetriable(RETRIABLE_ONLY[I]));
+  end;
+  for I := Low(NEITHER) to High(NEITHER) do
+  begin
+    TAssert.AssertFalse(KafkaErrorName(NEITHER[I]), KafkaErrorIsInvalidMetadata(NEITHER[I]));
+    TAssert.AssertFalse(KafkaErrorName(NEITHER[I]), KafkaErrorIsRetriable(NEITHER[I]));
+  end;
 end;
 
 procedure Refused(const AServers: string);

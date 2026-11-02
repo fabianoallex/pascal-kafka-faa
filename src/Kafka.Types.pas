@@ -20,7 +20,10 @@
                                  data that doesn't decompress
       EKafkaUnsupportedVersion   no version both sides know, or a field that
                                  a version can't carry
-      EKafkaBrokerError          the broker answered with an error code
+      EKafkaBrokerError          the broker answered with an error code (or
+                                 the producer refused a record with the
+                                 code the broker would give: MESSAGE_TOO_LARGE,
+                                 UNKNOWN_TOPIC_OR_PARTITION)
 
   EKafkaTls descends from EKafkaConnection on purpose, unlike amqp's and
   redis's TLS exceptions: those kept a sibling class so that catch blocks

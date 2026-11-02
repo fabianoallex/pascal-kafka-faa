@@ -29,6 +29,13 @@
   the owner closes it and opens a new one (reconnect.backoff is the
   cluster's).
 
+  Waking someone else. Send may be given a signal (IKafkaSignal) that the
+  future fires once it is done, whatever the outcome: the producer's sender
+  waits on one signal for all its requests in flight instead of on each
+  future. Signal runs on the reader thread (or on the thread that fails or
+  abandons the request), so it must be quick and must not raise; the
+  library's own signals only set an event (TKafkaEventSignal).
+
   Requests with no answer. A Produce with acks=0 gets none from the broker:
   SendOneWay writes it with a correlation id of its own but registers no
   future, so nothing waits and nothing is left in the table.
@@ -113,6 +120,25 @@ type
     TlsHandshakeTimeoutMs: Cardinal;
   end;
 
+  { Fired by a response future once it is done (the unit's header). }
+  IKafkaSignal = interface
+    ['{3C6E1F0B-8A47-4D2E-9B15-7F0A2C4E6D93}']
+    procedure Signal;
+  end;
+
+  { An IKafkaSignal over an auto-reset event: Signal sets it, WaitFor
+    returns once it was set since the last WaitFor (or on the timeout). }
+  TKafkaEventSignal = class(TInterfacedObject, IKafkaSignal)
+  private
+    FEvent: TEvent;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Signal;
+    /// True when the signal was set.
+    function WaitFor(ATimeoutMs: Cardinal): Boolean;
+  end;
+
   { The answer to one request, filled by the reader thread. }
   IKafkaResponseFuture = interface
     ['{6B0C1A57-3E1B-4B7E-9F55-2C1E4B2B9A61}']
@@ -141,8 +167,10 @@ type
       FBody: TBytes;
       FErrorClass: EKafkaClass;
       FErrorMessage: string;
+      FNotify: IKafkaSignal;
     public
-      constructor Create(AApiKey, AApiVersion, AResponseHeaderVersion: Int16);
+      constructor Create(AApiKey, AApiVersion, AResponseHeaderVersion: Int16;
+        const ANotify: IKafkaSignal);
       destructor Destroy; override;
       procedure Complete(const ABody: TBytes);
       procedure Fail(AClass: EKafkaClass; const AMessage: string);
@@ -215,7 +243,10 @@ type
 
     /// Writes a request (ABody: the encoded body of AApiKey at AApiVersion)
     /// and returns its future at once. Thread-safe.
-    function Send(AApiKey, AApiVersion: Int16; const ABody: TBytes): IKafkaResponseFuture;
+    function Send(AApiKey, AApiVersion: Int16; const ABody: TBytes): IKafkaResponseFuture; overload;
+    /// The same, firing ANotify once the future is done (nil: none).
+    function Send(AApiKey, AApiVersion: Int16; const ABody: TBytes;
+      const ANotify: IKafkaSignal): IKafkaResponseFuture; overload;
     /// Send, then wait up to RequestTimeoutMs; the response's body.
     function Request(AApiKey, AApiVersion: Int16; const ABody: TBytes): TBytes; overload;
     /// The same with a deadline of its own (Fetch adds its MaxWaitMs).
@@ -296,12 +327,37 @@ begin
     Result := AId + 1;
 end;
 
+{ TKafkaEventSignal }
+
+constructor TKafkaEventSignal.Create;
+begin
+  inherited Create;
+  FEvent := TEvent.Create(nil, False, False, '');
+end;
+
+destructor TKafkaEventSignal.Destroy;
+begin
+  FEvent.Free;
+  inherited;
+end;
+
+procedure TKafkaEventSignal.Signal;
+begin
+  FEvent.SetEvent;
+end;
+
+function TKafkaEventSignal.WaitFor(ATimeoutMs: Cardinal): Boolean;
+begin
+  Result := FEvent.WaitFor(ATimeoutMs) = wrSignaled;
+end;
+
 { TKafkaConnection.TPending }
 
 constructor TKafkaConnection.TPending.Create(AApiKey, AApiVersion,
-  AResponseHeaderVersion: Int16);
+  AResponseHeaderVersion: Int16; const ANotify: IKafkaSignal);
 begin
   inherited Create;
+  FNotify := ANotify;
   FApiKey := AApiKey;
   FApiVersion := AApiVersion;
   FResponseHeaderVersion := AResponseHeaderVersion;
@@ -321,6 +377,8 @@ begin
   FBody := ABody;
   FDone := True;
   FEvent.SetEvent;
+  if FNotify <> nil then
+    FNotify.Signal;
 end;
 
 procedure TKafkaConnection.TPending.Fail(AClass: EKafkaClass; const AMessage: string);
@@ -331,6 +389,8 @@ begin
   FErrorMessage := AMessage;
   FDone := True;
   FEvent.SetEvent;
+  if FNotify <> nil then
+    FNotify.Signal;
 end;
 
 function TKafkaConnection.TPending.CorrelationId: Int32;
@@ -586,6 +646,12 @@ end;
 
 function TKafkaConnection.Send(AApiKey, AApiVersion: Int16;
   const ABody: TBytes): IKafkaResponseFuture;
+begin
+  Result := Send(AApiKey, AApiVersion, ABody, nil);
+end;
+
+function TKafkaConnection.Send(AApiKey, AApiVersion: Int16; const ABody: TBytes;
+  const ANotify: IKafkaSignal): IKafkaResponseFuture;
 var
   LPending: TPending;
   LHeader: TKafkaRequestHeader;
@@ -594,7 +660,7 @@ var
 begin
   LFlexible := KafkaApiIsFlexible(AApiKey, AApiVersion);
   LPending := TPending.Create(AApiKey, AApiVersion,
-    KafkaResponseHeaderVersion(AApiKey, LFlexible));
+    KafkaResponseHeaderVersion(AApiKey, LFlexible), ANotify);
   Result := LPending; // the caller's reference
   LHeader := Default(TKafkaRequestHeader);
   LHeader.ApiKey := AApiKey;

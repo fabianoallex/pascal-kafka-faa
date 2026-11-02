@@ -25,7 +25,7 @@
   becomes tracked the first time Topic, Leader or Refresh names it. The
   snapshot is refreshed when it is older than MetadataMaxAgeMs or after
   Invalidate (a caller saw NOT_LEADER_OR_FOLLOWER or the like:
-  KafkaErrorInvalidatesMetadata); one refresh runs at a time.
+  KafkaErrorIsInvalidMetadata, in Kafka.Errors); one refresh runs at a time.
 
   Waiting. Topic and Leader wait, up to MaxBlockMs (Java's max.block.ms), for
   a topic to exist with partitions and for a partition to have a leader,
@@ -166,7 +166,6 @@ type
     function TryMetadata(const ABroker: IKafkaBrokerConnection; const ARequest: TKafkaMetadataRequest;
       var AResponse: TKafkaMetadataResponse; var AErrors: string): Boolean;
     function DoRefresh: IKafkaClusterMetadata;
-    function NeedsRefresh: Boolean;
     function WaitBackoff(ADeadline: UInt64): Boolean;
     function MaxBlockMs: Cardinal;
   public
@@ -188,6 +187,10 @@ type
     function Refresh(const ATopics: array of string): IKafkaClusterMetadata;
     /// The next Topic or Leader refreshes first.
     procedure Invalidate;
+    /// Invalidated, or the snapshot is older than MetadataMaxAgeMs (or there
+    /// is none): what Topic and Leader check before using it. The
+    /// producer's sender refreshes on it, in the background.
+    function NeedsRefresh: Boolean;
     /// The topic once it exists with partitions (tracking it, refreshing
     /// when stale or invalidated), waiting up to MaxBlockMs. EKafkaTimeout,
     /// or EKafkaBrokerError for an error that waiting won't cure.
@@ -208,13 +211,6 @@ type
 
 /// BootstrapServers given, every other field at its default (plain TCP).
 function KafkaClusterParams(const ABootstrapServers: string): TKafkaClusterParams;
-
-/// The error codes after which a client refreshes metadata before retrying:
-/// those whose Java exception is an InvalidMetadataException (Kafka 4.4.0:
-/// UNKNOWN_TOPIC_OR_PARTITION, LEADER_NOT_AVAILABLE, NOT_LEADER_OR_FOLLOWER,
-/// REPLICA_NOT_AVAILABLE, KAFKA_STORAGE_ERROR, LISTENER_NOT_FOUND,
-/// FENCED_LEADER_EPOCH, UNKNOWN_TOPIC_ID, INCONSISTENT_TOPIC_ID).
-function KafkaErrorInvalidatesMetadata(AErrorCode: Int16): Boolean;
 
 implementation
 
@@ -258,24 +254,6 @@ begin
   Result.BootstrapServers := ABootstrapServers;
   Result.Connection := KafkaConnectionParams('', 9092);
   Result.AllowAutoTopicCreation := True;
-end;
-
-function KafkaErrorInvalidatesMetadata(AErrorCode: Int16): Boolean;
-begin
-  case AErrorCode of
-    KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION,
-    KAFKA_ERROR_LEADER_NOT_AVAILABLE,
-    KAFKA_ERROR_NOT_LEADER_OR_FOLLOWER,
-    KAFKA_ERROR_REPLICA_NOT_AVAILABLE,
-    KAFKA_ERROR_KAFKA_STORAGE_ERROR,
-    KAFKA_ERROR_LISTENER_NOT_FOUND,
-    KAFKA_ERROR_FENCED_LEADER_EPOCH,
-    KAFKA_ERROR_UNKNOWN_TOPIC_ID,
-    KAFKA_ERROR_INCONSISTENT_TOPIC_ID:
-      Result := True;
-  else
-    Result := False;
-  end;
 end;
 
 { TKafkaTopicInfo }
@@ -895,7 +873,7 @@ begin
       LLastError := KafkaErrorText(Result.ErrorCode);
       if Result.IsReady then
         Exit;
-      if (Result.ErrorCode <> 0) and not KafkaErrorInvalidatesMetadata(Result.ErrorCode) then
+      if (Result.ErrorCode <> 0) and not KafkaErrorIsInvalidMetadata(Result.ErrorCode) then
         raise EKafkaBrokerError.Create(Result.ErrorCode, Format('Topic %s: %s',
           [AName, KafkaErrorText(Result.ErrorCode)]));
     end;
@@ -918,7 +896,7 @@ begin
       raise EArgumentOutOfRangeException.CreateFmt('Topic %s has %d partitions; there is no %d',
         [ATopic, Length(LTopic.Partitions), APartition]);
     P := LTopic.Partitions[APartition];
-    if (P.LeaderId >= 0) and not KafkaErrorInvalidatesMetadata(P.ErrorCode) then
+    if (P.LeaderId >= 0) and not KafkaErrorIsInvalidMetadata(P.ErrorCode) then
       Exit(Broker(P.LeaderId));
     Invalidate;
   until not WaitBackoff(LDeadline);

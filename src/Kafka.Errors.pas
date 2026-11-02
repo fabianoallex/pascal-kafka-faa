@@ -8,7 +8,10 @@
   (tools/kafka-messages/4.4.0). Do not edit by hand.
 
   The descriptions are Java's, in English, so that a message logged here reads
-  like one logged by any other client. }
+  like one logged by any other client. The two predicates follow the class
+  of each code's Java exception, from the same tag's sources
+  (tools/kafka-messages/4.4.0/error-classes.tsv): RetriableException and
+  InvalidMetadataException (which is retriable too). }
 
 interface
 
@@ -162,6 +165,13 @@ function KafkaErrorName(ACode: Int16): string;
 function KafkaErrorDescription(ACode: Int16): string;
 /// 'NAME (code): description', for exception messages.
 function KafkaErrorText(ACode: Int16): string;
+/// The code's Java exception is a RetriableException: the same request may
+/// succeed if sent again. False for NONE and for an unknown code.
+function KafkaErrorIsRetriable(ACode: Int16): Boolean;
+/// The code's Java exception is an InvalidMetadataException: the client's
+/// metadata is stale (a leader moved, a topic was created or deleted), and a
+/// refresh comes before the retry.
+function KafkaErrorIsInvalidMetadata(ACode: Int16): Boolean;
 
 implementation
 
@@ -510,6 +520,69 @@ begin
     Result := Format('%s (%d)', [KafkaErrorName(ACode), ACode])
   else
     Result := Format('%s (%d): %s', [KafkaErrorName(ACode), ACode, LDescription]);
+end;
+
+function KafkaErrorIsRetriable(ACode: Int16): Boolean;
+begin
+  case ACode of
+    KAFKA_ERROR_CORRUPT_MESSAGE,
+    KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+    KAFKA_ERROR_LEADER_NOT_AVAILABLE,
+    KAFKA_ERROR_NOT_LEADER_OR_FOLLOWER,
+    KAFKA_ERROR_REQUEST_TIMED_OUT,
+    KAFKA_ERROR_REPLICA_NOT_AVAILABLE,
+    KAFKA_ERROR_NETWORK_EXCEPTION,
+    KAFKA_ERROR_COORDINATOR_LOAD_IN_PROGRESS,
+    KAFKA_ERROR_COORDINATOR_NOT_AVAILABLE,
+    KAFKA_ERROR_NOT_COORDINATOR,
+    KAFKA_ERROR_NOT_ENOUGH_REPLICAS,
+    KAFKA_ERROR_NOT_ENOUGH_REPLICAS_AFTER_APPEND,
+    KAFKA_ERROR_NOT_CONTROLLER,
+    KAFKA_ERROR_CONCURRENT_TRANSACTIONS,
+    KAFKA_ERROR_KAFKA_STORAGE_ERROR,
+    KAFKA_ERROR_FETCH_SESSION_ID_NOT_FOUND,
+    KAFKA_ERROR_INVALID_FETCH_SESSION_EPOCH,
+    KAFKA_ERROR_LISTENER_NOT_FOUND,
+    KAFKA_ERROR_FENCED_LEADER_EPOCH,
+    KAFKA_ERROR_UNKNOWN_LEADER_EPOCH,
+    KAFKA_ERROR_OFFSET_NOT_AVAILABLE,
+    KAFKA_ERROR_PREFERRED_LEADER_NOT_AVAILABLE,
+    KAFKA_ERROR_ELIGIBLE_LEADERS_NOT_AVAILABLE,
+    KAFKA_ERROR_ELECTION_NOT_NEEDED,
+    KAFKA_ERROR_UNSTABLE_OFFSET_COMMIT,
+    KAFKA_ERROR_THROTTLING_QUOTA_EXCEEDED,
+    KAFKA_ERROR_UNKNOWN_TOPIC_ID,
+    KAFKA_ERROR_INCONSISTENT_TOPIC_ID,
+    KAFKA_ERROR_FETCH_SESSION_TOPIC_ID_ERROR,
+    KAFKA_ERROR_SHARE_SESSION_NOT_FOUND,
+    KAFKA_ERROR_INVALID_SHARE_SESSION_EPOCH,
+    KAFKA_ERROR_SHARE_SESSION_LIMIT_REACHED:
+      Result := True;
+  else
+    Result := False;
+  end;
+end;
+
+function KafkaErrorIsInvalidMetadata(ACode: Int16): Boolean;
+begin
+  case ACode of
+    KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION,
+    KAFKA_ERROR_LEADER_NOT_AVAILABLE,
+    KAFKA_ERROR_NOT_LEADER_OR_FOLLOWER,
+    KAFKA_ERROR_REPLICA_NOT_AVAILABLE,
+    KAFKA_ERROR_NETWORK_EXCEPTION,
+    KAFKA_ERROR_KAFKA_STORAGE_ERROR,
+    KAFKA_ERROR_LISTENER_NOT_FOUND,
+    KAFKA_ERROR_FENCED_LEADER_EPOCH,
+    KAFKA_ERROR_PREFERRED_LEADER_NOT_AVAILABLE,
+    KAFKA_ERROR_ELIGIBLE_LEADERS_NOT_AVAILABLE,
+    KAFKA_ERROR_ELECTION_NOT_NEEDED,
+    KAFKA_ERROR_UNKNOWN_TOPIC_ID,
+    KAFKA_ERROR_INCONSISTENT_TOPIC_ID:
+      Result := True;
+  else
+    Result := False;
+  end;
 end;
 
 end.

@@ -27,6 +27,12 @@
   use (a new name each run: the broker keeps them), and a keyed record sent
   to the partition murmur2 gives its key, through that partition's leader.
 
+  The producer (Kafka.Producer): keyed records, gzip, acks=all, each in the
+  partition murmur2 gives its key and fetched back from the offset its
+  report gave; records without a key over TLS with acks=1, all on one
+  sticky partition; and 20 000 records through Flush, every one delivered,
+  in order within each partition.
+
   The broker's address: KAFKA_TEST_HOST (default localhost), KAFKA_TEST_PORT
   (9092) and KAFKA_TEST_TLS_PORT (9093). The certificates: KafkaTestPkiDir.
 
@@ -61,6 +67,7 @@ uses
   Kafka.Connection,
   Kafka.Partitioner,
   Kafka.Cluster,
+  Kafka.Producer,
   PascalCommon.Utf8,
   PascalCommon.Tracing,
   Kafka.TestHelpers;
@@ -71,6 +78,7 @@ type
   private
     FConnection: TKafkaConnection;
     FCluster: TKafkaCluster;
+    FProducer: TKafkaProducer;
     function Plain: TKafkaConnectionParams;
     function Tls(ABackend: TPcTlsBackend; const ACaFile: string): TKafkaConnectionParams;
     function Open(const AParams: TKafkaConnectionParams): TKafkaConnection;
@@ -80,6 +88,9 @@ type
     function OpenSslMissing(const AParams: TKafkaConnectionParams): Boolean;
     procedure ProduceAndFetchBack(ACodec: TKafkaCompression);
     function NewCluster(const ABootstrap: string; ATls: Boolean): TKafkaCluster;
+    function NewProducer(ATls: Boolean; AAcks: TKafkaAcks;
+      ACodec: TKafkaCompression): TKafkaProducer;
+    function FetchRecordAt(APartition: Int32; AOffset: Int64; out ACodec: TKafkaCompression): TKafkaRecord;
   public
     [TearDown] procedure TearDown;
     [Test] procedure Plaintext_NegotiatesApiVersionsWithTheBroker;
@@ -97,6 +108,9 @@ type
     [Test] procedure Cluster_Tls_LeaderConnectionsUseTls;
     [Test] procedure Cluster_WaitsForAnAutoCreatedTopic;
     [Test] procedure Cluster_KeyedRecord_GoesToItsPartitionsLeader;
+    [Test] procedure Producer_KeyedGzip_InMurmur2Partitions_FetchedBack;
+    [Test] procedure Producer_Tls_AcksLeader_NoKey_OneStickyPartition;
+    [Test] procedure Producer_ManyRecords_AllDelivered_InOrder;
   end;
 
 implementation
@@ -291,6 +305,7 @@ end;
 
 procedure TKafkaIntegrationTests.TearDown;
 begin
+  FreeAndNil(FProducer);
   FreeAndNil(FCluster);
   FreeAndNil(FConnection);
 end;
@@ -649,6 +664,169 @@ begin
   TAssert.AssertEquals(P.BaseOffset, Batches[0].BaseOffset);
   TAssert.AssertTrue(PcTryUtf8BytesToString(Batches[0].Records[0].Key, Value));
   TAssert.AssertEquals(Key, Value);
+end;
+
+function TKafkaIntegrationTests.NewProducer(ATls: Boolean; AAcks: TKafkaAcks;
+  ACodec: TKafkaCompression): TKafkaProducer;
+var
+  P: TKafkaProducerParams;
+begin
+  if ATls then
+  begin
+    P := KafkaProducerParams(Format('%s:%d', [TestHost, TestTlsPort]));
+    P.Cluster.Connection := Tls(tbDefault, 'ca_cert.pem');
+  end
+  else
+  begin
+    P := KafkaProducerParams(Format('%s:%d', [TestHost, TestPort]));
+    P.Cluster.Connection := Plain;
+  end;
+  P.Cluster.MaxBlockMs := 30000;
+  P.Acks := AAcks;
+  P.Compression := ACodec;
+  FreeAndNil(FProducer);
+  FProducer := TKafkaProducer.Create(P);
+  FProducer.Open;
+  Result := FProducer;
+end;
+
+function TKafkaIntegrationTests.FetchRecordAt(APartition: Int32; AOffset: Int64;
+  out ACodec: TKafkaCompression): TKafkaRecord;
+var
+  T: TKafkaTopicInfo;
+  L: IKafkaBrokerConnection;
+  Fetched: TKafkaFetchResponse;
+  Batches: TKafkaRecordBatchArray;
+  Trailing, B, K: Integer;
+begin
+  T := FProducer.Cluster.Topic(TOPIC);
+  L := FProducer.Cluster.Leader(TOPIC, APartition);
+  Fetched := L.Connection.Fetch(FetchRequest(T.TopicId, AOffset, 0, APartition));
+  TAssert.AssertEquals(0, Integer(Fetched.Responses[0].Partitions[0].ErrorCode));
+  Batches := KafkaDecodeRecordBatches(Fetched.Responses[0].Partitions[0].Records, 1 shl 24,
+    Trailing);
+  // The batch holding AOffset may start before it.
+  for B := 0 to High(Batches) do
+    for K := 0 to High(Batches[B].Records) do
+      if Batches[B].Records[K].Offset = AOffset then
+      begin
+        ACodec := Batches[B].Compression;
+        Exit(Batches[B].Records[K]);
+      end;
+  TAssert.Fail(Format('No record at offset %d of partition %d', [AOffset, APartition]));
+  Result := Default(TKafkaRecord);
+end;
+
+procedure TKafkaIntegrationTests.Producer_KeyedGzip_InMurmur2Partitions_FetchedBack;
+const
+  N = 60;
+var
+  M, Key: string;
+  F: array[0..N - 1] of IKafkaDeliveryFuture;
+  R: array[0..N - 1] of TKafkaDeliveryReport;
+  Rec: TKafkaProducerRecord;
+  Got: TKafkaRecord;
+  Codec: TKafkaCompression;
+  Last: array[0..2] of Int64;
+  I: Integer;
+  Text: string;
+begin
+  NewProducer(False, kaAll, kcGzip);
+  M := Marker;
+  for I := 0 to N - 1 do
+  begin
+    Rec := KafkaProducerRecord(TOPIC, PcStringToUtf8Bytes(M + '-key-' + IntToStr(I mod 9)),
+      PcStringToUtf8Bytes('São Paulo ' + M + ' ' + IntToStr(I)));
+    SetLength(Rec.Headers, 1);
+    Rec.Headers[0].Key := 'n';
+    Rec.Headers[0].Value := PcStringToUtf8Bytes(IntToStr(I));
+    F[I] := FProducer.Send(Rec);
+  end;
+  TAssert.AssertTrue('flushed', FProducer.Flush(60000));
+  for I := 0 to 2 do
+    Last[I] := -1;
+  for I := 0 to N - 1 do
+  begin
+    R[I] := F[I].Get(0);
+    Key := M + '-key-' + IntToStr(I mod 9);
+    TAssert.AssertEquals(KafkaPartitionForKey(PcStringToUtf8Bytes(Key), 3), R[I].Partition);
+    TAssert.AssertTrue('in order within the partition', R[I].Offset > Last[R[I].Partition]);
+    Last[R[I].Partition] := R[I].Offset;
+  end;
+  for I := 0 to N - 1 do
+  begin
+    Got := FetchRecordAt(R[I].Partition, R[I].Offset, Codec);
+    TAssert.AssertTrue('gzip', Codec = kcGzip);
+    TAssert.AssertTrue(PcTryUtf8BytesToString(Got.Key, Text));
+    TAssert.AssertEquals(M + '-key-' + IntToStr(I mod 9), Text);
+    TAssert.AssertTrue(PcTryUtf8BytesToString(Got.Value, Text));
+    TAssert.AssertEquals('São Paulo ' + M + ' ' + IntToStr(I), Text);
+    TAssert.AssertEquals('n', Got.Headers[0].Key);
+    TAssert.AssertTrue(PcTryUtf8BytesToString(Got.Headers[0].Value, Text));
+    TAssert.AssertEquals(IntToStr(I), Text);
+  end;
+end;
+
+procedure TKafkaIntegrationTests.Producer_Tls_AcksLeader_NoKey_OneStickyPartition;
+const
+  N = 20;
+var
+  M, Text: string;
+  F: array[0..N - 1] of IKafkaDeliveryFuture;
+  R: TKafkaDeliveryReport;
+  First: TKafkaDeliveryReport;
+  Got: TKafkaRecord;
+  Codec: TKafkaCompression;
+  I: Integer;
+begin
+  NewProducer(True, kaLeader, kcNone);
+  M := Marker;
+  for I := 0 to N - 1 do
+    F[I] := FProducer.Send(KafkaProducerRecord(TOPIC, PcStringToUtf8Bytes(M + ' ' + IntToStr(I))));
+  TAssert.AssertTrue(FProducer.Flush(60000));
+  First := F[0].Get(0);
+  for I := 1 to N - 1 do
+  begin
+    R := F[I].Get(0);
+    // 20 small records are far from BatchSize: one partition for all.
+    TAssert.AssertEquals('sticky', First.Partition, R.Partition);
+    TAssert.AssertTrue(R.Offset > First.Offset);
+  end;
+  TAssert.AssertTrue(FProducer.Cluster.Leader(TOPIC, First.Partition).Connection.Params.UseTls);
+  Got := FetchRecordAt(First.Partition, First.Offset, Codec);
+  TAssert.AssertTrue('a null key', Got.KeyIsNull);
+  TAssert.AssertTrue(PcTryUtf8BytesToString(Got.Value, Text));
+  TAssert.AssertEquals(M + ' 0', Text);
+end;
+
+procedure TKafkaIntegrationTests.Producer_ManyRecords_AllDelivered_InOrder;
+const
+  N = 20000;
+var
+  F: array of IKafkaDeliveryFuture;
+  Value: TBytes;
+  R: TKafkaDeliveryReport;
+  Last: array[0..2] of Int64;
+  I: Integer;
+begin
+  NewProducer(False, kaAll, kcNone);
+  Value := PcStringToUtf8Bytes(StringOfChar('v', 100));
+  SetLength(F, N);
+  for I := 0 to N - 1 do
+    F[I] := FProducer.Send(KafkaProducerRecord(TOPIC, PcStringToUtf8Bytes(IntToStr(I mod 101)),
+      Value));
+  TAssert.AssertTrue('flushed', FProducer.Flush(120000));
+  TAssert.AssertEquals(0, FProducer.PendingCount);
+  for I := 0 to 2 do
+    Last[I] := -1;
+  for I := 0 to N - 1 do
+  begin
+    R := F[I].Get(0);
+    TAssert.AssertTrue(R.Offset > Last[R.Partition]);
+    Last[R.Partition] := R.Offset;
+  end;
+  TAssert.AssertTrue('batched: far fewer requests than records', FProducer.RequestsSent < N div 20);
+  F := nil;
 end;
 
 initialization

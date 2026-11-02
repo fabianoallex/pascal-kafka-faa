@@ -79,6 +79,7 @@ type
     procedure Metadata_AnswersTheTopicAsked;
     procedure ManyInFlight_AnsweredInReverse_EachReachesItsCaller;
     procedure RequestTimeout_RaisesTimeoutAndTheConnectionStaysUsable;
+    procedure Signal_FiresOnAnswerFailureAndAbandon;
     procedure BrokerGoesAway_FailsInFlightAndBreaks;
     procedure OversizedResponse_BreaksWithProtocolError;
     procedure Close_FailsInFlightAndIsIdempotent;
@@ -256,6 +257,40 @@ begin
   TAssert.AssertEquals(0, FConnection.InFlightCount);
   R := FConnection.Metadata(MetadataFor('after'));
   TAssert.AssertEquals('after', R.Topics[0].Name);
+end;
+
+procedure TKafkaConnectionTests.Signal_FiresOnAnswerFailureAndAbandon;
+var
+  Signal: TKafkaEventSignal;
+  Keep: IKafkaSignal;
+  V: Int16;
+  A, B: IKafkaResponseFuture;
+begin
+  Signal := TKafkaEventSignal.Create;
+  Keep := Signal;
+  Connect;
+  V := FConnection.NegotiatedVersion(KAFKA_API_KEY_METADATA);
+  // Answered.
+  A := FConnection.Send(KAFKA_API_KEY_METADATA, V, MetadataFor('a').ToBytes(V), Keep);
+  TAssert.AssertTrue('answered', Signal.WaitFor(WAIT_MS));
+  TAssert.AssertTrue(A.IsDone);
+  TAssert.AssertFalse('auto-reset', Signal.WaitFor(0));
+  // Abandoned.
+  FBroker.HoldMetadata := True;
+  A := FConnection.Send(KAFKA_API_KEY_METADATA, V, MetadataFor('b').ToBytes(V), Keep);
+  TAssert.AssertTrue(FBroker.WaitHeld(1, WAIT_MS));
+  TAssert.AssertFalse(Signal.WaitFor(0));
+  FConnection.Abandon(A);
+  TAssert.AssertTrue('abandoned', Signal.WaitFor(0));
+  // Failed: the broker goes away.
+  B := FConnection.Send(KAFKA_API_KEY_METADATA, V, MetadataFor('c').ToBytes(V), Keep);
+  TAssert.AssertTrue(FBroker.WaitHeld(2, WAIT_MS));
+  FBroker.DropClient;
+  TAssert.AssertTrue('failed', Signal.WaitFor(WAIT_MS));
+  TAssert.AssertTrue(B.IsDone);
+  A := nil;
+  B := nil;
+  Keep := nil;
 end;
 
 procedure TKafkaConnectionTests.BrokerGoesAway_FailsInFlightAndBreaks;

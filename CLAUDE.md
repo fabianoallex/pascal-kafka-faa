@@ -66,7 +66,7 @@ non-ASCII values on purpose (`'São'`).
 
 | Files | Generator | From |
 |---|---|---|
-| `src/Kafka.Messages.*.pas`, `src/Kafka.Errors.pas` | `python tools/gen_messages.py` | `tools/kafka-messages/<tag>/*.json` and `Errors.java` |
+| `src/Kafka.Messages.*.pas`, `src/Kafka.Errors.pas` | `python tools/gen_messages.py` | `tools/kafka-messages/<tag>/*.json`, `Errors.java` and `error-classes.tsv` |
 | `tests/Unit/Kafka.TestCaptures.pas`, `tests/Unit/Kafka.TestPartitions.pas` | `python tools/gen_test_captures.py` | `tests/data/captures-<tag>.jsonl`, `tests/data/partitions-java-<tag>.tsv` ([`docs/codec-captures.md`](docs/codec-captures.md)) |
 | `tests/*/fpc/*Tests.pas` | `python tools/gen_fpc_mirror.py` | the DUnitX masters in `tests/*/` |
 
@@ -76,6 +76,10 @@ first).
 - **A new API** = copy its `*Request.json`/`*Response.json` from the same Kafka tag into
   `tools/kafka-messages/<tag>/`, add its name to `APIS` in `gen_messages.py`, run it, add the new
   unit to the `.lpk`, the `.pas` package file and both `.dpr`. Then capture it (the doc above).
+- **Retriable or not, refresh or not** comes from each error's Java exception class
+  (`KafkaErrorIsRetriable`, `KafkaErrorIsInvalidMetadata`), never from a hand-written list:
+  `error-classes.tsv` is written by `python tools/fetch_error_classes.py` (the only tool that
+  needs the network: it reads the classes from GitHub at the tag). Run it with each new tag.
 - **The Kafka tag is 4.4.0** (`KAFKA_TAG` in `gen_messages.py`, decided 2026-11-02: the newest
   stable 4.x that day). The broker in `docker/` runs the same tag.
 - `records` fields are raw bytes (nullable, null by default): the batches inside are
@@ -98,8 +102,10 @@ first).
   Without the registration both runners compile it and run none of it, silently.
 - **Unit suite**: no network beyond loopback. `Kafka.ConnectionTests` runs against an
   in-process fake broker (`Kafka.TestFakeBroker`), plain and TLS (pascal-common-faa's
-  `tests/pki`); `Kafka.ClusterTests` against several, given the same `ClusterView`. The fake
-  serves one connection at a time: a test that needs two to the same broker hangs.
+  `tests/pki`); `Kafka.ClusterTests` and `Kafka.ProducerTests` against several, given the same
+  `ClusterView` (`KafkaFakeClusterView`, `KafkaFakeUseView`). The fake also answers Produce,
+  keeps a log per partition, and can fail, hold or drop Produce requests. It serves one
+  connection at a time: a test that needs two to the same broker hangs.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI):
   `docker compose -f docker/docker-compose.yml up -d`.
@@ -158,3 +164,10 @@ first).
 11. **The broker cuts a Fetch at the byte limit inside a batch** (measured: `fetch-v18-cut`, 2
     whole batches and 58 bytes of the third). `KafkaDecodeRecordBatches` returns the whole ones
     and the size of the tail.
+12. **A list of error codes checked by hand against Java's exception classes missed four**
+    (NETWORK_EXCEPTION, 80, 83, 84 extend `InvalidMetadataException` too). Such lists are
+    generated now (`error-classes.tsv`, "Generated code" above).
+13. **On Windows a short wait lasts a timer tick**: `TEvent.WaitFor(5)` returns after ~15.6 ms,
+    so a lone record with the default `LingerMs` of 5 takes ~15 ms to go (measured). Through
+    Docker Desktop's port forwarding the broker's round trip is also several times Linux's
+    (20 000 records: 3 s against 0.79 s). Measure throughput on Linux.

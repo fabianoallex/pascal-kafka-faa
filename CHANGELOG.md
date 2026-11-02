@@ -42,10 +42,24 @@ the rest of K1 (cluster, producer, consumer, SASL, gzip).
 - `Kafka.Partitioner`: murmur2 and the partition of a key, as Java's producer chooses it.
 - `Kafka.Cluster`: bootstrap, metadata snapshots, the tracked topics refreshed when stale or
   invalidated, waits for a topic and for a partition's leader (`MaxBlockMs`), one connection
-  per broker (`IKafkaBrokerConnection`), `KafkaErrorInvalidatesMetadata`.
-- Tests: 141 unit tests (codecs and record batches against 130 frames captured from a Kafka
+  per broker (`IKafkaBrokerConnection`), `NeedsRefresh`.
+- `Kafka.Producer`: `Send` with a future and an optional callback, batches per partition
+  (`BatchSize`, `LingerMs`), a sender thread, acks all/1/0, retries bounded by `Retries` and
+  `DeliveryTimeoutMs`, one batch in flight per partition (order kept through retries),
+  `BufferMemory` and `MaxBlockMs`, `Flush`, `Close` with a timeout, gzip; Java's defaults
+  (`KafkaProducerParams`).
+- `TKafkaStickyPartitioner`: the partition of records without a key (KIP-480, KIP-794).
+- `IKafkaSignal` and `TKafkaEventSignal`: `TKafkaConnection.Send` can fire a signal when the
+  future is done.
+- `KafkaErrorIsRetriable`, `KafkaErrorIsInvalidMetadata` (generated from each code's Java
+  exception class, `tools/fetch_error_classes.py`). They replace
+  `KafkaErrorInvalidatesMetadata`, whose hand-written list missed NETWORK_EXCEPTION and three
+  leader-election codes.
+- Tests: 167 unit tests (codecs and record batches against 130 frames captured from a Kafka
   4.4.0 broker and the Java client, gzip against Python's, murmur2 against Kafka's vectors and
-  the Java producer's partitions, fake brokers in process, plain and TLS) and 15 integration
-  tests against `docker/docker-compose.yml` (plaintext and TLS with a private CA, every TLS
-  backend; records produced and fetched back, gzip, acks=0; the cluster's bootstrap, leaders,
-  an auto-created topic, a keyed record through its partition's leader).
+  the Java producer's partitions, fake brokers in process, plain and TLS, the producer against
+  fake brokers that fail, hold or drop requests) and 18 integration tests against
+  `docker/docker-compose.yml` (plaintext and TLS with a private CA, every TLS backend; records
+  produced and fetched back, gzip, acks=0; the cluster's bootstrap, leaders, an auto-created
+  topic, a keyed record through its partition's leader; the producer's keyed, sticky and bulk
+  records fetched back).

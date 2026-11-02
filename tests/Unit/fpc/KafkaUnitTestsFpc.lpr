@@ -31,6 +31,7 @@ uses
   Kafka.RecordBatchTests,
   Kafka.PartitionerTests,
   Kafka.ClusterTests,
+  Kafka.ProducerTests,
   Kafka.ConnectionTests;
 
 var

@@ -85,6 +85,7 @@
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
         <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
         <DCCReference Include="..\Unit\Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="..\Unit\Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.IntegrationTests.pas"/>
