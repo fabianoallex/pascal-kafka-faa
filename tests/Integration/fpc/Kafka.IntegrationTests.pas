@@ -27,6 +27,12 @@
   record carries a marker of its own, so the tests don't depend on what
   earlier runs left in the topic.
 
+  The cluster (Kafka.Cluster): a bootstrap past an address that isn't Kafka
+  (the TLS port, in plaintext), the leaders of the topic's partitions on one
+  connection per broker, the same over TLS, a topic auto-created on first
+  use (a new name each run: the broker keeps them), and a keyed record sent
+  to the partition murmur2 gives its key, through that partition's leader.
+
   The broker's address: KAFKA_TEST_HOST (default localhost), KAFKA_TEST_PORT
   (9092) and KAFKA_TEST_TLS_PORT (9093). The certificates: KafkaTestPkiDir.
 
@@ -58,6 +64,8 @@ uses
   Kafka.Compression,
   Kafka.Protocol.RecordBatch,
   Kafka.Connection,
+  Kafka.Partitioner,
+  Kafka.Cluster,
   PascalCommon.Utf8,
   PascalCommon.Tracing,
   Kafka.TestHelpers;
@@ -66,6 +74,7 @@ type
   TKafkaIntegrationTests = class(TTestCase)
   private
     FConnection: TKafkaConnection;
+    FCluster: TKafkaCluster;
     function Plain: TKafkaConnectionParams;
     function Tls(ABackend: TPcTlsBackend; const ACaFile: string): TKafkaConnectionParams;
     function Open(const AParams: TKafkaConnectionParams): TKafkaConnection;
@@ -74,6 +83,7 @@ type
     procedure CheckTopic(const R: TKafkaMetadataResponse; AExpectedPort: Integer);
     function OpenSslMissing(const AParams: TKafkaConnectionParams): Boolean;
     procedure ProduceAndFetchBack(ACodec: TKafkaCompression);
+    function NewCluster(const ABootstrap: string; ATls: Boolean): TKafkaCluster;
   protected
     procedure TearDown; override;
   published
@@ -88,6 +98,10 @@ type
     procedure Plaintext_ProducesAndFetchesTheRecordsBack;
     procedure Tls_ProducesAndFetchesBackGzip;
     procedure Plaintext_AcksZero_TheFetchWaitsForTheRecord;
+    procedure Cluster_BootstrapsPastABadAddress_LeadersOnOneConnection;
+    procedure Cluster_Tls_LeaderConnectionsUseTls;
+    procedure Cluster_WaitsForAnAutoCreatedTopic;
+    procedure Cluster_KeyedRecord_GoesToItsPartitionsLeader;
   end;
 
 implementation
@@ -147,7 +161,7 @@ begin
 end;
 
 function ProduceRequest(const ATopicId: TKafkaUuid; const ABatch: TKafkaRecordBatch;
-  AAcks: Int16): TKafkaProduceRequest;
+  AAcks: Int16; APartition: Int32 = 0): TKafkaProduceRequest;
 begin
   Result.Init;
   Result.Acks := AAcks;
@@ -160,13 +174,13 @@ begin
   Result.TopicData[0].TopicId := ATopicId;
   SetLength(Result.TopicData[0].PartitionData, 1);
   Result.TopicData[0].PartitionData[0].Init;
-  Result.TopicData[0].PartitionData[0].Index := 0;
+  Result.TopicData[0].PartitionData[0].Index := APartition;
   Result.TopicData[0].PartitionData[0].Records := ABatch.Encode;
   Result.TopicData[0].PartitionData[0].RecordsIsNull := False;
 end;
 
 function FetchRequest(const ATopicId: TKafkaUuid; AOffset: Int64;
-  AMaxWaitMs: Integer): TKafkaFetchRequest;
+  AMaxWaitMs: Integer; APartition: Int32 = 0): TKafkaFetchRequest;
 begin
   Result.Init;
   Result.MaxWaitMs := AMaxWaitMs;
@@ -177,7 +191,7 @@ begin
   Result.Topics[0].TopicId := ATopicId;
   SetLength(Result.Topics[0].Partitions, 1);
   Result.Topics[0].Partitions[0].Init;
-  Result.Topics[0].Partitions[0].Partition := 0;
+  Result.Topics[0].Partitions[0].Partition := APartition;
   Result.Topics[0].Partitions[0].FetchOffset := AOffset;
   Result.Topics[0].Partitions[0].PartitionMaxBytes := 1 shl 20;
 end;
@@ -282,6 +296,7 @@ end;
 
 procedure TKafkaIntegrationTests.TearDown;
 begin
+  FreeAndNil(FCluster);
   FreeAndNil(FConnection);
 end;
 
@@ -537,6 +552,108 @@ begin
   // The broker holds each fetch until there is data (up to 10 s). Another
   // producer may have written first, hence the search by marker.
   CheckMarkedBatch(M, FindMarkedBatch(FConnection, TopicId, EndBefore, M));
+end;
+
+function TKafkaIntegrationTests.NewCluster(const ABootstrap: string; ATls: Boolean): TKafkaCluster;
+var
+  P: TKafkaClusterParams;
+begin
+  P := KafkaClusterParams(ABootstrap);
+  if ATls then
+    P.Connection := Tls(tbDefault, 'ca_cert.pem')
+  else
+    P.Connection := Plain;
+  P.MaxBlockMs := 30000;
+  FreeAndNil(FCluster);
+  FCluster := TKafkaCluster.Create(P);
+  FCluster.Open;
+  Result := FCluster;
+end;
+
+procedure TKafkaIntegrationTests.Cluster_BootstrapsPastABadAddress_LeadersOnOneConnection;
+var
+  M: IKafkaClusterMetadata;
+  L: array[0..2] of IKafkaBrokerConnection;
+  I: Integer;
+begin
+  // The TLS port, spoken to in plaintext, isn't Kafka to this client.
+  NewCluster(Format('%s:%d,%s:%d', [TestHost, TestTlsPort, TestHost, TestPort]), False);
+  M := FCluster.Metadata;
+  TAssert.AssertEquals(1, Length(M.Brokers));
+  TAssert.AssertTrue('a cluster id', M.ClusterId <> '');
+  TAssert.AssertEquals(3, Length(FCluster.Topic(TOPIC).Partitions));
+  for I := 0 to 2 do
+  begin
+    L[I] := FCluster.Leader(TOPIC, I);
+    TAssert.AssertEquals(M.Brokers[0].NodeId, L[I].NodeId);
+  end;
+  TAssert.AssertTrue('one connection per broker', (L[0] = L[1]) and (L[1] = L[2]));
+  // The address the broker advertises for this listener.
+  TAssert.AssertEquals('localhost:' + IntToStr(TestPort), L[0].Connection.Address);
+  TAssert.AssertFalse(L[0].Connection.Params.UseTls);
+end;
+
+procedure TKafkaIntegrationTests.Cluster_Tls_LeaderConnectionsUseTls;
+var
+  L: IKafkaBrokerConnection;
+begin
+  NewCluster(Format('%s:%d', [TestHost, TestTlsPort]), True);
+  L := FCluster.Leader(TOPIC, 1);
+  TAssert.AssertTrue(L.Connection.Params.UseTls);
+  // The TLS listener advertises itself: 9093, not the plaintext 9092.
+  TAssert.AssertEquals('localhost:' + IntToStr(TestTlsPort), L.Connection.Address);
+  TAssert.AssertEquals(13, Integer(L.Connection.NegotiatedVersion(KAFKA_API_KEY_PRODUCE)));
+end;
+
+procedure TKafkaIntegrationTests.Cluster_WaitsForAnAutoCreatedTopic;
+var
+  Name: string;
+  T: TKafkaTopicInfo;
+begin
+  NewCluster(Format('%s:%d', [TestHost, TestPort]), False);
+  Name := Format('pascal-kafka-faa-it-new-%d', [Random(1000000000)]);
+  // Unknown at first; the broker creates it on this Metadata request.
+  T := FCluster.Topic(Name);
+  TAssert.AssertTrue(T.IsReady);
+  TAssert.AssertEquals('KAFKA_NUM_PARTITIONS', 3, Length(T.Partitions));
+  TAssert.AssertFalse(T.TopicId.IsZero);
+  TAssert.AssertTrue(FCluster.Leader(Name, 2).Connection.IsOpen);
+end;
+
+procedure TKafkaIntegrationTests.Cluster_KeyedRecord_GoesToItsPartitionsLeader;
+var
+  T: TKafkaTopicInfo;
+  M, Key: string;
+  Partition: Integer;
+  L: IKafkaBrokerConnection;
+  Batch: TKafkaRecordBatch;
+  Rsp: TKafkaProduceResponse;
+  P: TKafkaProduceResponsePartitionProduceResponse;
+  Fetched: TKafkaFetchResponse;
+  Batches: TKafkaRecordBatchArray;
+  Trailing: Integer;
+  Value: string;
+begin
+  NewCluster(Format('%s:%d', [TestHost, TestPort]), False);
+  T := FCluster.Topic(TOPIC);
+  M := Marker;
+  Key := 'order-' + M;
+  Partition := KafkaPartitionForKey(PcStringToUtf8Bytes(Key), Length(T.Partitions));
+  L := FCluster.Leader(TOPIC, Partition);
+  Batch.Init;
+  Batch.Append(KafkaRecord(PcStringToUtf8Bytes(Key), PcStringToUtf8Bytes(M), NowUnixMs));
+  Rsp := L.Connection.Produce(ProduceRequest(T.TopicId, Batch, -1, Partition));
+  P := Rsp.Responses[0].PartitionResponses[0];
+  TAssert.AssertEquals('Produce error', 0, Integer(P.ErrorCode));
+  TAssert.AssertEquals(Partition, P.Index);
+  Fetched := L.Connection.Fetch(FetchRequest(T.TopicId, P.BaseOffset, 0, Partition));
+  TAssert.AssertEquals(0, Integer(Fetched.Responses[0].Partitions[0].ErrorCode));
+  Batches := KafkaDecodeRecordBatches(Fetched.Responses[0].Partitions[0].Records, 1 shl 24,
+    Trailing);
+  TAssert.AssertTrue(Length(Batches) > 0);
+  TAssert.AssertEquals(P.BaseOffset, Batches[0].BaseOffset);
+  TAssert.AssertTrue(PcTryUtf8BytesToString(Batches[0].Records[0].Key, Value));
+  TAssert.AssertEquals(Key, Value);
 end;
 
 initialization

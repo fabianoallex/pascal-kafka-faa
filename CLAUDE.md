@@ -67,7 +67,7 @@ non-ASCII values on purpose (`'São'`).
 | Files | Generator | From |
 |---|---|---|
 | `src/Kafka.Messages.*.pas`, `src/Kafka.Errors.pas` | `python tools/gen_messages.py` | `tools/kafka-messages/<tag>/*.json` and `Errors.java` |
-| `tests/Unit/Kafka.TestCaptures.pas` | `python tools/gen_test_captures.py` | `tests/data/captures-<tag>.jsonl` ([`docs/codec-captures.md`](docs/codec-captures.md)) |
+| `tests/Unit/Kafka.TestCaptures.pas`, `tests/Unit/Kafka.TestPartitions.pas` | `python tools/gen_test_captures.py` | `tests/data/captures-<tag>.jsonl`, `tests/data/partitions-java-<tag>.tsv` ([`docs/codec-captures.md`](docs/codec-captures.md)) |
 | `tests/*/fpc/*Tests.pas` | `python tools/gen_fpc_mirror.py` | the DUnitX masters in `tests/*/` |
 
 `sh tools/check_generated.sh` fails when any of them is out of date (the test scripts run it
@@ -91,14 +91,15 @@ first).
   written in **FPCUnit's assertion dialect** (`TAssert.AssertEquals/AssertTrue/...`), provided on
   Delphi by `tests/Unit/Kafka.DUnitXCompat.pas` (the skill's canonical copy:
   `check_test_kit.py` reports drift). Helpers whose names don't end in `Tests`
-  (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`) are
-  shared, not mirrored.
+  (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`,
+  `Kafka.TestPartitions`) are shared, not mirrored.
 - **A new test unit** ends with `initialization TDUnitX.RegisterTestFixture(...)` (the mirror
   turns it into `RegisterTest`) and goes into the `.dpr`, the `.dproj` and the FPC `.lpr`.
   Without the registration both runners compile it and run none of it, silently.
 - **Unit suite**: no network beyond loopback. `Kafka.ConnectionTests` runs against an
   in-process fake broker (`Kafka.TestFakeBroker`), plain and TLS (pascal-common-faa's
-  `tests/pki`).
+  `tests/pki`); `Kafka.ClusterTests` against several, given the same `ClusterView`. The fake
+  serves one connection at a time: a test that needs two to the same broker hangs.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI):
   `docker compose -f docker/docker-compose.yml up -d`.

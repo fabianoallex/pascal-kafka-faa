@@ -6,9 +6,10 @@ time.
 
 **Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets), record
-batch v2 with gzip, and a connection to one broker. The cluster layer, the producer and consumer
-APIs, and SASL come next; today records are produced and fetched with the protocol's own
-requests. The plan is
+batch v2 with gzip, murmur2 partitioning compatible with Java, a connection per broker and the
+cluster layer (bootstrap, metadata, leaders). The producer and consumer APIs and SASL come next;
+today records are produced and fetched with the protocol's own requests, sent to the leader the
+cluster names. The plan is
 [`docs/design.md`](docs/design.md).
 
 ## What works today

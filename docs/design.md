@@ -360,10 +360,44 @@ runs). Delphi 12 Win32 and Win64: 121 unit and 11 integration tests, 0 leaks.
   Java decodes such a key with replacement characters; a consumer that needs to read past such a
   record will need an option (not before someone asks).
 
-**Next in K1** (section 5): `Kafka.Cluster` (bootstrap, metadata, a connection per broker,
-leaders); murmur2; the producer (accumulator, linger, sender thread, acks, retries) and the
-manual consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and SCRAM-SHA-256. Open question 1 is
-answered: Apache 4.4.0 in CI, Confluent Cloud as the first managed broker.
+### The cluster and the partitioner (2026-11-02)
+
+**Done:**
+
+- `Kafka.Partitioner`: murmur2 and `toPositive(murmur2(key)) % n`, Java's
+  `BuiltInPartitioner.partitionForKey`. Checked against Kafka's six murmur2 vectors, edge
+  lengths and high bytes, and a table the Java console producer made: 70 keys (accents, CJK, a
+  300-byte key) on 1, 3, 12 and 100 partitions, all 280 the same. A record without a key isn't
+  hashed: the sticky choice belongs to the producer.
+- `Kafka.Cluster`: the bootstrap (the first address that answers; any failure moves to the
+  next), an immutable metadata snapshot swapped whole on each refresh, only the tracked topics
+  asked for, refreshed when older than `MetadataMaxAgeMs` or after `Invalidate`, one refresh at
+  a time, the known brokers asked before the bootstrap addresses. `Topic` and `Leader` wait up
+  to `MaxBlockMs` on an event that `Close` sets. One connection per broker, opened on demand,
+  handed out as an interface (`IKafkaBrokerConnection`) so that replacing a broken one or
+  closing the cluster never frees an object a caller is using.
+  `KafkaErrorInvalidatesMetadata`: the codes whose Java exception is an
+  `InvalidMetadataException`, checked class by class in the 4.4.0 sources.
+
+**Measured:** FPC 3.2.2 Windows x64: 141 unit and 15 integration tests, 0 leaks. Linux (Docker):
+the same, and both suites 5 times in three containers at once with `--cpus=1`. Delphi 12
+Win32 and Win64: 141 and 15, 0 leaks.
+
+**Decided while writing:**
+
+- **The bootstrap connection is closed** after its Metadata, and brokers are reached by the
+  addresses they advertise (Java keeps bootstrap nodes as separate, negative-id nodes; the
+  effect is the same, one connection more for a moment).
+- **No reconnect backoff in the cluster** for now: the producer's and consumer's retry backoff
+  will space the attempts. Connections are opened one at a time (a lock), which serializes
+  connecting to two different brokers; measure before changing it.
+- **Brokers that leave the metadata keep their connection** until it breaks or the cluster
+  closes. A cluster that shrinks is rare and the cost is a socket.
+
+**Next in K1** (section 5): the producer (accumulator per partition, linger, a sender thread,
+acks, retries, sticky partition without a key, delivery callbacks and futures) and the manual
+consumer (`Assign`, `Seek`, `Poll`); SASL PLAIN and SCRAM-SHA-256. Open question 1 is answered:
+Apache 4.4.0 in CI, Confluent Cloud as the first managed broker.
 
 ## 8. Open questions
 

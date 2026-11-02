@@ -29,6 +29,8 @@ uses
   Kafka.MessagesTests,
   Kafka.ProduceFetchTests,
   Kafka.RecordBatchTests,
+  Kafka.PartitionerTests,
+  Kafka.ClusterTests,
   Kafka.ConnectionTests;
 
 var

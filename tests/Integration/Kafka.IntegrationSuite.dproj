@@ -83,6 +83,8 @@
         <DCCReference Include="..\..\src\Kafka.Messages.ListOffsets.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="..\Unit\Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="..\Unit\Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.IntegrationTests.pas"/>

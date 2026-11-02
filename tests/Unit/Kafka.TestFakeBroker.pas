@@ -17,7 +17,14 @@
   - drop the next N Metadata requests (never answer them);
   - answer a Metadata request with a size prefix larger than the client
     accepts;
-  - drop the client's connection (DropClient).
+  - drop the client's connection (DropClient);
+  - describe a cluster (UseClusterView, ClusterView): Metadata answers with
+    the brokers and topics of ClusterView, keeping only the topics asked
+    for, and UNKNOWN_TOPIC_OR_PARTITION for one it doesn't have, as a real
+    broker does. Several fake brokers given the same view make a cluster for
+    Kafka.ClusterTests. NotReadyAnswers > 0: that many answers that name
+    topics say LEADER_NOT_AVAILABLE for each, with no partitions (a topic
+    being created).
 
   CreateTls listens with TLS instead, with the server certificate of
   pascal-common-faa's test PKI (CN=localhost, SAN localhost and 127.0.0.1):
@@ -75,6 +82,7 @@ type
     FRequestCount: Integer;
     FLastClientId: string;
     FLastHeaderVersion: Int16;
+    FMetadataCount: Integer;
     procedure Serve;
     procedure ServeClient(AClient: TPcEndpoint);
     procedure HandleRequest(const AContent: TBytes);
@@ -82,6 +90,7 @@ type
     procedure SendRaw(const AFrame: TBytes);
     function ApiVersionsBody(AVersion: Int16): TBytes;
     function MetadataBody(AVersion: Int16; const ATopic: string): TBytes;
+    function ClusterViewBody(AVersion: Int16; const ARequest: TKafkaMetadataRequest): TBytes;
   public
     ApiVersionsMin, ApiVersionsMax: Int16;
     MetadataMin, MetadataMax: Int16;
@@ -89,6 +98,9 @@ type
     HoldMetadata: Boolean;
     DropNextMetadata: Integer;
     OversizedMetadata: Boolean;
+    UseClusterView: Boolean;
+    ClusterView: TKafkaMetadataResponse;
+    NotReadyAnswers: Integer;
 
     constructor Create;
     constructor CreateTls;
@@ -102,6 +114,8 @@ type
     procedure DropClient;
     /// Requests received on any connection.
     function RequestCount: Integer;
+    /// Metadata requests received (answered or not).
+    function MetadataCount: Integer;
     function LastClientId: string;
     function LastHeaderVersion: Int16;
   end;
@@ -296,8 +310,15 @@ begin
     LTopic := LMetadata.Topics[0].Name;
   FMonitor.Enter;
   try
+    Inc(FMetadataCount);
     FLastClientId := LHeader.ClientId;
     FLastHeaderVersion := LHeaderVersion;
+    if UseClusterView then
+    begin
+      LBig := ClusterViewBody(LVersion, LMetadata);
+      SendResponse(LHeader.CorrelationId, LKey, LVersion, LBig);
+      Exit;
+    end;
     if DropNextMetadata > 0 then
     begin
       Dec(DropNextMetadata);
@@ -383,6 +404,57 @@ begin
     AVersion := 0;
   end;
   Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaFakeBroker.ClusterViewBody(AVersion: Int16;
+  const ARequest: TKafkaMetadataRequest): TBytes;
+var
+  R: TKafkaMetadataResponse;
+  I, K, N: Integer;
+  LFound: Boolean;
+  LNotReady: Boolean;
+begin
+  // Called under FMonitor.
+  R := ClusterView;
+  LNotReady := (NotReadyAnswers > 0) and (Length(ARequest.Topics) > 0);
+  if LNotReady then
+    Dec(NotReadyAnswers);
+  SetLength(R.Topics, Length(ARequest.Topics));
+  for I := 0 to High(ARequest.Topics) do
+  begin
+    LFound := False;
+    for K := 0 to High(ClusterView.Topics) do
+      if ClusterView.Topics[K].Name = ARequest.Topics[I].Name then
+      begin
+        R.Topics[I] := ClusterView.Topics[K];
+        LFound := True;
+      end;
+    if not LFound then
+    begin
+      R.Topics[I].Init;
+      R.Topics[I].Name := ARequest.Topics[I].Name;
+      R.Topics[I].ErrorCode := KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION;
+    end;
+    if LNotReady then
+    begin
+      R.Topics[I].ErrorCode := KAFKA_ERROR_LEADER_NOT_AVAILABLE;
+      R.Topics[I].Partitions := nil;
+    end;
+  end;
+  N := Length(R.Topics);
+  if N = 0 then
+    R.Topics := nil;
+  Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaFakeBroker.MetadataCount: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FMetadataCount;
+  finally
+    FMonitor.Leave;
+  end;
 end;
 
 function TKafkaFakeBroker.MetadataBody(AVersion: Int16; const ATopic: string): TBytes;

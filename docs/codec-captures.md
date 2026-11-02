@@ -111,6 +111,34 @@ proxy's file before running `captures_from_proxy.py`. `--compression-codec` matt
 producer sets `compression.type` from it, over `--producer-property` (the first try recorded an
 uncompressed batch). A topic of one partition, so the consumer reads everything from partition 0.
 
+## Partitions: the Java producer's choice for each key (2026-11-02)
+
+`tests/data/partitions-java-4.4.0.tsv`: 70 keys and the partition the Java console producer
+4.4.0 sent each to, on topics of 1, 3, 12 and 100 partitions. The keys: `key-0` to `key-59`,
+Kafka's six murmur2 vectors, `São Paulo`, `ÿ€漢字 ok`, 300 `x`, `order:123/item:7` (one per line
+of `.ci/keys.txt`, as `key|key`).
+
+```sh
+for n in 1 3 12 100; do
+  docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --create --topic partitions-$n --partitions $n
+  docker exec -i pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server localhost:9092 --topic partitions-$n \
+    --reader-property parse.key=true --reader-property key.separator='|' < .ci/keys.txt
+  docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-consumer.sh \
+    --bootstrap-server localhost:9092 --topic partitions-$n --from-beginning --max-messages 70 \
+    --property print.partition=true --property print.key=true --property print.value=false \
+    > .ci/part-$n.txt
+done
+```
+
+The four outputs became the table (key, then the partition of 1, 3, 12, 100). Before it was
+kept, an independent Python port of murmur2 (Kafka's `Utils.murmur2`, which also passes Kafka's
+own six vectors) gave the same partition for all 280 cases: the console producer sent the keys
+as UTF-8, and the table records Java's rule, `toPositive(murmur2(key)) % partitions`. Then
+`python tools/gen_test_captures.py` writes `Kafka.TestPartitions` (each key as the hex of its
+UTF-8 bytes).
+
 ## What the tests do with them
 
 `Kafka.MessagesTests`: every capture, of the five APIs, decodes and encodes back to the same
@@ -124,7 +152,8 @@ the generated records, and Produce's batches with `TKafkaRecordBatch`, encode to
 bytes (the uncompressed batches byte for byte; v13's gzip batch by its records); each Produce
 answer at the next offset; every Fetch holds the eleven batches; the cut Fetch keeps two; the
 Java gzip batch fetched back is the one sent. `Kafka.RecordBatchTests` reads the broker's
-batches back to the same bytes.
+batches back to the same bytes. `Kafka.PartitionerTests` checks every key of the partitions
+table on the four partition counts.
 
 The topic id in the captures (`gIIkYqBfQzW_O9gEpXKFuQ`) belongs to the broker the captures came
 from; a new capture has a new id, and the tests that name it change with it.

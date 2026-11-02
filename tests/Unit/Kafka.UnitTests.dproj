@@ -83,17 +83,22 @@
         <DCCReference Include="..\..\src\Kafka.Messages.ListOffsets.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.TestCaptures.pas"/>
         <DCCReference Include="Kafka.TestFakeBroker.pas"/>
         <DCCReference Include="Kafka.TestMessages.pas"/>
+        <DCCReference Include="Kafka.TestPartitions.pas"/>
         <DCCReference Include="Kafka.PrimitivesTests.pas"/>
         <DCCReference Include="Kafka.Crc32cTests.pas"/>
         <DCCReference Include="Kafka.EnvelopeTests.pas"/>
         <DCCReference Include="Kafka.MessagesTests.pas"/>
         <DCCReference Include="Kafka.ProduceFetchTests.pas"/>
         <DCCReference Include="Kafka.RecordBatchTests.pas"/>
+        <DCCReference Include="Kafka.PartitionerTests.pas"/>
+        <DCCReference Include="Kafka.ClusterTests.pas"/>
         <DCCReference Include="Kafka.ConnectionTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

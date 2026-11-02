@@ -39,7 +39,13 @@ the rest of K1 (cluster, producer, consumer, SASL, gzip).
   struct fields; every record has `IsDefault`.
 - `TKafkaConnection.Produce`, `Fetch`, `ListOffsets`, `SendOneWay` (Produce with acks=0, which
   the broker doesn't answer) and `Request` with a deadline of its own.
-- Tests: 121 unit tests (codecs and record batches against 130 frames captured from a Kafka
-  4.4.0 broker and the Java client, gzip against Python's, a fake broker in process, plain and
-  TLS) and 11 integration tests against `docker/docker-compose.yml` (plaintext and TLS with a
-  private CA, every TLS backend; records produced and fetched back, gzip, acks=0).
+- `Kafka.Partitioner`: murmur2 and the partition of a key, as Java's producer chooses it.
+- `Kafka.Cluster`: bootstrap, metadata snapshots, the tracked topics refreshed when stale or
+  invalidated, waits for a topic and for a partition's leader (`MaxBlockMs`), one connection
+  per broker (`IKafkaBrokerConnection`), `KafkaErrorInvalidatesMetadata`.
+- Tests: 141 unit tests (codecs and record batches against 130 frames captured from a Kafka
+  4.4.0 broker and the Java client, gzip against Python's, murmur2 against Kafka's vectors and
+  the Java producer's partitions, fake brokers in process, plain and TLS) and 15 integration
+  tests against `docker/docker-compose.yml` (plaintext and TLS with a private CA, every TLS
+  backend; records produced and fetched back, gzip, acks=0; the cluster's bootstrap, leaders,
+  an auto-created topic, a keyed record through its partition's leader).

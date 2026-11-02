@@ -81,6 +81,14 @@
         <Filename Value="..\src\Kafka.Connection.pas"/>
         <UnitName Value="Kafka.Connection"/>
       </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Partitioner.pas"/>
+        <UnitName Value="Kafka.Partitioner"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Cluster.pas"/>
+        <UnitName Value="Kafka.Cluster"/>
+      </Item>
     </Files>
     <RequiredPkgs>
       <!-- By name only, with no DefaultFilename: the application provides the

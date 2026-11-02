@@ -33,17 +33,22 @@ uses
   Kafka.Messages.ListOffsets in '..\..\src\Kafka.Messages.ListOffsets.pas',
   Kafka.Transport in '..\..\src\Kafka.Transport.pas',
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
+  Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
+  Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
   Kafka.DUnitXCompat in 'Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in 'Kafka.TestHelpers.pas',
   Kafka.TestCaptures in 'Kafka.TestCaptures.pas',
   Kafka.TestFakeBroker in 'Kafka.TestFakeBroker.pas',
   Kafka.TestMessages in 'Kafka.TestMessages.pas',
+  Kafka.TestPartitions in 'Kafka.TestPartitions.pas',
   Kafka.PrimitivesTests in 'Kafka.PrimitivesTests.pas',
   Kafka.Crc32cTests in 'Kafka.Crc32cTests.pas',
   Kafka.EnvelopeTests in 'Kafka.EnvelopeTests.pas',
   Kafka.MessagesTests in 'Kafka.MessagesTests.pas',
   Kafka.ProduceFetchTests in 'Kafka.ProduceFetchTests.pas',
   Kafka.RecordBatchTests in 'Kafka.RecordBatchTests.pas',
+  Kafka.PartitionerTests in 'Kafka.PartitionerTests.pas',
+  Kafka.ClusterTests in 'Kafka.ClusterTests.pas',
   Kafka.ConnectionTests in 'Kafka.ConnectionTests.pas';
 
 var
