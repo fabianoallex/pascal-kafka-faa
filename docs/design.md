@@ -1,7 +1,7 @@
 # pascal-kafka-faa — design
 
-Status: **K0 done; K1 done but for its Confluent Cloud run** (2026-11-02: "K1 progress"
-below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
+Status: **K0 done; K1 done but for its Confluent Cloud run; K2 started** (2026-11-02: "K1
+progress" and "K2 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
 accepted (3 and 4, and the transport's T1–T8).
 
@@ -625,8 +625,78 @@ Cloud (SASL PLAIN over TLS)" waits for a run with an account
 is met.
 
 **Next:** run the sample and the opt-in test against Confluent Cloud; then K2 (the KIP-848
-consumer group). Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first
+consumer group: "K2 progress", below). Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first
 managed broker.
+
+## K2 progress
+
+### The plan (2026-11-02)
+
+K2's criterion (section 7): two consumers share a topic and rebalance without loss, and with no
+duplicates beyond at-least-once. The order, each step a commit with the usual bar:
+
+1. **The foundation:** the codecs and their captures (below).
+2. **The fake broker serving several connections at once.** A consumer in a group talks to the
+   partition leaders and to the group coordinator, which in a one-broker test are the same node;
+   today's fake serves one connection at a time, and such a test would hang (CLAUDE.md, "Tests").
+3. **The coordinator** (`Kafka.Group.Coordinator`): FindCoordinator (the v4+ list form, v0-v3
+   for an older broker), the coordinator's connection through the cluster, and rediscovery with
+   backoff on NOT_COORDINATOR, COORDINATOR_NOT_AVAILABLE and COORDINATOR_LOAD_IN_PROGRESS, which
+   is what a broker that just started answers for a while (the captures recorded it).
+4. **The membership** (decision 4's seam: `IKafkaGroupMembership`, implemented by
+   `TKafkaConsumerProtocol` in `Kafka.Group.Consumer`): a member id the client chooses (KIP-1082,
+   a random UUID), a heartbeat thread at the interval the coordinator gives, member epochs, the
+   fields Java sends only when they changed (subscription, rebalance timeout), and
+   reconciliation: the assignment comes by topic id and is named through the metadata;
+   partitions taken away are revoked (their offsets committed first, `OnPartitionsRevoked`)
+   before the next heartbeat acknowledges the new assignment; FENCED_MEMBER_EPOCH and
+   UNKNOWN_MEMBER_ID lose the partitions (`OnPartitionsLost`) and rejoin with epoch 0; `Close`
+   leaves (epoch -1). Assign, revoke and lose events are queued for `Poll`, delivered on the
+   caller's thread (section 4, "Threads").
+5. **The consumer's side:** `Subscribe`, `GroupId`, the starting positions from OffsetFetch
+   (v9+, with the member id and epoch), `Commit` synchronous and asynchronous (OffsetCommit v9+
+   with the member epoch; STALE_MEMBER_EPOCH), auto-commit (on its interval inside `Poll`, before
+   a revoke, at `Close`), and `GroupProtocol` with one accepted value (decision 4: `classic`
+   raises an error that says it doesn't exist yet).
+6. **Tests:** unit against the fake as coordinator (fencing, a lost coordinator, a revoke that
+   commits first); integration with two consumers on the real broker, watched with
+   ConsumerGroupDescribe; the Java consumer and this one in the same group.
+
+### The foundation: the group APIs' codecs and captures (2026-11-02)
+
+**Done:**
+
+- Generated: `Kafka.Messages.FindCoordinator` (v0-v6), `Kafka.Messages.ConsumerGroupHeartbeat`
+  (v0-v1), `Kafka.Messages.OffsetCommit` (v2-v10), `Kafka.Messages.OffsetFetch` (v1-v10),
+  `Kafka.Messages.ConsumerGroupDescribe` (v0-v1), from the 4.4.0 definitions.
+- The generator takes nullable struct fields, which it refused until an API needed one
+  (`ConsumerGroupHeartbeatResponse.Assignment`): an `<Name>IsNull` flag, and Java's wire form, an
+  int8 marker (-1 null, 1 before the struct) in the versions where the field is nullable. A
+  tagged nullable struct (Java marks those with a varint) is still refused. The units generated
+  before came out the same.
+- Captures: 38 more exchanges (234 frames). By hand, every version of the five APIs, all
+  accepted (`capture_versions.py --apis group`); from the Java client 4.4.0 in a KIP-848 group
+  (`group.protocol=consumer`), its FindCoordinator, OffsetFetch, OffsetCommit and three of its
+  heartbeats (`docs/codec-captures.md`).
+
+**Seen in the captures:** a broker that just started answers FindCoordinator with
+COORDINATOR_NOT_AVAILABLE and heartbeats with NOT_COORDINATOR until its coordinator has loaded
+(the Java consumer got ten NOT_COORDINATOR in a row, then joined); the member id is the
+client's own and the broker keeps it (KIP-1082); a lone member gets every partition at once in
+its first answer, with the uniform assignor; the heartbeat interval is 5 s (the broker's
+`group.consumer.heartbeat.interval.ms`).
+
+**Fixed on the way (tests):** the integration suites told one run's records from another's by a
+marker of a tick count and `Random`. Without `Randomize` that sequence is the same in every
+process, and the monotonic clock is the same in every container: in the stress run two of three
+runners made the same marker in the same millisecond and read each other's records (a record
+seen twice, an offset off by ten; twice in 30 runs). Markers and new topic names now come from
+`KafkaTestUniqueId` (`Kafka.TestHelpers`, the OS random source). The auto-created topic's name
+had the same flaw: a later run could find the topic an earlier one had created.
+
+**Measured:** FPC 3.2.2 Windows x64: 226 unit and 32 integration tests, 0 leaks. Linux
+(Docker): the same, and both suites 5 times in three containers at once with `--cpus=1` (30
+runs; 28 before the markers' fix). Delphi 12 Win32 and Win64: 226 and 32, 0 leaks.
 
 ## 8. Open questions
 

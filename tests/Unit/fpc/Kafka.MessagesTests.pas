@@ -12,9 +12,10 @@
 
   - Every capture, request and response, of every version and every API
     (ApiVersions, Metadata, Produce, Fetch, ListOffsets, SaslHandshake,
-    SaslAuthenticate): the header and body decode, and encoding them again
-    gives back the same bytes. (The SASL ones field by field:
-    Kafka.SaslTests.)
+    SaslAuthenticate, FindCoordinator, OffsetCommit, OffsetFetch,
+    ConsumerGroupHeartbeat, ConsumerGroupDescribe): the header and body
+    decode, and encoding them again gives back the same bytes. (The SASL ones
+    field by field: Kafka.SaslTests; the group ones: Kafka.GroupMessagesTests.)
   - The hand-built ApiVersions (v0-v5) and Metadata (v0-v13) requests
     (tools/capture_versions.py), which the broker accepted: the same logical request
     built with the generated records encodes to the same bytes.
@@ -44,6 +45,11 @@ uses
   Kafka.Messages.ListOffsets,
   Kafka.Messages.SaslHandshake,
   Kafka.Messages.SaslAuthenticate,
+  Kafka.Messages.FindCoordinator,
+  Kafka.Messages.OffsetCommit,
+  Kafka.Messages.OffsetFetch,
+  Kafka.Messages.ConsumerGroupHeartbeat,
+  Kafka.Messages.ConsumerGroupDescribe,
   Kafka.TestCaptures,
   Kafka.TestMessages,
   Kafka.TestHelpers;
@@ -115,6 +121,16 @@ var
   ShRsp: TKafkaSaslHandshakeResponse;
   SaReq: TKafkaSaslAuthenticateRequest;
   SaRsp: TKafkaSaslAuthenticateResponse;
+  FcReq: TKafkaFindCoordinatorRequest;
+  FcRsp: TKafkaFindCoordinatorResponse;
+  OcReq: TKafkaOffsetCommitRequest;
+  OcRsp: TKafkaOffsetCommitResponse;
+  OfReq: TKafkaOffsetFetchRequest;
+  OfRsp: TKafkaOffsetFetchResponse;
+  HbReq: TKafkaConsumerGroupHeartbeatRequest;
+  HbRsp: TKafkaConsumerGroupHeartbeatResponse;
+  DeReq: TKafkaConsumerGroupDescribeRequest;
+  DeRsp: TKafkaConsumerGroupDescribeResponse;
 begin
   case AKey of
     KAFKA_API_KEY_API_VERSIONS:
@@ -194,6 +210,61 @@ begin
         SaRsp.FromBytes(ABody, AVersion);
         Result := SaRsp.ToBytes(AVersion);
       end;
+    KAFKA_API_KEY_FIND_COORDINATOR:
+      if AIsRequest then
+      begin
+        FcReq.FromBytes(ABody, AVersion);
+        Result := FcReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        FcRsp.FromBytes(ABody, AVersion);
+        Result := FcRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_OFFSET_COMMIT:
+      if AIsRequest then
+      begin
+        OcReq.FromBytes(ABody, AVersion);
+        Result := OcReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        OcRsp.FromBytes(ABody, AVersion);
+        Result := OcRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_OFFSET_FETCH:
+      if AIsRequest then
+      begin
+        OfReq.FromBytes(ABody, AVersion);
+        Result := OfReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        OfRsp.FromBytes(ABody, AVersion);
+        Result := OfRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_CONSUMER_GROUP_HEARTBEAT:
+      if AIsRequest then
+      begin
+        HbReq.FromBytes(ABody, AVersion);
+        Result := HbReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        HbRsp.FromBytes(ABody, AVersion);
+        Result := HbRsp.ToBytes(AVersion);
+      end;
+    KAFKA_API_KEY_CONSUMER_GROUP_DESCRIBE:
+      if AIsRequest then
+      begin
+        DeReq.FromBytes(ABody, AVersion);
+        Result := DeReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        DeRsp.FromBytes(ABody, AVersion);
+        Result := DeRsp.ToBytes(AVersion);
+      end;
   else
     raise Exception.CreateFmt('No codec for API key %d', [AKey]);
   end;
@@ -230,10 +301,12 @@ end;
 
 procedure TKafkaMessagesTests.Captures_AreThere;
 begin
-  // A request and a response each: 12 Java exchanges (5 of them SASL), and
-  // by hand 6 ApiVersions, 14 Metadata, 11 Produce, 11 ListOffsets, 16 Fetch
-  // and 9 SASL.
-  TAssert.AssertEquals(158, KAFKA_CAPTURE_COUNT);
+  // A request and a response each: 18 Java exchanges (5 of them SASL, 6
+  // of a consumer group), and by hand 6 ApiVersions, 14 Metadata, 11
+  // Produce, 11 ListOffsets, 16 Fetch, 9 SASL, 7 FindCoordinator, 9
+  // OffsetCommit, 10 OffsetFetch, 4 ConsumerGroupHeartbeat and 2
+  // ConsumerGroupDescribe.
+  TAssert.AssertEquals(234, KAFKA_CAPTURE_COUNT);
   TAssert.AssertEquals('4.4.0', KAFKA_CAPTURES[0].KafkaTag);
 end;
 

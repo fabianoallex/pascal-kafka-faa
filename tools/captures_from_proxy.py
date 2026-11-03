@@ -13,7 +13,12 @@ names), and appends them to
 
 A repeated API keeps its first exchange (the Java client asks Metadata and
 Fetch again and again), except SaslAuthenticate: SCRAM sends it twice in the
-same version, and both steps are kept, named "-step1", "-step2".
+same version, and both steps are kept, named "-step1", "-step2". And
+ConsumerGroupHeartbeat (KIP-848), sent every few seconds by a member: kept
+are the first ("-first", which may be an error: a coordinator still loading
+answers NOT_COORDINATOR), the first answered without error
+("-joined", where the member gets its id, epoch and assignment) and the
+last ("-last", which leaves when the consumer closed cleanly).
 
     python -I tools/captures_from_proxy.py --in .ci/cap.jsonl --conn 3 \\
         --prefix java-producer --source "java console-producer 4.4.0" --out FILE
@@ -24,8 +29,11 @@ import json
 import struct
 
 API_NAMES = {18: "api-versions", 3: "metadata", 0: "produce", 1: "fetch", 2: "list-offsets",
-             17: "sasl-handshake", 36: "sasl-authenticate"}
+             17: "sasl-handshake", 36: "sasl-authenticate", 10: "find-coordinator",
+             8: "offset-commit", 9: "offset-fetch", 68: "consumer-group-heartbeat",
+             69: "consumer-group-describe"}
 SASL_AUTHENTICATE = 36
+CONSUMER_GROUP_HEARTBEAT = 68
 
 
 def main():
@@ -56,11 +64,25 @@ def main():
             if key in keep:
                 pairs.append((key, ver, req, content))
 
+    beats = [i for i, p in enumerate(pairs) if p[0] == CONSUMER_GROUP_HEARTBEAT]
+    beat_names = {}
+    if beats:
+        beat_names[beats[-1]] = "-last"
+        # The error code follows the correlation id, the header's tagged
+        # fields (an empty count) and ThrottleTimeMs.
+        ok = [i for i in beats if struct.unpack(">h", pairs[i][3][9:11])[0] == 0]
+        if ok:
+            beat_names[ok[0]] = "-joined"
+        beat_names[beats[0]] = "-first"
     seen = set()
     steps = 0
     with open(args.out, "a", encoding="ascii", newline="\n") as out:
-        for key, ver, req, rsp in pairs:
+        for index, (key, ver, req, rsp) in enumerate(pairs):
             name = f"{args.prefix}-{API_NAMES[key]}-v{ver}"
+            if key == CONSUMER_GROUP_HEARTBEAT:
+                if index not in beat_names:
+                    continue
+                name += beat_names[index]
             if key == SASL_AUTHENTICATE:
                 steps += 1
                 name += f"-step{steps}"

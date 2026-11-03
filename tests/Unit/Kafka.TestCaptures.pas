@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 158;
-  KAFKA_CAPTURES: array[0..157] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 234;
+  KAFKA_CAPTURES: array[0..233] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -818,7 +818,253 @@ const
           '654a3545426a392b2f4151796b2f4f5861553d00'),
     (Name: 'java-scram-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-256'; KafkaTag: '4.4.0';
      IsRequest: False; ApiKey: 36; ApiVersion: 2;
-     Hex: '7ffffffb000000012f763d76544e347a342f6943634d494161725269486c324d5132726e354c6f434b36374c31462f737a2f386877773d000000000000000000')
+     Hex: '7ffffffb000000012f763d76544e347a342f6943634d494161725269486c324d5132726e354c6f434b36374c31462f737a2f386877773d000000000000000000'),
+    (Name: 'find-coordinator-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 0;
+     Hex: '000a000000000bb9001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570'),
+    (Name: 'find-coordinator-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 0;
+     Hex: '00000bb900000000000100096c6f63616c686f737400002384'),
+    (Name: 'find-coordinator-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 1;
+     Hex: '000a000100000bba001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000'),
+    (Name: 'find-coordinator-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 1;
+     Hex: '00000bba00000000000000044e4f4e450000000100096c6f63616c686f737400002384'),
+    (Name: 'find-coordinator-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 2;
+     Hex: '000a000200000bbb001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000'),
+    (Name: 'find-coordinator-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 2;
+     Hex: '00000bbb00000000000000044e4f4e450000000100096c6f63616c686f737400002384'),
+    (Name: 'find-coordinator-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 3;
+     Hex: '000a000300000bbc001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f75700000'),
+    (Name: 'find-coordinator-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 3;
+     Hex: '00000bbc00000000000000054e4f4e45000000010a6c6f63616c686f73740000238400'),
+    (Name: 'find-coordinator-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 4;
+     Hex: '000a000400000bbd001870617363616c2d6b61666b612d6661612d636170747572650000020f63617074757265642d67726f757000'),
+    (Name: 'find-coordinator-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 4;
+     Hex: '00000bbd0000000000020f63617074757265642d67726f7570000000010a6c6f63616c686f7374000023840000010000'),
+    (Name: 'find-coordinator-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 5;
+     Hex: '000a000500000bbe001870617363616c2d6b61666b612d6661612d636170747572650000020f63617074757265642d67726f757000'),
+    (Name: 'find-coordinator-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 5;
+     Hex: '00000bbe0000000000020f63617074757265642d67726f7570000000010a6c6f63616c686f7374000023840000010000'),
+    (Name: 'find-coordinator-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 6;
+     Hex: '000a000600000bbf001870617363616c2d6b61666b612d6661612d636170747572650000020f63617074757265642d67726f757000'),
+    (Name: 'find-coordinator-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 6;
+     Hex: '00000bbf0000000000020f63617074757265642d67726f7570000000010a6c6f63616c686f7374000023840000010000'),
+    (Name: 'offset-commit-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 2;
+     Hex: '0008000200000bc0001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff0000ffffffffffffffff00000001001063617074757265642d7265636f7264730000000100000000000000000000' +
+          '00660009636f6d6d6974207632'),
+    (Name: 'offset-commit-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 2;
+     Hex: '00000bc000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 3;
+     Hex: '0008000300000bc1001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff0000ffffffffffffffff00000001001063617074757265642d7265636f7264730000000100000000000000000000' +
+          '00670009636f6d6d6974207633'),
+    (Name: 'offset-commit-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 3;
+     Hex: '00000bc10000000000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 4;
+     Hex: '0008000400000bc2001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff0000ffffffffffffffff00000001001063617074757265642d7265636f7264730000000100000000000000000000' +
+          '00680009636f6d6d6974207634'),
+    (Name: 'offset-commit-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 4;
+     Hex: '00000bc20000000000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 5;
+     Hex: '0008000500000bc3001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff000000000001001063617074757265642d7265636f726473000000010000000000000000000000690009636f6d6d' +
+          '6974207635'),
+    (Name: 'offset-commit-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 5;
+     Hex: '00000bc30000000000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 6;
+     Hex: '0008000600000bc4001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff000000000001001063617074757265642d7265636f7264730000000100000000000000000000006affffffff0009' +
+          '636f6d6d6974207636'),
+    (Name: 'offset-commit-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 6;
+     Hex: '00000bc40000000000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v7'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 7;
+     Hex: '0008000700000bc5001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f7570ffffffff0000ffff00000001001063617074757265642d7265636f7264730000000100000000000000000000006bffffffff' +
+          '0009636f6d6d6974207637'),
+    (Name: 'offset-commit-v7'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 7;
+     Hex: '00000bc50000000000000001001063617074757265642d7265636f72647300000001000000000000'),
+    (Name: 'offset-commit-v8'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 8;
+     Hex: '0008000800000bc6001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f7570ffffffff0100021163617074757265642d7265636f7264730200000000000000000000006cffffffff0a636f6d6d69742076' +
+          '38000000'),
+    (Name: 'offset-commit-v8'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 8;
+     Hex: '00000bc60000000000021163617074757265642d7265636f72647302000000000000000000'),
+    (Name: 'offset-commit-v9'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 9;
+     Hex: '0008000900000bc7001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f7570ffffffff0100021163617074757265642d7265636f7264730200000000000000000000006dffffffff0a636f6d6d69742076' +
+          '39000000'),
+    (Name: 'offset-commit-v9'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 9;
+     Hex: '00000bc70000000000021163617074757265642d7265636f72647302000000000000000000'),
+    (Name: 'offset-commit-v10'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 10;
+     Hex: '0008000a00000bc8001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f7570ffffffff0100027d5212374d4544a49c55fdf53a2a82360200000000000000000000006effffffff0b636f6d6d6974207631' +
+          '30000000'),
+    (Name: 'offset-commit-v10'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 10;
+     Hex: '00000bc80000000000027d5212374d4544a49c55fdf53a2a823602000000000000000000'),
+    (Name: 'offset-fetch-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 1;
+     Hex: '0009000100000bc9001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000000001001063617074757265642d7265636f7264730000000100000000'),
+    (Name: 'offset-fetch-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 1;
+     Hex: '00000bc900000001001063617074757265642d7265636f7264730000000100000000000000000000006e000a636f6d6d6974207631300000'),
+    (Name: 'offset-fetch-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 2;
+     Hex: '0009000200000bca001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000000001001063617074757265642d7265636f7264730000000100000000'),
+    (Name: 'offset-fetch-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 2;
+     Hex: '00000bca00000001001063617074757265642d7265636f7264730000000100000000000000000000006e000a636f6d6d69742076313000000000'),
+    (Name: 'offset-fetch-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 3;
+     Hex: '0009000300000bcb001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000000001001063617074757265642d7265636f7264730000000100000000'),
+    (Name: 'offset-fetch-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 3;
+     Hex: '00000bcb0000000000000001001063617074757265642d7265636f7264730000000100000000000000000000006e000a636f6d6d69742076313000000000'),
+    (Name: 'offset-fetch-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 4;
+     Hex: '0009000400000bcc001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000000001001063617074757265642d7265636f7264730000000100000000'),
+    (Name: 'offset-fetch-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 4;
+     Hex: '00000bcc0000000000000001001063617074757265642d7265636f7264730000000100000000000000000000006e000a636f6d6d69742076313000000000'),
+    (Name: 'offset-fetch-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 5;
+     Hex: '0009000500000bcd001870617363616c2d6b61666b612d6661612d63617074757265000e63617074757265642d67726f757000000001001063617074757265642d7265636f7264730000000100000000'),
+    (Name: 'offset-fetch-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 5;
+     Hex: '00000bcd0000000000000001001063617074757265642d7265636f7264730000000100000000000000000000006effffffff000a636f6d6d69742076313000000000'),
+    (Name: 'offset-fetch-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 6;
+     Hex: '0009000600000bce001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f7570021163617074757265642d7265636f72647302000000000000'),
+    (Name: 'offset-fetch-v6'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 6;
+     Hex: '00000bce0000000000021163617074757265642d7265636f7264730200000000000000000000006effffffff0b636f6d6d69742076313000000000000000'),
+    (Name: 'offset-fetch-v7'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 7;
+     Hex: '0009000700000bcf001870617363616c2d6b61666b612d6661612d63617074757265000f63617074757265642d67726f7570021163617074757265642d7265636f7264730200000000000000'),
+    (Name: 'offset-fetch-v7'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 7;
+     Hex: '00000bcf0000000000021163617074757265642d7265636f7264730200000000000000000000006effffffff0b636f6d6d69742076313000000000000000'),
+    (Name: 'offset-fetch-v8'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 8;
+     Hex: '0009000800000bd0001870617363616c2d6b61666b612d6661612d6361707475726500020f63617074757265642d67726f7570021163617074757265642d7265636f726473020000000000000000'),
+    (Name: 'offset-fetch-v8'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 8;
+     Hex: '00000bd00000000000020f63617074757265642d67726f7570021163617074757265642d7265636f7264730200000000000000000000006effffffff0b636f6d6d6974207631300000000000000000'),
+    (Name: 'offset-fetch-v9'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 9;
+     Hex: '0009000900000bd1001870617363616c2d6b61666b612d6661612d6361707475726500020f63617074757265642d67726f757000ffffffff021163617074757265642d7265636f726473020000000000000000'),
+    (Name: 'offset-fetch-v9'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 9;
+     Hex: '00000bd10000000000020f63617074757265642d67726f7570021163617074757265642d7265636f7264730200000000000000000000006effffffff0b636f6d6d6974207631300000000000000000'),
+    (Name: 'offset-fetch-v10'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 10;
+     Hex: '0009000a00000bd2001870617363616c2d6b61666b612d6661612d6361707475726500020f63617074757265642d67726f757000ffffffff027d5212374d4544a49c55fdf53a2a8236020000000000000000'),
+    (Name: 'offset-fetch-v10'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 10;
+     Hex: '00000bd20000000000020f63617074757265642d67726f7570027d5212374d4544a49c55fdf53a2a82360200000000000000000000006effffffff0b636f6d6d6974207631300000000000000000'),
+    (Name: 'consumer-group-heartbeat-v0-join'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 0;
+     Hex: '0044000000000bd3001870617363616c2d6b61666b612d6661612d63617074757265001063617074757265642d6367682d763012636170747572652d6d656d6265722d7630000000000000000493e0021163617074757265642d7265636f726473000100'),
+    (Name: 'consumer-group-heartbeat-v0-join'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 0;
+     Hex: '00000bd3000000000000000012636170747572652d6d656d6265722d7630000000020000138801027d5212374d4544a49c55fdf53a2a823604000000000000000100000002000000'),
+    (Name: 'consumer-group-describe-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 69; ApiVersion: 0;
+     Hex: '0045000000000bd4001870617363616c2d6b61666b612d6661612d6361707475726500021063617074757265642d6367682d76300000'),
+    (Name: 'consumer-group-describe-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 69; ApiVersion: 0;
+     Hex: '00000bd40000000000020000001063617074757265642d6367682d763007537461626c65000000020000000208756e69666f726d0212636170747572652d6d656d6265722d76300000000000021970617363616c2d6b61666b612d6661612d6361707475' +
+          '72650c2f3137322e32332e302e31021163617074757265642d7265636f72647301027d5212374d4544a49c55fdf53a2a82361163617074757265642d7265636f726473040000000000000001000000020000027d5212374d4544a49c55fdf53a2a823611' +
+          '63617074757265642d7265636f72647304000000000000000100000002000000800000000000'),
+    (Name: 'consumer-group-heartbeat-v0-leave'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 0;
+     Hex: '0044000000000bd5001870617363616c2d6b61666b612d6661612d63617074757265001063617074757265642d6367682d763012636170747572652d6d656d6265722d7630ffffffff0000ffffffff00000000'),
+    (Name: 'consumer-group-heartbeat-v0-leave'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 0;
+     Hex: '00000bd5000000000000000012636170747572652d6d656d6265722d7630ffffffff00000000ff00'),
+    (Name: 'consumer-group-heartbeat-v1-join'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 1;
+     Hex: '0044000100000bd6001870617363616c2d6b61666b612d6661612d63617074757265001063617074757265642d6367682d763112636170747572652d6d656d6265722d7631000000000000000493e0021163617074757265642d7265636f726473000001' +
+          '00'),
+    (Name: 'consumer-group-heartbeat-v1-join'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 1;
+     Hex: '00000bd6000000000000000012636170747572652d6d656d6265722d7631000000020000138801027d5212374d4544a49c55fdf53a2a823604000000000000000100000002000000'),
+    (Name: 'consumer-group-describe-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 69; ApiVersion: 1;
+     Hex: '0045000100000bd7001870617363616c2d6b61666b612d6661612d6361707475726500021063617074757265642d6367682d76310000'),
+    (Name: 'consumer-group-describe-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 69; ApiVersion: 1;
+     Hex: '00000bd70000000000020000001063617074757265642d6367682d763107537461626c65000000020000000208756e69666f726d0212636170747572652d6d656d6265722d76310000000000021970617363616c2d6b61666b612d6661612d6361707475' +
+          '72650c2f3137322e32332e302e31021163617074757265642d7265636f72647301027d5212374d4544a49c55fdf53a2a82361163617074757265642d7265636f726473040000000000000001000000020000027d5212374d4544a49c55fdf53a2a823611' +
+          '63617074757265642d7265636f7264730400000000000000010000000200000100800000000000'),
+    (Name: 'consumer-group-heartbeat-v1-leave'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 1;
+     Hex: '0044000100000bd8001870617363616c2d6b61666b612d6661612d63617074757265001063617074757265642d6367682d763112636170747572652d6d656d6265722d7631ffffffff0000ffffffff0000000000'),
+    (Name: 'consumer-group-heartbeat-v1-leave'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 1;
+     Hex: '00000bd8000000000000000012636170747572652d6d656d6265722d7631ffffffff00000000ff00'),
+    (Name: 'java-consumer-group-find-coordinator-v6'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 10; ApiVersion: 6;
+     Hex: '000a0006000000070010636f6e736f6c652d636f6e73756d65720000021463617074757265642d6a6176612d67726f757000'),
+    (Name: 'java-consumer-group-find-coordinator-v6'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 10; ApiVersion: 6;
+     Hex: '000000070000000000021463617074757265642d6a6176612d67726f7570ffffffff01ffffffff000f010000'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-first'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 1;
+     Hex: '00440001000000310010636f6e736f6c652d636f6e73756d6572001463617074757265642d6a6176612d67726f75701754765f4779704d705454657a413952764b67464d6151000000000000000493e0021463617074757265642d67726f75702d6a6176' +
+          '6100000100'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-first'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 1;
+     Hex: '000000310000000000001000000000000000000000ff00'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-joined'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 1;
+     Hex: '00440001000000450010636f6e736f6c652d636f6e73756d6572001463617074757265642d6a6176612d67726f75701754765f4779704d705454657a413952764b67464d6151000000000000000493e0021463617074757265642d67726f75702d6a6176' +
+          '6100000100'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-joined'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 1;
+     Hex: '0000004500000000000000001754765f4779704d705454657a413952764b67464d61510000000200001388010265aacfb3999a49878d578538f7f0e1ee030000000000000001000000'),
+    (Name: 'java-consumer-group-offset-fetch-v10'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 9; ApiVersion: 10;
+     Hex: '0009000a000000460010636f6e736f6c652d636f6e73756d657200021463617074757265642d6a6176612d67726f75701754765f4779704d705454657a413952764b67464d6151000000020265aacfb3999a49878d578538f7f0e1ee0300000000000000' +
+          '0100000100'),
+    (Name: 'java-consumer-group-offset-fetch-v10'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 9; ApiVersion: 10;
+     Hex: '000000460000000000021463617074757265642d6a6176612d67726f75700265aacfb3999a49878d578538f7f0e1ee0300000000ffffffffffffffffffffffff0100000000000001ffffffffffffffffffffffff010000000000000000'),
+    (Name: 'java-consumer-group-offset-commit-v10'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 8; ApiVersion: 10;
+     Hex: '0008000a0000004c0010636f6e736f6c652d636f6e73756d6572001463617074757265642d6a6176612d67726f7570000000021754765f4779704d705454657a413952764b67464d6151000265aacfb3999a49878d578538f7f0e1ee0300000000000000' +
+          '00000000010000000001000000000100000000000000020000000001000000'),
+    (Name: 'java-consumer-group-offset-commit-v10'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 8; ApiVersion: 10;
+     Hex: '0000004c00000000000265aacfb3999a49878d578538f7f0e1ee0300000000000000000000010000000000'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-last'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 68; ApiVersion: 1;
+     Hex: '004400010000004d0010636f6e736f6c652d636f6e73756d6572001463617074757265642d6a6176612d67726f75701754765f4779704d705454657a413952764b67464d6151ffffffff0000ffffffff0100000100'),
+    (Name: 'java-consumer-group-consumer-group-heartbeat-v1-last'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 68; ApiVersion: 1;
+     Hex: '0000004d00000000000000001754765f4779704d705454657a413952764b67464d6151ffffffff00000000ff00')
   );
 
 /// The capture's bytes.

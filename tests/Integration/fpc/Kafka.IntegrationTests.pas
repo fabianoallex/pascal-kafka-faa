@@ -200,7 +200,7 @@ end;
 
 function Marker: string;
 begin
-  Result := Format('it-%d-%d', [NowUnixMs, Random(1000000000)]);
+  Result := 'it-' + KafkaTestUniqueId;
 end;
 
 /// Two records under AMarker: one with key, value and headers, one with a
@@ -517,7 +517,7 @@ var
   Name: string;
 begin
   Open(Plain);
-  Name := Format('pascal-kafka-faa-missing-%d', [Random(1000000000)]);
+  Name := 'pascal-kafka-faa-missing-' + KafkaTestUniqueId;
   R := FConnection.Metadata(TopicRequest(Name, False));
   TAssert.AssertEquals(1, Length(R.Topics));
   TAssert.AssertEquals(KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION, Integer(R.Topics[0].ErrorCode));
@@ -675,7 +675,7 @@ var
   T: TKafkaTopicInfo;
 begin
   NewCluster(Format('%s:%d', [TestHost, TestPort]), False);
-  Name := Format('pascal-kafka-faa-it-new-%d', [Random(1000000000)]);
+  Name := 'pascal-kafka-faa-it-new-' + KafkaTestUniqueId;
   // Unknown at first; the broker creates it on this Metadata request.
   T := FCluster.Topic(Name);
   TAssert.AssertTrue(T.IsReady);

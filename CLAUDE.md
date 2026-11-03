@@ -84,8 +84,9 @@ first).
   stable 4.x that day). The broker in `docker/` runs the same tag.
 - `records` fields are raw bytes (nullable, null by default): the batches inside are
   `Kafka.Protocol.RecordBatch`'s, by hand. Tagged structs are written when not `IsDefault`.
-  What the generator doesn't support yet (nullable structs) it refuses with a message; add the
-  support with the first API that needs it.
+  A nullable struct has an `<Name>IsNull` flag and Java's int8 marker (-1 null, 1 present).
+  What the generator doesn't support yet (a nullable struct that is also tagged) it refuses
+  with a message; add the support with the first API that needs it.
 
 ---
 

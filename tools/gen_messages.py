@@ -47,8 +47,16 @@ A struct field (tagged or not) holds its default when it equals a fresh
 Init'ed record, unknown tagged fields included; each record has IsDefault for
 that (Java compares with equals against "new X()").
 
+A nullable struct field (ConsumerGroupHeartbeatResponse.Assignment) has its
+<Name>IsNull flag like any nullable field, and goes on the wire as Java's
+generator writes it: in a version where it is nullable, an int8 marker
+first, -1 for null and 1 before the struct; in one where it isn't, the
+struct alone. Its default is null when the definition says "null"; a null
+struct holds an Init'ed record.
+
 Not supported yet, and refused here with a message rather than generated
-wrong: nullable struct fields. It comes with the first API that needs it.
+wrong: a nullable struct that is also tagged (Java marks those with an
+unsigned varint instead). It comes with the first API that needs it.
 
 Usage:
     python tools/gen_messages.py           write the units
@@ -68,7 +76,8 @@ SRC = ROOT / "src"
 # The APIs generated, by the name of their JSON files without
 # Request/Response. Adding one here is all it takes to generate it.
 APIS = ["ApiVersions", "Metadata", "Produce", "Fetch", "ListOffsets", "SaslHandshake",
-        "SaslAuthenticate"]
+        "SaslAuthenticate", "FindCoordinator", "ConsumerGroupHeartbeat", "OffsetCommit",
+        "OffsetFetch", "ConsumerGroupDescribe"]
 
 BOM = "﻿"
 
@@ -303,8 +312,9 @@ class Field:
             self.kind = "bytes"
         else:
             self.kind = "struct"
-        if self.kind == "struct" and not self.nullable.empty():
-            raise GenError(f"{msg.name}.{self.name}: nullable struct fields are not supported yet")
+        if self.kind == "struct" and not self.nullable.empty() and self.tag is not None:
+            raise GenError(f"{msg.name}.{self.name}: tagged nullable struct fields are not "
+                           "supported yet")
         if self.kind in ("scalar", "uuid") and not self.nullable.empty():
             raise GenError(f"{msg.name}.{self.name}: a {self.type} can't be nullable")
 
@@ -378,6 +388,10 @@ class Field:
                 return f"not {n}"
             e = f"System.Length({f}) > 0"
             return f"{n} or ({e})" if self.has_null_flag else e
+        if self.has_null_flag:  # nullable struct
+            if self.default_is_null():
+                return f"not {n}"
+            return f"{n} or not {f}.IsDefault"
         return f"not {f}.IsDefault"  # struct
 
 
@@ -507,7 +521,16 @@ def write_field(f, w, compact, valid, ctx):
             return null_branch
         return if_block(null_ok, null_branch, 0, strict)
     if f.kind == "struct":
-        return [f"{x}.Encode({w}, AVersion);"]
+        if not f.has_null_flag:
+            return [f"{x}.Encode({w}, AVersion);"]
+        # Java's marker: -1 for null, 1 before the struct, in the versions
+        # where the field is nullable; the struct alone elsewhere.
+        nullable = [f"if {n} then", f"  {w}.WriteInt8(-1)", "else", "begin",
+                    f"  {w}.WriteInt8(1);", f"  {x}.Encode({w}, AVersion);", "end;"]
+        strict = [f"if {n} then", f"  {null_err}", f"{x}.Encode({w}, AVersion);"]
+        if null_ok == "True":
+            return nullable
+        return if_block(null_ok, nullable, 0, strict)
     raise GenError(f.kind)
 
 
@@ -560,7 +583,12 @@ def read_field(f, r, compact, valid, ctx):
         strict = [f"LN := {r}.ReadNonNullArrayLength({compact});", f"{n} := False;"]
         return if_block(null_ok, nullable, 0, strict) + tail
     if f.kind == "struct":
-        return [f"{x}.Init;", f"{x}.Decode({r}, AVersion);"]
+        if not f.has_null_flag:
+            return [f"{x}.Init;", f"{x}.Decode({r}, AVersion);"]
+        nullable = [f"{x}.Init;", f"{n} := {r}.ReadInt8 < 0;", f"if not {n} then",
+                    f"  {x}.Decode({r}, AVersion);"]
+        strict = [f"{x}.Init;", f"{x}.Decode({r}, AVersion);", f"{n} := False;"]
+        return if_block(null_ok, nullable, 0, strict)
     raise GenError(f.kind)
 
 
@@ -759,6 +787,8 @@ def gen_init(s):
                 out.append(f"  {f.null_ident} := True;")
         elif f.kind == "struct":
             out.append(f"  {f.ident}.Init;")
+            if f.has_null_flag and f.default_is_null():
+                out.append(f"  {f.null_ident} := True;")
     out.append("end;")
     return out
 

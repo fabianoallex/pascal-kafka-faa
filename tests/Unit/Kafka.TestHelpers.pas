@@ -1,7 +1,14 @@
 ﻿unit Kafka.TestHelpers;
 
 { Small helpers shared by the unit and integration tests: hex in and out,
-  byte literals, and finding the pascal-common-faa test PKI.
+  byte literals, finding the pascal-common-faa test PKI, and unique ids.
+
+  KafkaTestUniqueId is what tells one run's records and topics from
+  another's on the shared broker. Not Random: without Randomize, FPC's (and
+  Delphi's) sequence is the same in every process, and with a tick count
+  next to it three runners started together (.ci/stress.sh) made the same
+  marker and read each other's records (measured: a record seen twice, an
+  offset off by ten). PcRandomBytes reads the OS source.
 
   Not a test unit (its name doesn't end in Tests), so tools/gen_fpc_mirror.py
   leaves it alone and both suites compile this one copy. }
@@ -26,7 +33,19 @@ function SameBytes(const A, B: TBytes): Boolean;
 /// KAFKA_TEST_PKI overrides it. Raises when not found.
 function KafkaTestPkiDir: string;
 
+/// 16 hex digits from the OS random source: a marker or topic name no other
+/// run or process has.
+function KafkaTestUniqueId: string;
+
 implementation
+
+uses
+  PascalCommon.Random;
+
+function KafkaTestUniqueId: string;
+begin
+  Result := BytesToHex(PcRandomBytes(8));
+end;
 
 function HexValue(C: Char): Integer;
 begin

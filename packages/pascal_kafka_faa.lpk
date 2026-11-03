@@ -82,6 +82,26 @@
         <UnitName Value="Kafka.Messages.SaslAuthenticate"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Messages.FindCoordinator.pas"/>
+        <UnitName Value="Kafka.Messages.FindCoordinator"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.ConsumerGroupHeartbeat.pas"/>
+        <UnitName Value="Kafka.Messages.ConsumerGroupHeartbeat"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.OffsetCommit.pas"/>
+        <UnitName Value="Kafka.Messages.OffsetCommit"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.OffsetFetch.pas"/>
+        <UnitName Value="Kafka.Messages.OffsetFetch"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Messages.ConsumerGroupDescribe.pas"/>
+        <UnitName Value="Kafka.Messages.ConsumerGroupDescribe"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Transport.pas"/>
         <UnitName Value="Kafka.Transport"/>
       </Item>

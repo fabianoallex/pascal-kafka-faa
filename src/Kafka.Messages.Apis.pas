@@ -36,15 +36,25 @@ const
   KAFKA_API_KEY_LIST_OFFSETS = 2;
   KAFKA_API_KEY_SASL_HANDSHAKE = 17;
   KAFKA_API_KEY_SASL_AUTHENTICATE = 36;
+  KAFKA_API_KEY_FIND_COORDINATOR = 10;
+  KAFKA_API_KEY_CONSUMER_GROUP_HEARTBEAT = 68;
+  KAFKA_API_KEY_OFFSET_COMMIT = 8;
+  KAFKA_API_KEY_OFFSET_FETCH = 9;
+  KAFKA_API_KEY_CONSUMER_GROUP_DESCRIBE = 69;
 
-  KAFKA_SUPPORTED_APIS: array[0..6] of TKafkaApiInfo = (
+  KAFKA_SUPPORTED_APIS: array[0..11] of TKafkaApiInfo = (
     (ApiKey: 0; Name: 'Produce'; MinVersion: 3; MaxVersion: 13; FirstFlexibleVersion: 9),
     (ApiKey: 1; Name: 'Fetch'; MinVersion: 4; MaxVersion: 18; FirstFlexibleVersion: 12),
     (ApiKey: 2; Name: 'ListOffsets'; MinVersion: 1; MaxVersion: 11; FirstFlexibleVersion: 6),
     (ApiKey: 3; Name: 'Metadata'; MinVersion: 0; MaxVersion: 13; FirstFlexibleVersion: 9),
+    (ApiKey: 8; Name: 'OffsetCommit'; MinVersion: 2; MaxVersion: 10; FirstFlexibleVersion: 8),
+    (ApiKey: 9; Name: 'OffsetFetch'; MinVersion: 1; MaxVersion: 10; FirstFlexibleVersion: 6),
+    (ApiKey: 10; Name: 'FindCoordinator'; MinVersion: 0; MaxVersion: 6; FirstFlexibleVersion: 3),
     (ApiKey: 17; Name: 'SaslHandshake'; MinVersion: 0; MaxVersion: 1; FirstFlexibleVersion: -1),
     (ApiKey: 18; Name: 'ApiVersions'; MinVersion: 0; MaxVersion: 5; FirstFlexibleVersion: 3),
-    (ApiKey: 36; Name: 'SaslAuthenticate'; MinVersion: 0; MaxVersion: 2; FirstFlexibleVersion: 2)
+    (ApiKey: 36; Name: 'SaslAuthenticate'; MinVersion: 0; MaxVersion: 2; FirstFlexibleVersion: 2),
+    (ApiKey: 68; Name: 'ConsumerGroupHeartbeat'; MinVersion: 0; MaxVersion: 1; FirstFlexibleVersion: 0),
+    (ApiKey: 69; Name: 'ConsumerGroupDescribe'; MinVersion: 0; MaxVersion: 1; FirstFlexibleVersion: 0)
   );
 
 /// The entry for AApiKey; False when the library has no codec for it.

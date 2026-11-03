@@ -37,6 +37,16 @@ expected error code of each is checked. SCRAM's exchanges come from the
 Java client instead (docs/codec-captures.md): its proof needs the nonce,
 which a test can only replay from a recorded exchange.
 
+Consumer groups (--apis group), on --broker: FindCoordinator v0-v6 for group
+captured-group; OffsetCommit v2-v10, a simple commit (no member, no
+generation) of offset 100 + version on partition 0 of --records-topic, with
+metadata "commit v<n>"; OffsetFetch v1-v10 of it (the last commit, 110,
+v10's); and for ConsumerGroupHeartbeat v0 and v1 a member that joins group
+captured-cgh-v<n> (KIP-848, member id capture-member-v<n>, subscribed to
+--records-topic), the group described with ConsumerGroupDescribe of the same
+version while it is there, and the member leaving (epoch -1). Every answer's
+error code must be 0.
+
 Output: JSON Lines appended to --out, one object per frame, in the format of
 tests/data/captures-<tag>.jsonl (docs/codec-captures.md):
 
@@ -58,7 +68,7 @@ import struct
 import time
 
 CLIENT_ID = "pascal-kafka-faa-capture"
-ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl"]
+ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl", "group"]
 SASL_HANDSHAKE, SASL_AUTHENTICATE = 17, 36
 
 
@@ -425,6 +435,199 @@ def run_sasl(jobs, out):
                 print(f"{name}: {len(req)} -> {len(rsp)} bytes")
 
 
+# ---------------------------------------------------------------- consumer groups
+
+def find_coordinator_body(v, key):
+    flex = v >= 3
+    body = string(key, flex) if v <= 3 else b""     # Key (v0-3)
+    if v >= 1:
+        body += b"\x00"                             # KeyType: group
+    if v >= 4:
+        body += array_len(1, True) + string(key, True)  # CoordinatorKeys
+    return body + tags(flex)
+
+
+def find_coordinator_error(rsp, v):
+    flex = v >= 3
+    r = body_reader(rsp, flex)
+    if v >= 1:
+        r.i32()  # ThrottleTimeMs
+    if v <= 3:
+        return r.i16()
+    r.array_len(True)
+    r.string(True), r.i32(), r.string(True), r.i32()  # Key, NodeId, Host, Port
+    return r.i16()
+
+
+def offset_commit_body(v, group, topic, topic_id, offset):
+    flex = v >= 8
+    body = string(group, flex)
+    body += struct.pack(">i", -1)                   # GenerationIdOrMemberEpoch: none
+    body += string("", flex)                        # MemberId: none (a simple commit)
+    if v >= 7:
+        body += null_string(flex)                   # GroupInstanceId
+    if v <= 4:
+        body += struct.pack(">q", -1)               # RetentionTimeMs: the broker's
+    body += array_len(1, flex)
+    body += topic_id if v >= 10 else string(topic, flex)
+    body += array_len(1, flex)
+    body += struct.pack(">iq", 0, offset)           # PartitionIndex, CommittedOffset
+    if v >= 6:
+        body += struct.pack(">i", -1)               # CommittedLeaderEpoch
+    body += string(f"commit v{v}", flex) + tags(flex)  # CommittedMetadata
+    body += tags(flex)                              # the topic's
+    return body + tags(flex)
+
+
+def offset_commit_error(rsp, v):
+    flex = v >= 8
+    r = body_reader(rsp, flex)
+    if v >= 3:
+        r.i32()
+    r.array_len(flex)
+    r.take(16) if v >= 10 else r.string(flex)
+    r.array_len(flex)
+    r.i32()
+    return r.i16()
+
+
+def offset_fetch_body(v, group, topic, topic_id):
+    flex = v >= 6
+    if v <= 7:
+        body = string(group, flex)
+        body += array_len(1, flex) + string(topic, flex)
+        body += array_len(1, flex) + struct.pack(">i", 0) + tags(flex)
+    else:
+        body = array_len(1, True) + string(group, True)
+        if v >= 9:
+            body += null_string(True) + struct.pack(">i", -1)  # MemberId, MemberEpoch
+        body += array_len(1, True)
+        body += topic_id if v >= 10 else string(topic, True)
+        body += array_len(1, True) + struct.pack(">i", 0) + tags(True)
+        body += tags(True)                          # the group's
+    if v >= 7:
+        body += b"\x00"                             # RequireStable
+    return body + tags(flex)
+
+
+def offset_fetch_error(rsp, v):
+    """The partition's error, or the group's when that one isn't 0."""
+    flex = v >= 6
+    r = body_reader(rsp, flex)
+    if v >= 3:
+        r.i32()
+    if v >= 8:
+        r.array_len(True)
+        r.string(True)                              # GroupId
+    r.array_len(flex)
+    r.take(16) if v >= 10 else r.string(flex)
+    r.array_len(flex)
+    r.i32(), r.i64()                                # PartitionIndex, CommittedOffset
+    if v >= 5:
+        r.i32()                                     # CommittedLeaderEpoch
+    r.string(flex)                                  # Metadata
+    err = r.i16()
+    if flex:
+        r.skip_tags()
+    if flex:
+        r.skip_tags()                               # the topic's
+    if v >= 2:
+        top = r.i16()
+        if top:
+            return top
+    return err
+
+
+def heartbeat_body(v, group, member, join, topic):
+    body = string(group, True) + string(member, True)
+    body += struct.pack(">i", 0 if join else -1)    # MemberEpoch: join, or leave
+    body += null_string(True) + null_string(True)   # InstanceId, RackId
+    body += struct.pack(">i", 300000 if join else -1)  # RebalanceTimeoutMs
+    if join:
+        body += array_len(1, True) + string(topic, True)  # SubscribedTopicNames
+    else:
+        body += uvarint(0)                          # null: unchanged
+    if v >= 1:
+        body += null_string(True)                   # SubscribedTopicRegex
+    body += null_string(True)                       # ServerAssignor
+    body += array_len(0, True) if join else uvarint(0)  # TopicPartitions: [] / null
+    return body + tags(True)
+
+
+def heartbeat_error(rsp, v):
+    r = body_reader(rsp, True)
+    r.i32()
+    return r.i16()
+
+
+def describe_body(v, group):
+    return array_len(1, True) + string(group, True) + b"\x00" + tags(True)
+
+
+def describe_error(rsp, v):
+    r = body_reader(rsp, True)
+    r.i32()
+    r.array_len(True)
+    return r.i16()
+
+
+def group_jobs(topic, topic_id):
+    """Connections, each a list of steps (name, key, version, flexible, body,
+    check). One connection per step except where a group's member must stay
+    (join, describe, leave)."""
+    jobs = []
+    for v in range(0, 7):
+        jobs.append([(f"find-coordinator-v{v}", 10, v, v >= 3,
+                      find_coordinator_body(v, "captured-group"), find_coordinator_error)])
+    for v in range(2, 11):
+        jobs.append([(f"offset-commit-v{v}", 8, v, v >= 8,
+                      offset_commit_body(v, "captured-group", topic, topic_id, 100 + v),
+                      offset_commit_error)])
+    for v in range(1, 11):
+        jobs.append([(f"offset-fetch-v{v}", 9, v, v >= 6,
+                      offset_fetch_body(v, "captured-group", topic, topic_id),
+                      offset_fetch_error)])
+    for v in range(0, 2):
+        group, member = f"captured-cgh-v{v}", f"capture-member-v{v}"
+        jobs.append([(f"consumer-group-heartbeat-v{v}-join", 68, v, True,
+                      heartbeat_body(v, group, member, True, topic), heartbeat_error)])
+        jobs.append([(f"consumer-group-describe-v{v}", 69, v, True,
+                      describe_body(v, group), describe_error)])
+        jobs.append([(f"consumer-group-heartbeat-v{v}-leave", 68, v, True,
+                      heartbeat_body(v, group, member, False, topic), heartbeat_error)])
+    return jobs
+
+
+def run_group(host, port, jobs, out):
+    corr = 3000
+    for steps in jobs:
+        with socket.create_connection((host, port), timeout=10) as s:
+            for name, key, v, flex, body, check in steps:
+                # A broker that just started loads its group coordinator for a
+                # while: COORDINATOR_LOAD_IN_PROGRESS (14) and
+                # COORDINATOR_NOT_AVAILABLE (15) are waited out (30 s), and
+                # only the answer without error is recorded.
+                for _ in range(30):
+                    corr += 1
+                    req = header(key, v, corr, flex) + body
+                    s.sendall(struct.pack(">i", len(req)) + req)
+                    rsp = recv_exact(s, struct.unpack(">i", recv_exact(s, 4))[0])
+                    (rcorr,) = struct.unpack(">i", rsp[:4])
+                    if rcorr != corr:
+                        raise SystemExit(f"{name}: correlation {rcorr}, expected {corr}")
+                    err = check(rsp, v)
+                    if err not in (14, 15):
+                        break
+                    time.sleep(1)
+                if err != 0:
+                    raise SystemExit(f"{name}: error code {err}")
+                for direction, data in (("request", req), ("response", rsp)):
+                    out.write(json.dumps({"name": name, "source": "hand-built",
+                                          "dir": direction, "api_key": key, "api_version": v,
+                                          "hex": data.hex()}) + "\n")
+                print(f"{name}: {len(req)} -> {len(rsp)} bytes")
+
+
 # ---------------------------------------------------------------- the exchange
 
 def exchange(host, port, content):
@@ -450,7 +653,7 @@ def main():
     ap.add_argument("--topic", default="captured-topic", help="the Metadata requests' topic")
     ap.add_argument("--records-topic", default="captured-records",
                     help="the topic Produce writes to and Fetch reads from")
-    ap.add_argument("--apis", default=",".join(a for a in ALL_APIS if a != "sasl"))
+    ap.add_argument("--apis", default=",".join(a for a in ALL_APIS if a not in ("sasl", "group")))
     ap.add_argument("--sasl-broker", default="localhost:9096",
                     help="a SASL_PLAINTEXT listener with PLAIN (--apis sasl)")
     ap.add_argument("--reauth-broker", default="localhost:9098",
@@ -475,7 +678,7 @@ def main():
         jobs += [(f"metadata-v{v}", 3, v, 9, metadata_body(v, args.topic), None)
                  for v in range(0, 14)]
     topic_id = None
-    if {"produce", "fetch"} & set(apis):
+    if {"produce", "fetch", "group"} & set(apis):
         topic_id = topic_id_and_leader(host, port, args.records_topic)
     t0 = 1767225600000  # 2026-01-01T00:00:00Z: fixed, so a capture is reproducible
     if "produce" in apis:
@@ -504,6 +707,8 @@ def main():
                 h, p = a.rsplit(":", 1)
                 return h, int(p)
             run_sasl(sasl_jobs(addr(args.sasl_broker), addr(args.reauth_broker)), out)
+        if "group" in apis:
+            run_group(host, port, group_jobs(args.records_topic, topic_id), out)
         for name, key, v, first_flex, body, check in jobs:
             # 1000 + version, as when the first captures were made; each
             # request has a connection of its own, so APIs may share one.

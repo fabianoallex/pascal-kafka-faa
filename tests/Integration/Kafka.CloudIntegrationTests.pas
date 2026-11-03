@@ -46,7 +46,8 @@ uses
   Kafka.Connection,
   Kafka.Cluster,
   Kafka.Producer,
-  Kafka.Consumer;
+  Kafka.Consumer,
+  Kafka.TestHelpers;
 
 type
   [TestFixture]
@@ -144,7 +145,7 @@ begin
   PP.Compression := kcGzip;
   FProducer := TKafkaProducer.Create(PP);
   FProducer.Open;
-  Marker := Format('cloud-it-%d-%d', [PcTickMs, Random(1000000000)]);
+  Marker := 'cloud-it-' + KafkaTestUniqueId;
   for I := 0 to N - 1 do
   begin
     Rec := KafkaProducerRecord(CloudTopic, PcStringToUtf8Bytes(Marker + '-key-' + IntToStr(I mod 7)),

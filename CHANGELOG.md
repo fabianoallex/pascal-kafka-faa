@@ -92,6 +92,12 @@ the sample against Confluent Cloud, has been run.
   the system's trust store), credentials from `KAFKA_CLOUD_*` in the environment.
 - `samples/ProduceConsume`: K1's sample, a producer and a consumer over TLS and SASL, one source
   for Delphi and Lazarus; its defaults use the SASL_SSL listener of `docker/`.
+- Phase K2's foundation (consumer groups, KIP-848): generated `Kafka.Messages.FindCoordinator`
+  (v0-v6), `Kafka.Messages.ConsumerGroupHeartbeat` (v0-v1), `Kafka.Messages.OffsetCommit`
+  (v2-v10), `Kafka.Messages.OffsetFetch` (v1-v10) and `Kafka.Messages.ConsumerGroupDescribe`
+  (v0-v1). `tools/gen_messages.py` generates nullable struct fields (Java's int8 marker). 38
+  more captured exchanges (234 frames), by hand for every version and from the Java consumer in
+  a KIP-848 group; `Kafka.GroupMessagesTests` (226 unit tests in all).
 
 ### Fixed
 

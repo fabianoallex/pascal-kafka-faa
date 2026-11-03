@@ -131,7 +131,7 @@ end;
 
 function Marker: string;
 begin
-  Result := Format('sasl-it-%d-%d', [PcTickMs, Random(1000000000)]);
+  Result := 'sasl-it-' + KafkaTestUniqueId;
 end;
 
 { TKafkaSaslIntegrationTests }

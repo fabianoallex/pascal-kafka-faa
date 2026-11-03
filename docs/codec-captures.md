@@ -155,6 +155,60 @@ SaslAuthenticate is kept every time it repeats, numbered (`-step1`, `-step2`): S
 twice at the same version. The Java client sent ApiVersions v0, SaslHandshake v1,
 SaslAuthenticate v2 (once for PLAIN, twice for SCRAM), then ApiVersions v5 and Metadata.
 
+## Consumer groups: FindCoordinator, OffsetCommit, OffsetFetch, ConsumerGroupHeartbeat, ConsumerGroupDescribe (2026-11-02, same file)
+
+**By hand, every version**, against the PLAINTEXT listener:
+
+```sh
+python -I tools/capture_versions.py --apis group --out tests/data/captures-4.4.0.jsonl
+```
+
+FindCoordinator v0-v6 for group `captured-group` (v4+ in the list form); OffsetCommit v2-v10,
+a simple commit (no member, generation -1) of offset 100 + version on partition 0 of
+`captured-records`, metadata `commit v<n>` (v10 names the topic by id); OffsetFetch v1-v10 of
+it (each reads the last commit, 110); and for ConsumerGroupHeartbeat v0 and v1 a member
+(`capture-member-v<n>`) joining group `captured-cgh-v<n>` subscribed to `captured-records`, the
+group described with ConsumerGroupDescribe of the same version while the member is in it, and
+the member leaving (epoch -1). 32 exchanges, every error code 0. A broker that just started
+answers COORDINATOR_LOAD_IN_PROGRESS or COORDINATOR_NOT_AVAILABLE for a while: the script waits
+those out (30 s) and records only the answer without error.
+
+**The Java client in a KIP-848 group**, through the capture listener (the coordinator is
+reached by its advertised address, so every connection must go through the proxy):
+
+```sh
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d --wait
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --topic captured-group-java --partitions 2
+printf 'k1\tone\nk2\ttwo\nk3\tthree\n' | docker exec -i pascal-kafka-faa-broker \
+  /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 \
+  --topic captured-group-java --reader-property parse.key=true
+python -I tools/capture_proxy.py --listen 19092 --target localhost:9095 --out .ci/cap-group.jsonl &
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server host.docker.internal:19092 --topic captured-group-java \
+  --group captured-java-group --consumer-property group.protocol=consumer \
+  --consumer-property auto.offset.reset=earliest --max-messages 3
+python -I tools/captures_from_proxy.py --in .ci/cap-group.jsonl --conn 1 --apis find-coordinator \
+  --prefix java-consumer-group \
+  --source "java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer" \
+  --out tests/data/captures-4.4.0.jsonl
+python -I tools/captures_from_proxy.py --in .ci/cap-group.jsonl --conn 3 \
+  --apis offset-commit,offset-fetch,consumer-group-heartbeat --prefix java-consumer-group \
+  --source "java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer" \
+  --out tests/data/captures-4.4.0.jsonl
+python tools/gen_test_captures.py
+docker compose -f docker/docker-compose.yml up -d --wait   # back to the tests' broker
+```
+
+Connection 3 was the coordinator's: OffsetFetch v10, ConsumerGroupHeartbeat v1 (thirteen of
+them) and OffsetCommit v10 when the consumer closed. Of the heartbeats `captures_from_proxy.py`
+keeps the first, the first answered without error and the last (`-first`, `-joined`, `-last`).
+The broker had just been restarted with the capture listener: the consumer's FindCoordinator
+was answered COORDINATOR_NOT_AVAILABLE (node -1) and its first ten heartbeats NOT_COORDINATOR,
+until the coordinator had loaded. Those answers are kept on purpose: they are what a client
+meets after a broker restart. The member id is the consumer's own (KIP-1082), and the broker
+answers with it.
+
 ## Partitions: the Java producer's choice for each key (2026-11-02)
 
 `tests/data/partitions-java-4.4.0.tsv`: 70 keys and the partition the Java console producer
@@ -185,7 +239,7 @@ UTF-8 bytes).
 
 ## What the tests do with them
 
-`Kafka.MessagesTests`: every capture, of the seven APIs, decodes and encodes back to the same
+`Kafka.MessagesTests`: every capture, of the twelve APIs, decodes and encodes back to the same
 bytes (header and body); the hand-built ApiVersions and Metadata requests and the Java producer's
 Metadata request are rebuilt with the generated records and must encode to the captured bytes;
 the decoded answers are checked field by field (APIs and versions offered, features in tagged
@@ -203,5 +257,15 @@ errors); the PLAIN token is Java's; and with the nonce read from Java's SCRAM cl
 library's client writes Java's client-first and client-final, and the broker's server-final
 verifies.
 
-The topic id in the captures (`gIIkYqBfQzW_O9gEpXKFuQ`) belongs to the broker the captures came
-from; a new capture has a new id, and the tests that name it change with it.
+`Kafka.GroupMessagesTests`: the hand-built group requests rebuilt with the generated records
+encode to the captured bytes; the answers decode to what was asked (the coordinator, every commit
+accepted, every OffsetFetch version reading 110, the member's id, epoch, interval and
+assignment, the group Stable with the uniform assignor, epoch -1 on leaving); Java's heartbeats
+give ConsumerGroupHeartbeatResponse.Assignment null and present, the generator's first nullable
+struct.
+
+The topic ids in the captures belong to the broker they came from (the records' captures and
+the group ones came from two brokers: the container is recreated between sessions); a new capture
+has new ids. The tests read an id from a capture (`CapturedTopicId` in
+`Kafka.GroupMessagesTests`) or name the one they need (`gIIkYqBfQzW_O9gEpXKFuQ`, the records'
+topic, in `Kafka.MessagesTests`).
