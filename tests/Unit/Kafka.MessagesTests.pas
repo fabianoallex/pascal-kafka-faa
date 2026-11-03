@@ -7,9 +7,11 @@
   - Every capture, request and response, of every version and every API
     (ApiVersions, Metadata, Produce, Fetch, ListOffsets, SaslHandshake,
     SaslAuthenticate, FindCoordinator, OffsetCommit, OffsetFetch,
-    ConsumerGroupHeartbeat, ConsumerGroupDescribe): the header and body
-    decode, and encoding them again gives back the same bytes. (The SASL ones
-    field by field: Kafka.SaslTests; the group ones: Kafka.GroupMessagesTests.)
+    ConsumerGroupHeartbeat, ConsumerGroupDescribe, InitProducerId): the header
+    and body decode, and encoding them again gives back the same bytes. (The
+    SASL ones field by field: Kafka.SaslTests; the group ones:
+    Kafka.GroupMessagesTests; InitProducerId and the idempotent Produce
+    batches: Kafka.ProducerIdMessagesTests.)
   - The hand-built ApiVersions (v0-v5) and Metadata (v0-v13) requests
     (tools/capture_versions.py), which the broker accepted: the same logical request
     built with the generated records encodes to the same bytes.
@@ -45,6 +47,7 @@ uses
   Kafka.Messages.OffsetFetch,
   Kafka.Messages.ConsumerGroupHeartbeat,
   Kafka.Messages.ConsumerGroupDescribe,
+  Kafka.Messages.InitProducerId,
   Kafka.TestCaptures,
   Kafka.TestMessages,
   Kafka.TestHelpers;
@@ -127,6 +130,8 @@ var
   HbRsp: TKafkaConsumerGroupHeartbeatResponse;
   DeReq: TKafkaConsumerGroupDescribeRequest;
   DeRsp: TKafkaConsumerGroupDescribeResponse;
+  IpReq: TKafkaInitProducerIdRequest;
+  IpRsp: TKafkaInitProducerIdResponse;
 begin
   case AKey of
     KAFKA_API_KEY_API_VERSIONS:
@@ -261,6 +266,17 @@ begin
         DeRsp.FromBytes(ABody, AVersion);
         Result := DeRsp.ToBytes(AVersion);
       end;
+    KAFKA_API_KEY_INIT_PRODUCER_ID:
+      if AIsRequest then
+      begin
+        IpReq.FromBytes(ABody, AVersion);
+        Result := IpReq.ToBytes(AVersion);
+      end
+      else
+      begin
+        IpRsp.FromBytes(ABody, AVersion);
+        Result := IpRsp.ToBytes(AVersion);
+      end;
   else
     raise Exception.CreateFmt('No codec for API key %d', [AKey]);
   end;
@@ -297,12 +313,13 @@ end;
 
 procedure TKafkaMessagesTests.Captures_AreThere;
 begin
-  // A request and a response each: 18 Java exchanges (5 of them SASL, 6
-  // of a consumer group), and by hand 6 ApiVersions, 14 Metadata, 11
-  // Produce, 11 ListOffsets, 16 Fetch, 9 SASL, 7 FindCoordinator, 9
-  // OffsetCommit, 10 OffsetFetch, 4 ConsumerGroupHeartbeat and 2
-  // ConsumerGroupDescribe.
-  TAssert.AssertEquals(234, KAFKA_CAPTURE_COUNT);
+  // A request and a response each: 21 Java exchanges (5 of them SASL, 6
+  // of a consumer group, 3 of the idempotent producer), and by hand 6
+  // ApiVersions, 14 Metadata, 11 Produce, 11 ListOffsets, 16 Fetch, 9 SASL,
+  // 7 FindCoordinator, 9 OffsetCommit, 10 OffsetFetch, 4
+  // ConsumerGroupHeartbeat, 2 ConsumerGroupDescribe, 7 InitProducerId and 8
+  // idempotent Produce.
+  TAssert.AssertEquals(270, KAFKA_CAPTURE_COUNT);
   TAssert.AssertEquals('4.4.0', KAFKA_CAPTURES[0].KafkaTag);
 end;
 

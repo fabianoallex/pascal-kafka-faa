@@ -154,6 +154,13 @@ the sample against Confluent Cloud, has been run.
   closed one's commit: 36 integration tests in all). `tools/interop.py` has a third scenario: the
   Java consumer 4.4.0 (`group.protocol=consumer`) and this one in the same group, sharing a
   topic's partitions, every record read once.
+- Phase K3's foundation (the idempotent producer): generated `Kafka.Messages.InitProducerId`
+  (v0-v5; 4.4.0 marks v6 unstable, and the generator now caps the response at the request's
+  last stable version, as Java's `ApiKeys`). 18 more captured exchanges (270 frames): by hand,
+  InitProducerId v0-v5 and idempotent Produce batches showing what the broker answers a retry, a
+  gap, a new epoch, the old one, an unknown producer and an evicted retry; from the Java console
+  producer, its InitProducerId (answered COORDINATOR_LOAD_IN_PROGRESS first) and its batch;
+  `Kafka.ProducerIdMessagesTests` (267 unit tests in all).
 
 ### Changed
 

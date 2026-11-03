@@ -47,6 +47,15 @@ captured-cgh-v<n> (KIP-848, member id capture-member-v<n>, subscribed to
 version while it is there, and the member leaving (epoch -1). Every answer's
 error code must be 0.
 
+The idempotent producer (--apis producer-id), on --broker: InitProducerId
+v0-v5 as the Java producer asks (no transactional id, TransactionTimeoutMs
+MaxInt), v5 again with the id and epoch it got; then idempotent Produce v13
+batches on partition 0 of --idempotent-topic (a new topic: offsets are
+checked) with the second id, on one connection: a first batch, the same
+again, the next, a gap, a new epoch, the old epoch, an id never given out,
+and after six more the new epoch's first batch again. Each answer's error
+code is checked against what 4.4.0 answered (docs/codec-captures.md).
+
 Output: JSON Lines appended to --out, one object per frame, in the format of
 tests/data/captures-<tag>.jsonl (docs/codec-captures.md):
 
@@ -68,7 +77,8 @@ import struct
 import time
 
 CLIENT_ID = "pascal-kafka-faa-capture"
-ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl", "group"]
+ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl", "group",
+            "producer-id"]
 SASL_HANDSHAKE, SASL_AUTHENTICATE = 17, 36
 
 
@@ -193,14 +203,16 @@ def record(offset_delta, ts_delta, key, value, headers):
     return varint(len(body)) + body
 
 
-def record_batch(records, base_ts, codec=0):
-    """records: (key, value, headers, timestamp); codec 0 none, 1 gzip."""
+def record_batch(records, base_ts, codec=0, producer=(-1, -1, -1)):
+    """records: (key, value, headers, timestamp); codec 0 none, 1 gzip;
+    producer: (producer id, epoch, base sequence), none by default."""
     payload = b"".join(record(i, ts - base_ts, k, v, h) for i, (k, v, h, ts) in enumerate(records))
     if codec == 1:
         payload = gzip.compress(payload, mtime=0)
     max_ts = max(r[3] for r in records)
+    pid, epoch, seq = producer
     after_crc = struct.pack(">hiqqqhii", codec, len(records) - 1, base_ts, max_ts,
-                            -1, -1, -1, len(records)) + payload
+                            pid, epoch, seq, len(records)) + payload
     crc = crc32c(after_crc)
     # partitionLeaderEpoch, magic, crc, then the rest
     tail = struct.pack(">ibI", -1, 2, crc) + after_crc
@@ -598,6 +610,111 @@ def group_jobs(topic, topic_id):
     return jobs
 
 
+# ---------------------------------------------------------------- the idempotent producer
+
+INIT_PRODUCER_ID = 22
+NO_TIMEOUT = 2147483647  # an idempotent producer's TransactionTimeoutMs (Java's)
+
+
+def init_producer_id_body(v, producer_id=-1, epoch=-1):
+    flex = v >= 2
+    body = null_string(flex) + struct.pack(">i", NO_TIMEOUT)  # TransactionalId, timeout
+    if v >= 3:
+        body += struct.pack(">qh", producer_id, epoch)
+    return body + tags(flex)
+
+
+def init_producer_id_answer(rsp, v):
+    """(error code, producer id, epoch)."""
+    r = body_reader(rsp, v >= 2)
+    r.i32()  # ThrottleTimeMs
+    return r.i16(), r.i64(), r.i16()
+
+
+def produce_answer(rsp, v):
+    """(error code, base offset) of the first partition."""
+    flex = v >= 9
+    r = body_reader(rsp, flex)
+    r.array_len(flex)
+    r.take(16) if v >= 13 else r.string(flex)
+    r.array_len(flex)
+    r.i32()
+    return r.i16(), r.i64()
+
+
+def write_exchange(out, name, key, v, req, rsp):
+    for direction, data in (("request", req), ("response", rsp)):
+        out.write(json.dumps({"name": name, "source": "hand-built", "dir": direction,
+                              "api_key": key, "api_version": v, "hex": data.hex()}) + "\n")
+
+
+def run_producer_id(host, port, topic, topic_id, out):
+    """InitProducerId v0-v5, each on its own connection; v5 again with the id
+    and epoch it was given; then idempotent Produce v13 batches with that id
+    on one connection, recording what the broker answers a retry, a gap in
+    the sequence, a new epoch, the old epoch, a producer it doesn't know and
+    a batch older than the five it remembers."""
+    corr = 4000
+    answer = None
+    for v in range(0, 6):
+        corr += 1
+        req = header(INIT_PRODUCER_ID, v, corr, v >= 2) + init_producer_id_body(v)
+        rsp = exchange(host, port, req)
+        answer = init_producer_id_answer(rsp, v)
+        if answer[0] != 0:
+            raise SystemExit(f"init-producer-id-v{v}: error code {answer[0]}")
+        write_exchange(out, f"init-producer-id-v{v}", INIT_PRODUCER_ID, v, req, rsp)
+        print(f"init-producer-id-v{v}: id {answer[1]} epoch {answer[2]}")
+    _, pid, epoch = answer
+    corr += 1
+    req = header(INIT_PRODUCER_ID, 5, corr, True) + init_producer_id_body(5, pid, epoch)
+    rsp = exchange(host, port, req)
+    bumped = init_producer_id_answer(rsp, 5)
+    write_exchange(out, "init-producer-id-v5-again", INIT_PRODUCER_ID, 5, req, rsp)
+    print(f"init-producer-id-v5-again (with {pid}/{epoch}): error {bumped[0]} "
+          f"id {bumped[1]} epoch {bumped[2]}")
+    if bumped[0] != 0:
+        raise SystemExit("init-producer-id-v5-again: error")
+
+    t0 = 1767225600000  # 2026-01-01T00:00:00Z
+    pid, epoch = bumped[1], bumped[2]
+
+    def batch(n, p, e, seq):
+        recs = [(f"idem-{n}-a".encode(), f"batch {n}, first".encode(), [], t0 + 1000 * n),
+                (f"idem-{n}-b".encode(), f"batch {n}, second".encode(), [], t0 + 1000 * n + 1)]
+        return record_batch(recs, t0 + 1000 * n, producer=(p, e, seq))
+
+    # (name, batch, the error code the broker answered, 4.4.0)
+    first = batch(0, pid, epoch, 0)
+    steps = [("first", first, 0),
+             ("retry", first, 0),                          # the same batch again
+             ("next", batch(1, pid, epoch, 2), 0),
+             ("gap", batch(2, pid, epoch, 10), 45),        # 4 expected: OUT_OF_ORDER
+             ("new-epoch", batch(3, pid, epoch + 1, 0), 0),
+             ("old-epoch", batch(4, pid, epoch, 4), 47),   # INVALID_PRODUCER_EPOCH
+             ("unknown-producer", batch(5, pid + 1000000, 0, 6), 0)]  # accepted
+    # Six more on the new epoch, then its first batch again: older than
+    # the five batches a broker remembers per producer and partition.
+    new_first = steps[4][1]
+    for i in range(6):
+        steps.append((f"fill-{i}", batch(6 + i, pid, epoch + 1, 2 + 2 * i), 0))
+    steps.append(("evicted-retry", new_first, 45))  # not DUPLICATE_SEQUENCE_NUMBER
+
+    with socket.create_connection((host, port), timeout=10) as s:
+        for label, b, expected in steps:
+            corr += 1
+            req = header(0, 13, corr, True) + produce_body(13, topic, topic_id, b)
+            s.sendall(struct.pack(">i", len(req)) + req)
+            rsp = recv_exact(s, struct.unpack(">i", recv_exact(s, 4))[0])
+            err, base = produce_answer(rsp, 13)
+            print(f"produce-v13-idempotent-{label}: error {err} base offset {base}")
+            if expected is not None and err != expected:
+                raise SystemExit(f"produce-v13-idempotent-{label}: error code {err}, "
+                                 f"expected {expected}")
+            if not label.startswith("fill-"):
+                write_exchange(out, f"produce-v13-idempotent-{label}", 0, 13, req, rsp)
+
+
 def run_group(host, port, jobs, out):
     corr = 3000
     for steps in jobs:
@@ -653,7 +770,10 @@ def main():
     ap.add_argument("--topic", default="captured-topic", help="the Metadata requests' topic")
     ap.add_argument("--records-topic", default="captured-records",
                     help="the topic Produce writes to and Fetch reads from")
-    ap.add_argument("--apis", default=",".join(a for a in ALL_APIS if a not in ("sasl", "group")))
+    ap.add_argument("--idempotent-topic", default="captured-idempotent",
+                    help="the idempotent batches' topic (--apis producer-id)")
+    ap.add_argument("--apis", default=",".join(a for a in ALL_APIS
+                                              if a not in ("sasl", "group", "producer-id")))
     ap.add_argument("--sasl-broker", default="localhost:9096",
                     help="a SASL_PLAINTEXT listener with PLAIN (--apis sasl)")
     ap.add_argument("--reauth-broker", default="localhost:9098",
@@ -709,6 +829,9 @@ def main():
             run_sasl(sasl_jobs(addr(args.sasl_broker), addr(args.reauth_broker)), out)
         if "group" in apis:
             run_group(host, port, group_jobs(args.records_topic, topic_id), out)
+        if "producer-id" in apis:
+            run_producer_id(host, port, args.idempotent_topic,
+                            topic_id_and_leader(host, port, args.idempotent_topic), out)
         for name, key, v, first_flex, body, check in jobs:
             # 1000 + version, as when the first captures were made; each
             # request has a connection of its own, so APIs may share one.

@@ -88,6 +88,7 @@
         <DCCReference Include="..\..\src\Kafka.Messages.OffsetCommit.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.OffsetFetch.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.ConsumerGroupDescribe.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.InitProducerId.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
         <DCCReference Include="..\..\src\Kafka.Sasl.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>

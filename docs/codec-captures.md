@@ -209,6 +209,68 @@ until the coordinator had loaded. Those answers are kept on purpose: they are wh
 meets after a broker restart. The member id is the consumer's own (KIP-1082), and the broker
 answers with it.
 
+## The idempotent producer: InitProducerId and idempotent Produce (2026-11-03, same file)
+
+**By hand**, against the PLAINTEXT listener:
+
+```sh
+python -I tools/capture_versions.py --apis producer-id --out tests/data/captures-4.4.0.jsonl
+```
+
+InitProducerId v0-v5, each on its own connection, as the Java producer asks (a null
+transactional id, `TransactionTimeoutMs` 2147483647); then v5 again with the id and epoch the
+first v5 got (`init-producer-id-v5-again`). v6 isn't recorded: 4.4.0 marks it unstable
+(`latestVersionUnstable`), so the generator stops at v5. Then idempotent Produce v13 batches on
+partition 0 of `captured-idempotent` (auto-created, new), each two records, with the id of the
+second answer, on one connection; the answers, checked by the script:
+
+| Exchange | Batch | Answer |
+|---|---|---|
+| `-first` | epoch 0, sequence 0 | offset 0 |
+| `-retry` | the same bytes again | no error, offset 0 (not written twice) |
+| `-next` | sequence 2 | offset 2 |
+| `-gap` | sequence 10 (4 expected) | OUT_OF_ORDER_SEQUENCE_NUMBER (45) |
+| `-new-epoch` | epoch 1, sequence 0 | offset 4 |
+| `-old-epoch` | epoch 0, sequence 4 | INVALID_PRODUCER_EPOCH (47) |
+| `-unknown-producer` | an id never given out, sequence 6 | offset 6 |
+| `-evicted-retry` | `-new-epoch`'s batch again, after six more (not recorded) | OUT_OF_ORDER_SEQUENCE_NUMBER (45) |
+
+What that says about a 4.4.0 broker: InitProducerId without a transactional id always gives a
+new id with epoch 0, even when asked with an id and epoch; a retry among the last five batches
+gets the first one's offset back; the epoch can be raised by the client alone, starting again
+at sequence 0; a producer the broker doesn't know is taken at any sequence; and a retry older
+than the five batches remembered is out of order, not DUPLICATE_SEQUENCE_NUMBER, which no answer
+here carried. A topic that already holds batches gives other offsets: delete
+`captured-idempotent` before capturing again.
+
+**The Java console producer**, through the capture listener (its Produce goes to the advertised
+address):
+
+```sh
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d --wait
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --topic captured-idempotent-java --partitions 1
+python -I tools/capture_proxy.py --listen 19092 --target localhost:9095 --out .ci/cap-idem.jsonl &
+printf 'k1\tone\nk2\ttwo\nk3\tthree\n' | docker exec -i pascal-kafka-faa-broker \
+  /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server host.docker.internal:19092 \
+  --topic captured-idempotent-java --reader-property parse.key=true --producer-property linger.ms=200
+python -I tools/captures_from_proxy.py --in .ci/cap-idem.jsonl --conn 1 --apis init-producer-id \
+  --prefix java-idempotent --source "java kafka-console-producer.sh 4.4.0 (idempotent by default)" \
+  --out .ci/try-1.jsonl      # renamed to java-idempotent-init-producer-id-v5-loading
+python -I tools/captures_from_proxy.py --in .ci/cap-idem.jsonl --conn 2 --apis init-producer-id,produce \
+  --prefix java-idempotent --source "java kafka-console-producer.sh 4.4.0 (idempotent by default)" \
+  --out tests/data/captures-4.4.0.jsonl
+python tools/gen_test_captures.py
+docker compose -f docker/docker-compose.yml up -d --wait
+```
+
+The broker had just been restarted: the producer's first InitProducerId (connection 1, the
+bootstrap) was answered COORDINATOR_LOAD_IN_PROGRESS with no id, and the producer asked again on
+connection 2, its partition leader's, and got id 0, then sent its batch there (epoch 0,
+sequence 0, acks all). Both answers are kept; the first one's name was given the `-loading`
+suffix by hand, since both are v5 from the same tool. The Java request body is byte for byte the
+hand-built v5.
+
 ## Partitions: the Java producer's choice for each key (2026-11-02)
 
 `tests/data/partitions-java-4.4.0.tsv`: 70 keys and the partition the Java console producer
@@ -239,7 +301,7 @@ UTF-8 bytes).
 
 ## What the tests do with them
 
-`Kafka.MessagesTests`: every capture, of the twelve APIs, decodes and encodes back to the same
+`Kafka.MessagesTests`: every capture, of the thirteen APIs, decodes and encodes back to the same
 bytes (header and body); the hand-built ApiVersions and Metadata requests and the Java producer's
 Metadata request are rebuilt with the generated records and must encode to the captured bytes;
 the decoded answers are checked field by field (APIs and versions offered, features in tagged
@@ -263,6 +325,11 @@ accepted, every OffsetFetch version reading 110, the member's id, epoch, interva
 assignment, the group Stable with the uniform assignor, epoch -1 on leaving); Java's heartbeats
 give ConsumerGroupHeartbeatResponse.Assignment null and present, the generator's first nullable
 struct.
+
+`Kafka.ProducerIdMessagesTests`: the hand-built InitProducerId requests and idempotent Produce
+requests (their batches with `TKafkaRecordBatch`) rebuilt from the generated records encode to
+the captured bytes; the answers are the table above; Java's request is the hand-built v5, its
+first answer COORDINATOR_LOAD_IN_PROGRESS, its batch carries the id of the second.
 
 The topic ids in the captures belong to the broker they came from (the records' captures and
 the group ones came from two brokers: the container is recreated between sessions); a new capture

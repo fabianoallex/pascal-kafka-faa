@@ -75,7 +75,9 @@ first).
 
 - **A new API** = copy its `*Request.json`/`*Response.json` from the same Kafka tag into
   `tools/kafka-messages/<tag>/`, add its name to `APIS` in `gen_messages.py`, run it, add the new
-  unit to the `.lpk`, the `.pas` package file and both `.dpr`. Then capture it (the doc above).
+  unit to the `.lpk`, the `.pas` package file and both `.dpr` (and `.dproj`). Then capture it
+  (the doc above). A request marked `latestVersionUnstable` loses its last version, and its
+  response with it (InitProducerId stops at v5 on 4.4.0).
 - **Retriable or not, refresh or not** comes from each error's Java exception class
   (`KafkaErrorIsRetriable`, `KafkaErrorIsInvalidMetadata`), never from a hand-written list:
   `error-classes.tsv` is written by `python tools/fetch_error_classes.py` (the only tool that

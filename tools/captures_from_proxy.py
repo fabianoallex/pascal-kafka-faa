@@ -31,7 +31,7 @@ import struct
 API_NAMES = {18: "api-versions", 3: "metadata", 0: "produce", 1: "fetch", 2: "list-offsets",
              17: "sasl-handshake", 36: "sasl-authenticate", 10: "find-coordinator",
              8: "offset-commit", 9: "offset-fetch", 68: "consumer-group-heartbeat",
-             69: "consumer-group-describe"}
+             69: "consumer-group-describe", 22: "init-producer-id"}
 SASL_AUTHENTICATE = 36
 CONSUMER_GROUP_HEARTBEAT = 68
 

@@ -28,6 +28,7 @@ uses
   Kafka.EnvelopeTests,
   Kafka.MessagesTests,
   Kafka.GroupMessagesTests,
+  Kafka.ProducerIdMessagesTests,
   Kafka.GroupTests,
   Kafka.ConsumerGroupTests,
   Kafka.ProduceFetchTests,

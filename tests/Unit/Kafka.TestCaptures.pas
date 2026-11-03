@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 234;
-  KAFKA_CAPTURES: array[0..233] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 270;
+  KAFKA_CAPTURES: array[0..269] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -1064,7 +1064,124 @@ const
      Hex: '004400010000004d0010636f6e736f6c652d636f6e73756d6572001463617074757265642d6a6176612d67726f75701754765f4779704d705454657a413952764b67464d6151ffffffff0000ffffffff0100000100'),
     (Name: 'java-consumer-group-consumer-group-heartbeat-v1-last'; Source: 'java kafka-console-consumer.sh 4.4.0, --group, group.protocol=consumer'; KafkaTag: '4.4.0';
      IsRequest: False; ApiKey: 68; ApiVersion: 1;
-     Hex: '0000004d00000000000000001754765f4779704d705454657a413952764b67464d6151ffffffff00000000ff00')
+     Hex: '0000004d00000000000000001754765f4779704d705454657a413952764b67464d6151ffffffff00000000ff00'),
+    (Name: 'init-producer-id-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 0;
+     Hex: '0016000000000fa1001870617363616c2d6b61666b612d6661612d63617074757265ffff7fffffff'),
+    (Name: 'init-producer-id-v0'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 0;
+     Hex: '00000fa1000000000000000000000000001c0000'),
+    (Name: 'init-producer-id-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 1;
+     Hex: '0016000100000fa2001870617363616c2d6b61666b612d6661612d63617074757265ffff7fffffff'),
+    (Name: 'init-producer-id-v1'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 1;
+     Hex: '00000fa2000000000000000000000000001d0000'),
+    (Name: 'init-producer-id-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 2;
+     Hex: '0016000200000fa3001870617363616c2d6b61666b612d6661612d6361707475726500007fffffff00'),
+    (Name: 'init-producer-id-v2'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 2;
+     Hex: '00000fa300000000000000000000000000001e000000'),
+    (Name: 'init-producer-id-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 3;
+     Hex: '0016000300000fa4001870617363616c2d6b61666b612d6661612d6361707475726500007fffffffffffffffffffffffffff00'),
+    (Name: 'init-producer-id-v3'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 3;
+     Hex: '00000fa400000000000000000000000000001f000000'),
+    (Name: 'init-producer-id-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 4;
+     Hex: '0016000400000fa5001870617363616c2d6b61666b612d6661612d6361707475726500007fffffffffffffffffffffffffff00'),
+    (Name: 'init-producer-id-v4'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 4;
+     Hex: '00000fa5000000000000000000000000000020000000'),
+    (Name: 'init-producer-id-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 5;
+     Hex: '0016000500000fa6001870617363616c2d6b61666b612d6661612d6361707475726500007fffffffffffffffffffffffffff00'),
+    (Name: 'init-producer-id-v5'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 5;
+     Hex: '00000fa6000000000000000000000000000021000000'),
+    (Name: 'init-producer-id-v5-again'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 5;
+     Hex: '0016000500000fa7001870617363616c2d6b61666b612d6661612d6361707475726500007fffffff0000000000000021000000'),
+    (Name: 'init-producer-id-v5-again'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 5;
+     Hex: '00000fa7000000000000000000000000000022000000'),
+    (Name: 'produce-v13-idempotent-first'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fa8001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff02500039e50000000000010000019b76daa800' +
+          '0000019b76daa80100000000000000220000000000000000000238000000106964656d2d302d611c626174636820302c206669727374003a000202106964656d2d302d621e626174636820302c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-first'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fa80002977c01c0c82149ad862f287bd938c720020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-retry'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fa9001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff02500039e50000000000010000019b76daa800' +
+          '0000019b76daa80100000000000000220000000000000000000238000000106964656d2d302d611c626174636820302c206669727374003a000202106964656d2d302d621e626174636820302c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-retry'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fa90002977c01c0c82149ad862f287bd938c7200200000000000000000000000000000000019b76daa8010000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-next'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000faa001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff028df8c63e0000000000010000019b76daabe8' +
+          '0000019b76daabe900000000000000220000000000020000000238000000106964656d2d312d611c626174636820312c206669727374003a000202106964656d2d312d621e626174636820312c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-next'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000faa0002977c01c0c82149ad862f287bd938c720020000000000000000000000000002ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-gap'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fab001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff028cb23ad10000000000010000019b76daafd0' +
+          '0000019b76daafd1000000000000002200000000000a0000000238000000106964656d2d322d611c626174636820322c206669727374003a000202106964656d2d322d621e626174636820322c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-gap'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fab0002977c01c0c82149ad862f287bd938c7200200000000002dffffffffffffffffffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-new-epoch'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fac001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff02824950bf0000000000010000019b76dab3b8' +
+          '0000019b76dab3b900000000000000220001000000000000000238000000106964656d2d332d611c626174636820332c206669727374003a000202106964656d2d332d621e626174636820332c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-new-epoch'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fac0002977c01c0c82149ad862f287bd938c720020000000000000000000000000004ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-old-epoch'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fad001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff02d54d77070000000000010000019b76dab7a0' +
+          '0000019b76dab7a100000000000000220000000000040000000238000000106964656d2d342d611c626174636820342c206669727374003a000202106964656d2d342d621e626174636820342c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-old-epoch'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fad0002977c01c0c82149ad862f287bd938c7200200000000002fffffffffffffffffffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-unknown-producer'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fae001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff023bd30d980000000000010000019b76dabb88' +
+          '0000019b76dabb8900000000000f42620000000000060000000238000000106964656d2d352d611c626174636820352c206669727374003a000202106964656d2d352d621e626174636820352c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-unknown-producer'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fae0002977c01c0c82149ad862f287bd938c720020000000000000000000000000006ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'produce-v13-idempotent-evicted-retry'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d00000fb5001870617363616c2d6b61666b612d6661612d636170747572650000ffff0000753002977c01c0c82149ad862f287bd938c72002000000007900000000000000000000006cffffffff02824950bf0000000000010000019b76dab3b8' +
+          '0000019b76dab3b900000000000000220001000000000000000238000000106964656d2d332d611c626174636820332c206669727374003a000202106964656d2d332d621e626174636820332c207365636f6e6400000000'),
+    (Name: 'produce-v13-idempotent-evicted-retry'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '00000fb50002977c01c0c82149ad862f287bd938c7200200000000002dffffffffffffffffffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'java-idempotent-init-producer-id-v5-loading'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 5;
+     Hex: '00160005000000020010636f6e736f6c652d70726f647563657200007fffffffffffffffffffffffffff00'),
+    (Name: 'java-idempotent-init-producer-id-v5-loading'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 5;
+     Hex: '000000020000000000000effffffffffffffffffff00'),
+    (Name: 'java-idempotent-init-producer-id-v5'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 22; ApiVersion: 5;
+     Hex: '00160005000000050010636f6e736f6c652d70726f647563657200007fffffffffffffffffffffffffff00'),
+    (Name: 'java-idempotent-init-producer-id-v5'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 22; ApiVersion: 5;
+     Hex: '00000005000000000000000000000000000000000000'),
+    (Name: 'java-idempotent-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d000000060010636f6e736f6c652d70726f64756365720000ffff000005dc02510dd715f30d42edbd61e0bd630b2ffd020000000064000000000000000000000057ffffffff0270dacf63000000000002000001a1a0e3f20f000001a1a0e3f21d' +
+          '00000000000000000000000000000000000316000000046b31066f6e650016001c02046b320674776f001a001c04046b330a746872656500000000'),
+    (Name: 'java-idempotent-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '000000060002510dd715f30d42edbd61e0bd630b2ffd020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000')
   );
 
 /// The capture's bytes.

@@ -102,6 +102,10 @@
         <UnitName Value="Kafka.Messages.ConsumerGroupDescribe"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Messages.InitProducerId.pas"/>
+        <UnitName Value="Kafka.Messages.InitProducerId"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Transport.pas"/>
         <UnitName Value="Kafka.Transport"/>
       </Item>

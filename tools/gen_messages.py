@@ -77,7 +77,7 @@ SRC = ROOT / "src"
 # Request/Response. Adding one here is all it takes to generate it.
 APIS = ["ApiVersions", "Metadata", "Produce", "Fetch", "ListOffsets", "SaslHandshake",
         "SaslAuthenticate", "FindCoordinator", "ConsumerGroupHeartbeat", "OffsetCommit",
-        "OffsetFetch", "ConsumerGroupDescribe"]
+        "OffsetFetch", "ConsumerGroupDescribe", "InitProducerId"]
 
 BOM = "﻿"
 
@@ -1177,6 +1177,10 @@ def generate():
     for api in APIS:
         req = Message(load_def(f"{api}Request"), api, {})
         rsp = Message(load_def(f"{api}Response"), api, {})
+        # Only the request carries latestVersionUnstable (InitProducerId v6 in
+        # 4.4.0); the API's versions are the request's, as Java's ApiKeys has it.
+        if req.raw.get("latestVersionUnstable") and rsp.valid.hi == req.valid.hi + 1:
+            rsp.valid = Versions.of(rsp.valid.lo, req.valid.hi)
         if req.api_key != rsp.api_key or req.valid.lo != rsp.valid.lo or req.valid.hi != rsp.valid.hi:
             raise GenError(f"{api}: request and response disagree on key or versions")
         if (req.flexible.lo, req.flexible.hi) != (rsp.flexible.lo, rsp.flexible.hi):
