@@ -2,9 +2,10 @@
 
 {$I kafka.inc}
 
-{ The client side of SASL PLAIN (RFC 4616) and SCRAM-SHA-256 (RFC 5802 and
-  RFC 7677): the bytes a connection sends in SaslAuthenticate, and the
-  checks on what the broker answers.
+{ The client side of SASL PLAIN (RFC 4616), SCRAM-SHA-256 (RFC 5802 and
+  RFC 7677) and SCRAM-SHA-512 (the same exchange over SHA-512, as Kafka's
+  ScramMechanism and draft-melnikov-scram-sha-512): the bytes a connection
+  sends in SaslAuthenticate, and the checks on what the broker answers.
 
   Only the mechanisms live here. The exchange itself (SaslHandshake v1, then
   SaslAuthenticate until the mechanism is complete) is Kafka.Connection's,
@@ -18,21 +19,25 @@
   plaintext the password crosses the network as is: SASL_SSL is the setting
   for anything but a lab.
 
-  SCRAM-SHA-256 follows RFC 5802 without channel binding (gs2 header "n,,",
-  as Java's client): client-first with a random nonce, the server's salt
-  and iteration count, client-final with the proof, and the server's
-  signature checked (PcSameBytes, constant time) before the exchange counts
-  as complete, so a broker that doesn't know the password can't pass for
-  one that does. SHA-256, HMAC and PBKDF2 are pascal-common-faa's
-  (PcSha256, PcHmacSha256, PcPbkdf2HmacSha256). As Java's client, the user
+  SCRAM follows RFC 5802 without channel binding (gs2 header "n,,", as
+  Java's client): client-first with a random nonce, the server's salt and
+  iteration count, client-final with the proof, and the server's signature
+  checked (PcSameBytes, constant time) before the exchange counts as
+  complete, so a broker that doesn't know the password can't pass for one
+  that does. One class, TKafkaScramClient, for both hashes: the hash is its
+  parameter (TKafkaScramHash), and the keys, proof and signature are as long
+  as its digest (32 or 64 bytes). The hashes, HMACs and PBKDF2 are
+  pascal-common-faa's (PcSha256, PcHmacSha256, PcPbkdf2HmacSha256 and their
+  SHA-512 forms, from 1.28.0). As Java's client, the user
   name is escaped (= and , as =3D and =2C) but neither it nor the password
   goes through SASLprep: they are sent as their UTF-8 bytes, which is what
   Kafka's credential tools store.
 
-  Iteration count: at least 4096 (RFC 7677's minimum, Java's check) and at
-  most 16384, the largest Kafka's own tools accept for a credential
-  (ScramMechanism in 4.4.0). Java has no upper check; this one keeps a
-  hostile broker from asking for billions of PBKDF2 rounds.
+  Iteration count: at least 4096 (RFC 7677's minimum, Java's check for both
+  hashes) and at most 16384, the largest Kafka's own tools accept for a
+  credential (ScramMechanism in 4.4.0, the same for both). Java has no upper
+  check; this one keeps a hostile broker from asking for billions of PBKDF2
+  rounds.
 
   Base64. SCRAM uses standard Base64 with padding (RFC 4648 section 4);
   pascal-common-faa has only the URL alphabet without padding (for JWT).
@@ -51,19 +56,22 @@ uses
   Kafka.Types;
 
 const
-  /// RFC 7677's minimum for SCRAM-SHA-256 (also Java's check).
+  /// RFC 7677's minimum (Java's check, for SHA-256 and SHA-512).
   KAFKA_SCRAM_MIN_ITERATIONS = 4096;
   /// Kafka's own maximum for a SCRAM credential (ScramMechanism, 4.4.0).
   KAFKA_SCRAM_MAX_ITERATIONS = 16384;
 
 type
   /// sasl.mechanism. ksmNone: no SASL (security.protocol PLAINTEXT or SSL).
-  TKafkaSaslMechanism = (ksmNone, ksmPlain, ksmScramSha256);
+  TKafkaSaslMechanism = (ksmNone, ksmPlain, ksmScramSha256, ksmScramSha512);
+
+  /// The hash of a SCRAM mechanism.
+  TKafkaScramHash = (kshSha256, kshSha512);
 
   { One client-side exchange of one mechanism. }
   TKafkaSaslClient = class
   public
-    /// The name sent in SaslHandshake ('PLAIN', 'SCRAM-SHA-256').
+    /// The name sent in SaslHandshake ('PLAIN', 'SCRAM-SHA-256', ...).
     function Mechanism: string; virtual; abstract;
     /// The first message. Once, before any Evaluate.
     function InitialResponse: TBytes; virtual; abstract;
@@ -89,10 +97,12 @@ type
     function IsComplete: Boolean; override;
   end;
 
-  TKafkaScramSha256Client = class(TKafkaSaslClient)
+  { SCRAM-SHA-256 or SCRAM-SHA-512, by AHash. }
+  TKafkaScramClient = class(TKafkaSaslClient)
   private type
     TState = (ssInitial, ssFirstSent, ssFinalSent, ssComplete, ssFailed);
   private
+    FHash: TKafkaScramHash;
     FUsername: string;
     FPassword: string;
     FNonce: string;
@@ -104,16 +114,19 @@ type
   public
     /// A random client nonce (32 Base64 characters from 24 bytes of the OS
     /// source).
-    constructor Create(const AUsername, APassword: string);
-    /// A given nonce: for tests with published vectors (RFC 7677).
-    constructor CreateWithNonce(const AUsername, APassword, ANonce: string);
+    constructor Create(AHash: TKafkaScramHash; const AUsername, APassword: string);
+    /// A given nonce: for tests with published vectors (RFC 7677,
+    /// draft-melnikov-scram-sha-512).
+    constructor CreateWithNonce(AHash: TKafkaScramHash; const AUsername, APassword,
+      ANonce: string);
+    property Hash: TKafkaScramHash read FHash;
     function Mechanism: string; override;
     function InitialResponse: TBytes; override;
     function Evaluate(const AChallenge: TBytes): TBytes; override;
     function IsComplete: Boolean; override;
   end;
 
-/// 'PLAIN', 'SCRAM-SHA-256'; '' for ksmNone.
+/// 'PLAIN', 'SCRAM-SHA-256', 'SCRAM-SHA-512'; '' for ksmNone.
 function KafkaSaslMechanismName(AMechanism: TKafkaSaslMechanism): string;
 /// The client for AMechanism (the caller frees it). EKafka for ksmNone, and
 /// EKafkaAuthentication for an empty user name.
@@ -141,6 +154,7 @@ begin
   case AMechanism of
     ksmPlain: Result := 'PLAIN';
     ksmScramSha256: Result := 'SCRAM-SHA-256';
+    ksmScramSha512: Result := 'SCRAM-SHA-512';
   else
     Result := '';
   end;
@@ -154,10 +168,12 @@ begin
   if AUsername = '' then
     raise EKafkaAuthentication.CreateFmt('SASL %s: the user name is empty',
       [KafkaSaslMechanismName(AMechanism)]);
-  if AMechanism = ksmPlain then
-    Result := TKafkaSaslPlainClient.Create(AUsername, APassword)
+  case AMechanism of
+    ksmPlain: Result := TKafkaSaslPlainClient.Create(AUsername, APassword);
+    ksmScramSha256: Result := TKafkaScramClient.Create(kshSha256, AUsername, APassword);
   else
-    Result := TKafkaScramSha256Client.Create(AUsername, APassword);
+    Result := TKafkaScramClient.Create(kshSha512, AUsername, APassword);
+  end;
 end;
 
 function KafkaScramEscapeName(const AName: string): string;
@@ -214,9 +230,31 @@ begin
     Move(B[0], Result[Length(A)], Length(B));
 end;
 
-function Hmac(const AKey: TBytes; const AData: TBytes): TBytes;
+function Hmac(AHash: TKafkaScramHash; const AKey: TBytes; const AData: TBytes): TBytes;
 begin
-  Result := PcDigestToBytes(PcHmacSha256(AKey, AData));
+  if AHash = kshSha256 then
+    Result := PcDigestToBytes(PcHmacSha256(AKey, AData))
+  else
+    Result := PcSha512DigestToBytes(PcHmacSha512(AKey, AData));
+end;
+
+function Digest(AHash: TKafkaScramHash; const AData: TBytes): TBytes;
+begin
+  if AHash = kshSha256 then
+    Result := PcDigestToBytes(PcSha256(AData))
+  else
+    Result := PcSha512DigestToBytes(PcSha512(AData));
+end;
+
+/// SaltedPassword (RFC 5802): PBKDF2 with the hash's HMAC, as long as its
+/// digest.
+function SaltedPassword(AHash: TKafkaScramHash; const APassword, ASalt: TBytes;
+  AIterations: Integer): TBytes;
+begin
+  if AHash = kshSha256 then
+    Result := PcPbkdf2HmacSha256(APassword, ASalt, AIterations, 32)
+  else
+    Result := PcPbkdf2HmacSha512(APassword, ASalt, AIterations, 64);
 end;
 
 { TKafkaSaslPlainClient }
@@ -261,15 +299,16 @@ begin
   Result := FComplete;
 end;
 
-{ TKafkaScramSha256Client }
+{ TKafkaScramClient }
 
-constructor TKafkaScramSha256Client.Create(const AUsername, APassword: string);
+constructor TKafkaScramClient.Create(AHash: TKafkaScramHash;
+  const AUsername, APassword: string);
 begin
-  CreateWithNonce(AUsername, APassword, KafkaBase64Encode(PcRandomBytes(24)));
+  CreateWithNonce(AHash, AUsername, APassword, KafkaBase64Encode(PcRandomBytes(24)));
 end;
 
-constructor TKafkaScramSha256Client.CreateWithNonce(const AUsername, APassword,
-  ANonce: string);
+constructor TKafkaScramClient.CreateWithNonce(AHash: TKafkaScramHash;
+  const AUsername, APassword, ANonce: string);
 var
   I: Integer;
 begin
@@ -281,17 +320,21 @@ begin
     if (Ord(ANonce[I]) < $21) or (Ord(ANonce[I]) > $7E) or (ANonce[I] = ',') then
       raise EKafkaAuthentication.Create('SCRAM: the client nonce must be printable ASCII ' +
         'without commas');
+  FHash := AHash;
   FUsername := AUsername;
   FPassword := APassword;
   FNonce := ANonce;
 end;
 
-function TKafkaScramSha256Client.Mechanism: string;
+function TKafkaScramClient.Mechanism: string;
 begin
-  Result := 'SCRAM-SHA-256';
+  if FHash = kshSha256 then
+    Result := 'SCRAM-SHA-256'
+  else
+    Result := 'SCRAM-SHA-512';
 end;
 
-function TKafkaScramSha256Client.InitialResponse: TBytes;
+function TKafkaScramClient.InitialResponse: TBytes;
 begin
   if FState <> ssInitial then
     raise EKafkaAuthentication.Create('SCRAM: the initial response was already sent');
@@ -301,7 +344,7 @@ begin
   FState := ssFirstSent;
 end;
 
-function TKafkaScramSha256Client.Evaluate(const AChallenge: TBytes): TBytes;
+function TKafkaScramClient.Evaluate(const AChallenge: TBytes): TBytes;
 begin
   try
     case FState of
@@ -325,7 +368,7 @@ begin
   end;
 end;
 
-function TKafkaScramSha256Client.IsComplete: Boolean;
+function TKafkaScramClient.IsComplete: Boolean;
 begin
   Result := FState = ssComplete;
 end;
@@ -361,7 +404,7 @@ begin
       Exit(False);
 end;
 
-function TKafkaScramSha256Client.ClientFinal(const AServerFirst: TBytes): TBytes;
+function TKafkaScramClient.ClientFinal(const AServerFirst: TBytes): TBytes;
 var
   LText, LNonce, LSaltText, LIterText: string;
   LSalt, LSalted, LClientKey, LStoredKey, LServerKey, LSignature, LProof: TBytes;
@@ -396,24 +439,24 @@ begin
       KAFKA_SCRAM_MAX_ITERATIONS]);
   // Anything after i= is an extension: ignored, as Java's client does.
 
-  LSalted := PcPbkdf2HmacSha256(Utf8(FPassword), LSalt, LIterations, 32);
-  LClientKey := Hmac(LSalted, Utf8('Client Key'));
-  LStoredKey := PcDigestToBytes(PcSha256(LClientKey));
-  LServerKey := Hmac(LSalted, Utf8('Server Key'));
+  LSalted := SaltedPassword(FHash, Utf8(FPassword), LSalt, LIterations);
+  LClientKey := Hmac(FHash, LSalted, Utf8('Client Key'));
+  LStoredKey := Digest(FHash, LClientKey);
+  LServerKey := Hmac(FHash, LSalted, Utf8('Server Key'));
   // c=biws is Base64("n,,"): the gs2 header again, no channel binding.
   LWithoutProof := Utf8('c=biws,r=' + LNonce);
   LAuthMessage := Join(Join(Join(FClientFirstBare, Utf8(',')), Join(AServerFirst, Utf8(','))),
     LWithoutProof);
-  LSignature := Hmac(LStoredKey, LAuthMessage);
+  LSignature := Hmac(FHash, LStoredKey, LAuthMessage);
   LProof := nil;
   SetLength(LProof, Length(LClientKey));
   for I := 0 to High(LProof) do
     LProof[I] := LClientKey[I] xor LSignature[I];
-  FServerSignature := Hmac(LServerKey, LAuthMessage);
+  FServerSignature := Hmac(FHash, LServerKey, LAuthMessage);
   Result := Join(LWithoutProof, Utf8(',p=' + KafkaBase64Encode(LProof)));
 end;
 
-procedure TKafkaScramSha256Client.CheckServerFinal(const AServerFinal: TBytes);
+procedure TKafkaScramClient.CheckServerFinal(const AServerFinal: TBytes);
 var
   LText, LValue: string;
   LSignature: TBytes;

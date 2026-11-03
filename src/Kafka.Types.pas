@@ -45,10 +45,11 @@
   SASL_AUTHENTICATION_FAILED, ILLEGAL_SASL_STATE), or 0 when the client's
   own check failed.
 
-  PASCALCOMMON_VERSION 12701 is pascal-common-faa 1.27.1: the transport came
-  in 1.27.0, and 1.27.1 fixed its SChannel server, which waited out the whole
-  handshake deadline (15 s) for a client that doesn't speak TLS; OpenSSL's
-  refused at once. Also in packages/pascal_kafka_faa.lpk (MinVersion). }
+  PASCALCOMMON_VERSION 12800 is pascal-common-faa 1.28.0, for SHA-512,
+  HMAC-SHA-512 and PBKDF2-HMAC-SHA-512 (SCRAM-SHA-512). Before it: the
+  transport came in 1.27.0, and 1.27.1 fixed its SChannel server, which
+  waited out the whole handshake deadline (15 s) for a client that doesn't
+  speak TLS. Also in packages/pascal_kafka_faa.lpk (MinVersion). }
 
 interface
 
@@ -56,8 +57,8 @@ uses
   SysUtils,
   PascalCommon.Version;
 
-{$IF PASCALCOMMON_VERSION < 12701}
-  {$MESSAGE FATAL 'pascal-kafka-faa needs pascal-common-faa 1.27.1 or later'}
+{$IF PASCALCOMMON_VERSION < 12800}
+  {$MESSAGE FATAL 'pascal-kafka-faa needs pascal-common-faa 1.28.0 or later'}
 {$IFEND}
 
 const

@@ -16,6 +16,10 @@
     extend the client's, an iteration count outside 4096..16384 or not a
     number, a mandatory extension, a salt that isn't Base64. A random nonce
     differs from one client to the next.
+  - SCRAM-SHA-512 against draft-melnikov-scram-sha-512's example (the same
+    user, password and client nonce; its proof and signature were also
+    computed with Python's hashlib while this was written), a wrong
+    signature refused, and the mechanism's name and hash from the factory.
   - PLAIN: authzid (empty), user and password separated by NUL, in UTF-8; the
     broker's empty answer completes it, anything else is refused; a NUL in the
     user name is refused.
@@ -25,7 +29,8 @@
     the Java client 4.4.0's exchanges with the broker. PLAIN: the initial
     response is Java's, byte for byte. SCRAM: given the nonce Java chose,
     this client writes Java's client-first and client-final (the same
-    proof), and the broker's signature in that exchange verifies. The
+    proof), and the broker's signature in that exchange verifies; the same
+    for SCRAM-SHA-512 (carol, 64-byte proof and signature). The
     hand-built SaslHandshake and SaslAuthenticate requests, every version,
     which the broker accepted, encode from the generated records to the same
     bytes; the broker's answers decode: the mechanisms it enables, the
@@ -80,8 +85,11 @@ type
     procedure Scram_IterationsOutOfRangeOrNotANumber_AreRefused;
     procedure Scram_MandatoryExtensionOrBadSalt_IsRefused;
     procedure Scram_RandomNonce_DiffersEachTime;
+    procedure Scram512_DraftMelnikov_ClientMessagesAndServerSignature;
+    procedure Scram512_WrongServerSignature_IsRefused;
     procedure Java_Plain_SameInitialResponse;
     procedure Java_Scram_SameNonce_SameMessages_TheBrokersSignatureVerifies;
+    procedure Java_Scram512_SameNonce_SameMessages_TheBrokersSignatureVerifies;
     procedure HandBuiltRequests_EncodeToTheCapturedBytes;
     procedure BrokerAnswers_Decode;
   end;
@@ -97,6 +105,15 @@ const
     'p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=';
   RFC_SERVER_FINAL = 'v=6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=';
   RFC_SERVER_NONCE = 'rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0';
+  // draft-melnikov-scram-sha-512 (user "user", password "pencil", the same
+  // client nonce as RFC 7677's).
+  SHA512_SERVER_NONCE = 'rOprNGfwEbeRWgbNEkqO02431b08-2f89-4bad-a4e6-80c0564ec865';
+  SHA512_SERVER_FIRST = 'r=' + SHA512_SERVER_NONCE +
+    ',s=Yin2FuHTt/M0kJWb0t9OI32n2VmOGi3m+JfjOvuDF88=,i=4096';
+  SHA512_CLIENT_FINAL = 'c=biws,r=' + SHA512_SERVER_NONCE +
+    ',p=Hc5yec3NmCD7t+kFRw4/3yD6/F3SQHc7AVYschRja+Bc3sbdjlA0eH1OjJc0DD4ghn1tnXN5/Wr6qm9xmaHt4A==';
+  SHA512_SERVER_FINAL = 'v=BQuhnKHqYDwQWS5jAw4sZed+C9KFUALsbrq81bB0mh+bcUUbbMPNNmBIupnS2Amy' +
+    'yDnG5CTBQtkjJ9kyY4kzmw==';
 
 function Text(const ABytes: TBytes): string;
 begin
@@ -147,7 +164,7 @@ end;
 function TKafkaSaslTests.ScramAfterFirst(const AServerFirst: string): TKafkaSaslClient;
 begin
   FreeAndNil(FClient);
-  FClient := TKafkaScramSha256Client.CreateWithNonce('user', 'pencil', RFC_NONCE);
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha256, 'user', 'pencil', RFC_NONCE);
   FClient.InitialResponse;
   FChallenge := Utf8Of(AServerFirst);
   Result := FClient;
@@ -199,6 +216,7 @@ procedure TKafkaSaslTests.MechanismNames;
 begin
   TAssert.AssertEquals('PLAIN', KafkaSaslMechanismName(ksmPlain));
   TAssert.AssertEquals('SCRAM-SHA-256', KafkaSaslMechanismName(ksmScramSha256));
+  TAssert.AssertEquals('SCRAM-SHA-512', KafkaSaslMechanismName(ksmScramSha512));
   TAssert.AssertEquals('', KafkaSaslMechanismName(ksmNone));
 end;
 
@@ -215,6 +233,11 @@ begin
   FUser := 'alice';
   CreateClient;
   TAssert.AssertEquals('SCRAM-SHA-256', FClient.Mechanism);
+  TAssert.AssertEquals(Ord(kshSha256), Ord((FClient as TKafkaScramClient).Hash));
+  FMechanism := ksmScramSha512;
+  CreateClient;
+  TAssert.AssertEquals('SCRAM-SHA-512', FClient.Mechanism);
+  TAssert.AssertEquals(Ord(kshSha512), Ord((FClient as TKafkaScramClient).Hash));
 end;
 
 procedure TKafkaSaslTests.Plain_InitialResponse_IsNulSeparatedUtf8;
@@ -251,7 +274,7 @@ procedure TKafkaSaslTests.Scram_Rfc7677_ClientMessagesAndServerSignature;
 var
   LFinal: TBytes;
 begin
-  FClient := TKafkaScramSha256Client.CreateWithNonce('user', 'pencil', RFC_NONCE);
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha256, 'user', 'pencil', RFC_NONCE);
   TAssert.AssertEquals('SCRAM-SHA-256', FClient.Mechanism);
   TAssert.AssertEquals('n,,n=user,r=' + RFC_NONCE, Text(FClient.InitialResponse));
   LFinal := FClient.Evaluate(Utf8Of(RFC_SERVER_FIRST));
@@ -339,7 +362,7 @@ begin
   ScramAfterFirst('r=' + RFC_SERVER_NONCE + ',s=,i=4096');
   TAssert.AssertException('empty salt', EKafkaAuthentication, Evaluate);
   FreeAndNil(FClient);
-  FClient := TKafkaScramSha256Client.CreateWithNonce('user', 'pencil', RFC_NONCE);
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha256, 'user', 'pencil', RFC_NONCE);
   FClient.InitialResponse;
   FChallenge := Bytes([$72, $3D, $FF]); // "r=" and a byte that isn't UTF-8
   TAssert.AssertException('not UTF-8', EKafkaAuthentication, Evaluate);
@@ -349,15 +372,49 @@ procedure TKafkaSaslTests.Scram_RandomNonce_DiffersEachTime;
 var
   A, B: string;
 begin
-  FClient := TKafkaScramSha256Client.Create('a=b,c', 'x');
+  FClient := TKafkaScramClient.Create(kshSha256, 'a=b,c', 'x');
   A := Text(FClient.InitialResponse);
   FreeAndNil(FClient);
-  FClient := TKafkaScramSha256Client.Create('a=b,c', 'x');
+  FClient := TKafkaScramClient.Create(kshSha256, 'a=b,c', 'x');
   B := Text(FClient.InitialResponse);
   TAssert.AssertEquals('n,,n=a=3Db=2Cc,r=', Copy(A, 1, 17));
   // 24 random bytes in Base64: 32 characters.
   TAssert.AssertEquals(17 + 32, Length(A));
   TAssert.AssertTrue(A <> B);
+end;
+
+procedure TKafkaSaslTests.Scram512_DraftMelnikov_ClientMessagesAndServerSignature;
+var
+  LFinal: TBytes;
+begin
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha512, 'user', 'pencil', RFC_NONCE);
+  TAssert.AssertEquals('SCRAM-SHA-512', FClient.Mechanism);
+  TAssert.AssertEquals('n,,n=user,r=' + RFC_NONCE, Text(FClient.InitialResponse));
+  LFinal := FClient.Evaluate(Utf8Of(SHA512_SERVER_FIRST));
+  // A 64-byte proof: 88 Base64 characters.
+  TAssert.AssertEquals(SHA512_CLIENT_FINAL, Text(LFinal));
+  TAssert.AssertFalse(FClient.IsComplete);
+  TAssert.AssertEquals(0, Length(FClient.Evaluate(Utf8Of(SHA512_SERVER_FINAL))));
+  TAssert.AssertTrue(FClient.IsComplete);
+end;
+
+procedure TKafkaSaslTests.Scram512_WrongServerSignature_IsRefused;
+begin
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha512, 'user', 'pencil', RFC_NONCE);
+  FClient.InitialResponse;
+  FClient.Evaluate(Utf8Of(SHA512_SERVER_FIRST));
+  // The draft's signature with its first character changed.
+  FChallenge := Utf8Of('v=CQuhnKHqYDwQWS5jAw4sZed+C9KFUALsbrq81bB0mh+bcUUbbMPNNmBIupnS2Amy' +
+    'yDnG5CTBQtkjJ9kyY4kzmw==');
+  TAssert.AssertException(EKafkaAuthentication, Evaluate);
+  TAssert.AssertFalse(FClient.IsComplete);
+  // SCRAM-SHA-256's signature for the same exchange: 32 bytes, not 64.
+  FreeAndNil(FClient);
+  FClient := TKafkaScramClient.CreateWithNonce(kshSha512, 'user', 'pencil', RFC_NONCE);
+  FClient.InitialResponse;
+  FClient.Evaluate(Utf8Of(SHA512_SERVER_FIRST));
+  FChallenge := Utf8Of(RFC_SERVER_FINAL);
+  TAssert.AssertException(EKafkaAuthentication, Evaluate);
 end;
 
 function AuthRequestBytes(const AName: string): TBytes;
@@ -394,32 +451,47 @@ begin
   TAssert.AssertTrue(FClient.IsComplete);
 end;
 
-procedure TKafkaSaslTests.Java_Scram_SameNonce_SameMessages_TheBrokersSignatureVerifies;
+/// Java's SCRAM exchange in the captures APrefix: given its nonce, this
+/// client writes the same messages, and the broker's signature verifies.
+procedure CheckJavaScram(var AClient: TKafkaSaslClient; const APrefix, AMechanism: string;
+  AHash: TKafkaScramHash; const AUser, APassword: string);
 var
   H: TKafkaSaslHandshakeRequest;
   JavaFirst, Nonce: string;
   P: Integer;
   A1, A2: TKafkaSaslAuthenticateResponse;
 begin
-  H.FromBytes(CaptureRequestBody('java-scram-sasl-handshake-v1'), 1);
-  TAssert.AssertEquals('SCRAM-SHA-256', H.Mechanism);
-  JavaFirst := Text(AuthRequestBytes('java-scram-sasl-authenticate-v2-step1'));
+  H.FromBytes(CaptureRequestBody(APrefix + '-sasl-handshake-v1'), 1);
+  TAssert.AssertEquals(AMechanism, H.Mechanism);
+  JavaFirst := Text(AuthRequestBytes(APrefix + '-sasl-authenticate-v2-step1'));
   P := Pos(',r=', JavaFirst);
-  TAssert.AssertEquals('n,,n=bob,r=', Copy(JavaFirst, 1, P + 2));
+  TAssert.AssertEquals('n,,n=' + AUser + ',r=', Copy(JavaFirst, 1, P + 2));
   Nonce := Copy(JavaFirst, P + 3, MaxInt);
-  FClient := TKafkaScramSha256Client.CreateWithNonce('bob', 'bob-secret', Nonce);
-  TAssert.AssertEquals('client-first', JavaFirst, Text(FClient.InitialResponse));
-  A1 := AuthResponse('java-scram-sasl-authenticate-v2-step1');
+  AClient := TKafkaScramClient.CreateWithNonce(AHash, AUser, APassword, Nonce);
+  TAssert.AssertEquals(AMechanism, AClient.Mechanism);
+  TAssert.AssertEquals('client-first', JavaFirst, Text(AClient.InitialResponse));
+  A1 := AuthResponse(APrefix + '-sasl-authenticate-v2-step1');
   TAssert.AssertEquals(0, Integer(A1.ErrorCode));
   // The broker's salt and iteration count (8192, docker/kafka-start.sh).
   TAssert.AssertTrue(Text(A1.AuthBytes), Pos(',i=8192', Text(A1.AuthBytes)) > 0);
   TAssert.AssertEquals('client-final, the proof included',
-    Text(AuthRequestBytes('java-scram-sasl-authenticate-v2-step2')),
-    Text(FClient.Evaluate(A1.AuthBytes)));
-  A2 := AuthResponse('java-scram-sasl-authenticate-v2-step2');
+    Text(AuthRequestBytes(APrefix + '-sasl-authenticate-v2-step2')),
+    Text(AClient.Evaluate(A1.AuthBytes)));
+  A2 := AuthResponse(APrefix + '-sasl-authenticate-v2-step2');
   TAssert.AssertEquals(0, Integer(A2.ErrorCode));
-  TAssert.AssertEquals(0, Length(FClient.Evaluate(A2.AuthBytes)));
-  TAssert.AssertTrue('the broker''s signature verified', FClient.IsComplete);
+  TAssert.AssertEquals(0, Length(AClient.Evaluate(A2.AuthBytes)));
+  TAssert.AssertTrue('the broker''s signature verified', AClient.IsComplete);
+end;
+
+procedure TKafkaSaslTests.Java_Scram_SameNonce_SameMessages_TheBrokersSignatureVerifies;
+begin
+  CheckJavaScram(FClient, 'java-scram', 'SCRAM-SHA-256', kshSha256, 'bob', 'bob-secret');
+end;
+
+procedure TKafkaSaslTests.Java_Scram512_SameNonce_SameMessages_TheBrokersSignatureVerifies;
+begin
+  CheckJavaScram(FClient, 'java-scram512', 'SCRAM-SHA-512', kshSha512, 'carol',
+    'carol-secret');
 end;
 
 procedure TKafkaSaslTests.HandBuiltRequests_EncodeToTheCapturedBytes;

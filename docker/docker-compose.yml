@@ -13,13 +13,14 @@
 #         tests/pki: srv_cert.pem, CN=localhost, SAN localhost and 127.0.0.1,
 #         signed by ca_cert.pem). Public test keys: no security value.
 #   9094  the KRaft controller (not published)
-#   9096  SASL: SASL_PLAINTEXT, mechanisms PLAIN and SCRAM-SHA-256
+#   9096  SASL: SASL_PLAINTEXT, mechanisms PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512
 #   9097  SASLTLS: SASL_SSL, the same mechanisms over the TLS of 9093
 #   9098  REAUTH: SASL_PLAINTEXT with connections.max.reauth.ms = 2000, for
 #         the KIP-368 test (a session that ends while the test runs)
 #
 # Users (test credentials): PLAIN alice / alice-secret, from the JAAS lines
-# below; SCRAM-SHA-256 bob / bob-secret, created when the storage is
+# below; SCRAM-SHA-256 bob / bob-secret and SCRAM-SHA-512 carol / carol-secret,
+# created when the storage is
 # formatted (kafka-start.sh, which says why it formats before the image does).
 #
 # The TLS listeners are named TLS and SASLTLS, not SSL or SASL_SSL: the image's
@@ -69,15 +70,19 @@ services:
       KAFKA_LISTENER_NAME_SASLTLS_SSL_KEYSTORE_TYPE: PEM
       KAFKA_LISTENER_NAME_SASLTLS_SSL_KEYSTORE_LOCATION: /tmp/tls/server.pem
       KAFKA_LISTENER_NAME_SASLTLS_SSL_CLIENT_AUTH: none
-      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,SCRAM-SHA-256
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,SCRAM-SHA-256,SCRAM-SHA-512
       KAFKA_LISTENER_NAME_SASL_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required user_alice="alice-secret";'
       KAFKA_LISTENER_NAME_SASL_SCRAM___SHA___256_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
+      KAFKA_LISTENER_NAME_SASL_SCRAM___SHA___512_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
       KAFKA_LISTENER_NAME_SASLTLS_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required user_alice="alice-secret";'
       KAFKA_LISTENER_NAME_SASLTLS_SCRAM___SHA___256_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
+      KAFKA_LISTENER_NAME_SASLTLS_SCRAM___SHA___512_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
       KAFKA_LISTENER_NAME_REAUTH_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required user_alice="alice-secret";'
       KAFKA_LISTENER_NAME_REAUTH_SCRAM___SHA___256_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
+      KAFKA_LISTENER_NAME_REAUTH_SCRAM___SHA___512_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
       KAFKA_LISTENER_NAME_REAUTH_PLAIN_CONNECTIONS_MAX_REAUTH_MS: 2000
       KAFKA_LISTENER_NAME_REAUTH_SCRAM___SHA___256_CONNECTIONS_MAX_REAUTH_MS: 2000
+      KAFKA_LISTENER_NAME_REAUTH_SCRAM___SHA___512_CONNECTIONS_MAX_REAUTH_MS: 2000
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1

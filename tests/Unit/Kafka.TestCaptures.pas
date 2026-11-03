@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 276;
-  KAFKA_CAPTURES: array[0..275] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 282;
+  KAFKA_CAPTURES: array[0..281] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -1293,7 +1293,28 @@ const
           '9d95972f1ab7955721bddb81f4021efd9be1e8d369f4125d461f398bd19fc58b7effd570208bdea490fd67ea15010000000000'),
     (Name: 'java-producer-zstd-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0, --compression-codec zstd'; KafkaTag: '4.4.0';
      IsRequest: False; ApiKey: 0; ApiVersion: 13;
-     Hex: '000000060002e21909e8372042acb51c3201e5051eb4020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000')
+     Hex: '000000060002e21909e8372042acb51c3201e5051eb4020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'java-scram512-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '001100017ffffff9ffff000d534352414d2d5348412d353132'),
+    (Name: 'java-scram512-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '7ffffff90000000000030005504c41494e000d534352414d2d5348412d353132000d534352414d2d5348412d323536'),
+    (Name: 'java-scram512-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffaffff00276e2c2c6e3d6361726f6c2c723d79366d3469713579636a326874347a6a6e793964677930767500'),
+    (Name: 'java-scram512-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffa0000000164723d79366d3469713579636a326874347a6a6e7939646779307675316c766a68666275657231386831636f6c6e796369346c626e732c733d4d576432624856746357317462545979593355344e32527a656d393064575535596e55' +
+          '3d2c693d38313932000000000000000000'),
+    (Name: 'java-scram512-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffbffff009801633d626977732c723d79366d3469713579636a326874347a6a6e7939646779307675316c766a68666275657231386831636f6c6e796369346c626e732c703d516a7752683542445a44414473323532626e6c5879424d65' +
+          '7073426d454e536a785146373958505a77697233707336697365384943314a5651504b6e4c4d4d366c70764f777171396f543866392f35713231744774673d3d00'),
+    (Name: 'java-scram512-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffb000000015b763d7767426e302b4d6c4369416b532b6a77536c4a644646345030664b324642456e746865547671704b6151434e41463365426a546771764763514b5a306a5247655545305537706c767a5975497332446d52377a5341513d3d00' +
+          '0000000000000000')
   );
 
 /// The capture's bytes.

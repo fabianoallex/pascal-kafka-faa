@@ -1,8 +1,8 @@
 # pascal-kafka-faa — design
 
 Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3's steps 1 to 4 done (the idempotent producer, snappy and lz4,
-zstd read)**
+met against Kafka 4.4.0; K3's steps 1 to 5 done (the idempotent producer, snappy and lz4,
+zstd read, SCRAM-SHA-512)**
 (2026-11-03:
 "K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
@@ -223,7 +223,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | Idempotent producer (InitProducerId, sequences) | K3 | done; the default, as Java's since 3.0 |
 | snappy and lz4 (pure Pascal) | K3 | done, both directions; a consumer must read whatever any producer sent |
 | zstd | K3 | read: a decoder in Pascal (open question 2, option C); writing waits for a user who asks |
-| SCRAM-SHA-512 | K3 | needs SHA-512 in common (a new item there) |
+| SCRAM-SHA-512 | K3 | done; SHA-512 from pascal-common-faa 1.28.0 |
 | OAUTHBEARER (token supplied by the application) | K3 | no OIDC flow |
 | Spans and metrics | K3 | traceparent in headers, OpenTelemetry `messaging.*` conventions |
 | Transactions (exactly-once) | K4 | |
@@ -1345,6 +1345,65 @@ samples with the Delphi programs.
 and keeps the rest as unused data: it "accepted" bytes after a frame, and would read only one of
 several. What Java does was read in libzstd's source instead (CLAUDE.md, gotcha 23). Gotcha 17
 three more times: a backslash-n and shell line continuations in heredoc edits.
+
+### SCRAM-SHA-512 (2026-11-03)
+
+Step 5 of the plan. pascal-common-faa 1.28.0 came first (its own session and release):
+`PcSha512`, `PcHmacSha512`, `PcPbkdf2HmacSha512`, with FIPS 180-4, RFC 4231 and PBKDF2 vectors,
+on Delphi Win32/Win64 and FPC Windows and Linux (32 and 64 bits). Java 4.4.0's
+`ScramMechanism` was read again: SCRAM-SHA-512 is the same exchange over SHA-512 and
+HmacSHA512, with the same minimum (4096) and maximum (16384) iteration counts.
+
+**Done:**
+
+- **The submodule at `v1.28.0`**, and the check in `Kafka.Types` (`PASCALCOMMON_VERSION <
+  12800`) and the `.lpk`'s `MinVersion` (1.28) moved with it.
+- **`Kafka.Sasl`**: `ksmScramSha512`; one SCRAM class, `TKafkaScramClient`, whose hash is a
+  parameter (`TKafkaScramHash`: `kshSha256`, `kshSha512`), the salted password, keys, proof and
+  signature as long as the hash's digest (32 or 64 bytes). It replaces `TKafkaScramSha256Client`
+  (renamed: 0.x, unreleased). The connection, cluster, producer and consumer take the
+  mechanism from their parameters with no change of their own.
+- **The fake broker's SCRAM server** takes the hash from the mechanism the client chose
+  (`SaslMechanisms` may list `SCRAM-SHA-512`), still written apart from `Kafka.Sasl`.
+- **`docker/`**: SCRAM-SHA-512 enabled on the three SASL listeners (9096, 9097, 9098), and a user
+  `carol` / `carol-secret` with a SCRAM-SHA-512 credential (8192 iterations), created when the
+  storage is formatted, as bob.
+- **Captures**: the Java client 4.4.0's SCRAM-SHA-512 exchange (carol) through the proxy (282
+  frames).
+- **The samples** take `--sasl scram-sha-512`.
+- **Tests**: `Kafka.SaslTests`, 3 more: draft-melnikov-scram-sha-512's example (RFC 7677's user,
+  password and client nonce; its proof and server signature were also computed with Python's
+  hashlib while this was written), a wrong signature and a SHA-256 signature refused, and given
+  the nonce Java chose, this client writes Java's SCRAM-SHA-512 messages and the broker's
+  signature verifies. `Kafka.SaslConnectionTests`, 4 more, against the fake: right credentials
+  (an escaped user name, a non-ASCII password), a wrong password and a wrong server signature,
+  over TLS, a broker that enables only SCRAM-SHA-256. `Kafka.SaslIntegrationTests`, 3 more,
+  against Kafka 4.4.0: produce and consume as carol on SASL_PLAINTEXT and SASL_SSL; a wrong
+  password, and bob (a SCRAM-SHA-256 credential only) refused under SCRAM-SHA-512.
+
+**Measured:** FPC 3.2.2 Windows x64: 328 unit and 47 integration tests, the interoperability
+test and both samples (also with `--sasl scram-sha-512` as carol), 0 leaks. Linux (Docker): the
+same, and both suites 5 times in three containers at once with `--cpus=1` (30 runs). Delphi 12
+Win32 and Win64: 328 and 47, 0 leaks; the interoperability test and both samples (SCRAM-SHA-256
+and SCRAM-SHA-512) with the Delphi programs.
+
+**Decided while writing:**
+
+- **One class with the hash as a parameter**, as the plan said, not a subclass per hash: the
+  exchange is the same, only the functions and the lengths change.
+- **Amazon MSK** is the managed broker that asks for SCRAM-SHA-512 (open question 1); nothing
+  of it was tried here.
+
+**Fixed on the way:** `Kafka.ProducerTests.NotLeader_RetriedAfterARefresh_OrderKept` failed
+about one run in twenty (also on the commit before this one): a `Flush` that timed out. With
+the idempotent producer five batches of the partition were in flight; the fake failed the first
+two requests, and the third batch, the first the broker saw of that producer, was written:
+Kafka 4.4.0 (and the fake) take an unknown producer's batch at any sequence. Sequences 0 and 1
+then came back OUT_OF_ORDER for good, and the producer retried them, as Java's would, until the
+delivery timeout. No broker does that: a leader that moved refuses every request after, not
+two. The test now writes a first record, so that the broker knows the producer and answers the
+gap OUT_OF_ORDER; 60 runs of the fixture in a row passed. The idempotent fixture's own
+NOT_LEADER test already did so.
 
 ## 8. Open questions
 

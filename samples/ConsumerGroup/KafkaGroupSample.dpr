@@ -167,6 +167,8 @@ begin
         Result.Mechanism := ksmPlain
       else if SameText(Value, 'scram-sha-256') then
         Result.Mechanism := ksmScramSha256
+      else if SameText(Value, 'scram-sha-512') then
+        Result.Mechanism := ksmScramSha512
       else if SameText(Value, 'none') then
         Result.Mechanism := ksmNone
       else

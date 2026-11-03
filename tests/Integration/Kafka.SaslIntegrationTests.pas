@@ -4,15 +4,19 @@
   docker/docker-compose.yml: SASL_PLAINTEXT on 9096, SASL_SSL on 9097 (the
   TLS of pascal-common-faa's test PKI), and 9098, SASL_PLAINTEXT whose
   sessions last 2 s (connections.max.reauth.ms, KIP-368). Users: PLAIN
-  alice / alice-secret (JAAS), SCRAM-SHA-256 bob / bob-secret (created when
-  the storage was formatted, 8192 iterations).
+  alice / alice-secret (JAAS), SCRAM-SHA-256 bob / bob-secret and
+  SCRAM-SHA-512 carol / carol-secret (created when the storage was
+  formatted, 8192 iterations).
 
   - The producer and the consumer through each listener and mechanism
-    (SASL_PLAINTEXT and SASL_SSL, PLAIN and SCRAM-SHA-256): keyed records
-    produced and polled back where the producer's reports said.
+    (SASL_PLAINTEXT and SASL_SSL, PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512):
+    keyed records produced and polled back where the producer's reports
+    said.
   - What the broker answers, as Kafka.Connection reads it: a wrong password
     is EKafkaAuthentication with SASL_AUTHENTICATION_FAILED and the broker's
-    message (PLAIN and SCRAM); a SASL client on the PLAINTEXT listener gets
+    message (PLAIN and both SCRAMs); bob, whose credential is SCRAM-SHA-256
+    only, is refused under SCRAM-SHA-512; a SASL client on the PLAINTEXT
+    listener gets
     ILLEGAL_SASL_STATE; a client without SASL on a SASL listener is hung up
     on at its first request after ApiVersions.
   - KIP-368: the broker gives a 2 s session; the connection is due for
@@ -85,8 +89,11 @@ type
     [Test] procedure SaslPlaintext_Scram_ProducesAndConsumes;
     [Test] procedure SaslSsl_Plain_ProducesAndConsumes;
     [Test] procedure SaslSsl_Scram_ProducesAndConsumes;
+    [Test] procedure SaslPlaintext_Scram512_ProducesAndConsumes;
+    [Test] procedure SaslSsl_Scram512_ProducesAndConsumes;
     [Test] procedure Plain_WrongPassword_IsAuthenticationFailed;
     [Test] procedure Scram_WrongPassword_IsAuthenticationFailed;
+    [Test] procedure Scram512_WrongPasswordOrA256OnlyUser_IsAuthenticationFailed;
     [Test] procedure SaslClientOnThePlaintextListener_IsIllegalSaslState;
     [Test] procedure ClientWithoutSaslOnASaslListener_IsHungUpOn;
     [Test] procedure Reauth_ClusterReplacesTheConnection_BrokerClosesTheOld;
@@ -163,6 +170,11 @@ begin
   begin
     Result.SaslUsername := 'bob';
     Result.SaslPassword := 'bob-secret';
+  end
+  else if AMechanism = ksmScramSha512 then
+  begin
+    Result.SaslUsername := 'carol';
+    Result.SaslPassword := 'carol-secret';
   end;
 end;
 
@@ -318,6 +330,16 @@ begin
   ProduceAndConsume(kslSaslTls, ksmScramSha256);
 end;
 
+procedure TKafkaSaslIntegrationTests.SaslPlaintext_Scram512_ProducesAndConsumes;
+begin
+  ProduceAndConsume(kslSasl, ksmScramSha512);
+end;
+
+procedure TKafkaSaslIntegrationTests.SaslSsl_Scram512_ProducesAndConsumes;
+begin
+  ProduceAndConsume(kslSaslTls, ksmScramSha512);
+end;
+
 function TKafkaSaslIntegrationTests.OpenFails(const AParams: TKafkaConnectionParams;
   out ACode: Int16): string;
 begin
@@ -372,6 +394,25 @@ begin
   LMessage := OpenFails(P, LCode);
   TAssert.AssertEquals(Integer(KAFKA_ERROR_SASL_AUTHENTICATION_FAILED), Integer(LCode));
   TAssert.AssertTrue(LMessage, Pos('SCRAM-SHA-256', LMessage) > 0);
+end;
+
+procedure TKafkaSaslIntegrationTests.Scram512_WrongPasswordOrA256OnlyUser_IsAuthenticationFailed;
+var
+  P: TKafkaConnectionParams;
+  LCode: Int16;
+  LMessage: string;
+begin
+  P := Params(kslSaslTls, ksmScramSha512);
+  P.SaslPassword := 'carol-secreT';
+  LMessage := OpenFails(P, LCode);
+  TAssert.AssertEquals(Integer(KAFKA_ERROR_SASL_AUTHENTICATION_FAILED), Integer(LCode));
+  TAssert.AssertTrue(LMessage, Pos('SCRAM-SHA-512', LMessage) > 0);
+  // bob has a SCRAM-SHA-256 credential and none for SHA-512.
+  P := Params(kslSasl, ksmScramSha512);
+  P.SaslUsername := 'bob';
+  P.SaslPassword := 'bob-secret';
+  LMessage := OpenFails(P, LCode);
+  TAssert.AssertEquals(Integer(KAFKA_ERROR_SASL_AUTHENTICATION_FAILED), Integer(LCode));
 end;
 
 procedure TKafkaSaslIntegrationTests.SaslClientOnThePlaintextListener_IsIllegalSaslState;

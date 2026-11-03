@@ -27,9 +27,10 @@ non-ASCII values on purpose (`'São'`).
 ## Dependencies and versions
 
 - **pascal-common-faa** is a submodule in `external/pascal-common-faa`, at a tag (today
-  `v1.27.1`). The library needs **1.27.1 or later**: `Kafka.Types` refuses an older copy at
-  compile time (`PASCALCOMMON_VERSION < 12701`), and `packages/pascal_kafka_faa.lpk` says
-  `MinVersion 1.27.1`. Raise both together, and move the submodule to the same tag.
+  `v1.28.0`). The library needs **1.28.0 or later** (SHA-512 for SCRAM-SHA-512): `Kafka.Types`
+  refuses an older copy at compile time (`PASCALCOMMON_VERSION < 12800`), and
+  `packages/pascal_kafka_faa.lpk` says `MinVersion 1.28`. Raise both together, and move the
+  submodule to the same tag.
 - The `.lpk` requires `pascal_common_faa` **by name only**: the application provides the one
   copy. Only the test `.lpi` files point into `external/` (`Prefer="True"`).
 - This library's own version: `KAFKA_FAA_VERSION*` in `Kafka.Types`, the `.lpk` and
@@ -112,8 +113,8 @@ first).
   thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
   the batches per partition (`AppendBatch`, `AppendRawBatch` for another client's bytes as
   they are, `SetLogStart`), and speaks SASL (`SaslMechanisms`, one user; PLAIN, and
-  SCRAM-SHA-256 written as a server, apart from `Kafka.Sasl`): before a client authenticates
-  it answers only ApiVersions and SASL, as a broker. It serves any number
+  SCRAM-SHA-256 and SCRAM-SHA-512 written as a server, apart from `Kafka.Sasl`): before a
+  client authenticates it answers only ApiVersions and SASL, as a broker. It serves any number
   of connections at once (a thread each, with its own SASL state; `DropClient` aborts them
   all), and it is every group's coordinator (`OfferGroups`, on with `KafkaFakeUseView`;
   `Kafka.TestFakeGroup`): FindCoordinator (`FindCoordinatorMax` for an older broker, injected
@@ -134,8 +135,9 @@ first).
   is writing, `KafkaDecompressionSupported` reading).
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
-  SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
-  bob-secret): `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
+  SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret,
+  SCRAM-SHA-256 bob / bob-secret, SCRAM-SHA-512 carol / carol-secret):
+  `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
   file needs the container recreated (`up -d` does it; a change to `docker/kafka-start.sh`
   alone needs `up -d --force-recreate`). `kafka-start.sh` creates the topic
   `pascal-kafka-faa-it-zstd` (`compression.type=zstd`) and the healthcheck waits for it: the

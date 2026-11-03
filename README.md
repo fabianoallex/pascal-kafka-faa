@@ -7,7 +7,7 @@ time.
 **Status: early, not released.** Phases K1, K2 and the start of K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, snappy and lz4 (in Pascal, both
 directions) and zstd (read, in Pascal; not written yet), murmur2 partitioning compatible
-with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
+with Java, a connection per broker, SASL PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer (idempotent by default), and the consumer with partitions
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
 events, synchronous, asynchronous and automatic commits), checked against the Java client in
@@ -196,13 +196,14 @@ partitions, hand them over through their commits, and read every record once.
 ## Requirements
 
 - Delphi 12, or FPC 3.2.2 / Lazarus 4.
-- [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa) **1.27.1 or later**,
+- [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa) **1.28.0 or later**,
   provided once by the application (one search path in Delphi; one registered
   `pascal_common_faa.lpk` in Lazarus). Lazarus: `packages/pascal_kafka_faa.lpk`.
 - A Kafka broker of 2.1 or later; consumer groups need 4.0 or later (KIP-848; the classic
   protocol of older brokers isn't there yet). Developed and tested against Apache Kafka 4.4.0.
-- SASL: PLAIN and SCRAM-SHA-256. User name and password are sent as their UTF-8 bytes, without
-  SASLprep (as Java's client). SCRAM-SHA-512, OAUTHBEARER: phase K3. GSSAPI/Kerberos: no plan.
+- SASL: PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 (`ksmScramSha512`, as Amazon MSK uses). User
+  name and password are sent as their UTF-8 bytes, without SASLprep (as Java's client).
+  OAUTHBEARER: phase K3. GSSAPI/Kerberos: no plan.
 - TLS certificates (the common library's rule): CA files are PEM on both backends; a client
   certificate is a PEM pair on OpenSSL and a PFX on SChannel. A JKS keystore must be converted
   (`keytool -importkeystore ... -deststoretype PKCS12`, then `openssl pkcs12` for PEM).

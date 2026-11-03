@@ -21,7 +21,8 @@
   the shell's history; --password exists for the lab.
 
   The options, all optional: --bootstrap, --ca, --sasl plain|scram-sha-256|
-  none, --user, --password, --password-env, --topic, --count, --no-tls. }
+  scram-sha-512|none, --user, --password, --password-env, --topic, --count,
+  --no-tls. }
 
 {$APPTYPE CONSOLE}
 
@@ -107,6 +108,8 @@ begin
         Result.Mechanism := ksmPlain
       else if SameText(Value, 'scram-sha-256') then
         Result.Mechanism := ksmScramSha256
+      else if SameText(Value, 'scram-sha-512') then
+        Result.Mechanism := ksmScramSha512
       else if SameText(Value, 'none') then
         Result.Mechanism := ksmNone
       else

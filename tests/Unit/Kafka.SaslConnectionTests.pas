@@ -4,9 +4,11 @@
   broker (Kafka.TestFakeBroker), whose SCRAM side is a server's, written
   apart from Kafka.Sasl's client.
 
-  - PLAIN and SCRAM-SHA-256 with the right credentials: Open authenticates
-    after ApiVersions and Metadata works; SCRAM with a user name that needs
-    escaping and a non-ASCII password; SCRAM over TLS (SASL_SSL).
+  - PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 with the right credentials:
+    Open authenticates after ApiVersions and Metadata works; SCRAM with a
+    user name that needs escaping and a non-ASCII password; SCRAM over TLS
+    (SASL_SSL). SCRAM-SHA-512's wrong password, wrong server signature and
+    a broker that enables only SCRAM-SHA-256.
   - Failures are EKafkaAuthentication with the broker's code: a wrong
     password and an unknown user (SASL_AUTHENTICATION_FAILED, the broker's
     message, never the password), a mechanism the broker doesn't enable
@@ -65,6 +67,10 @@ type
     [Test] procedure Scram_UnknownUser_IsAuthenticationFailed;
     [Test] procedure Scram_WrongServerSignature_IsRefusedByTheClient;
     [Test] procedure Scram_OverTls_Authenticates;
+    [Test] procedure Scram512_RightCredentials_EscapedUserAndNonAsciiPassword;
+    [Test] procedure Scram512_WrongPasswordOrSignature_AreRefused;
+    [Test] procedure Scram512_OverTls_Authenticates;
+    [Test] procedure Scram512_NotEnabled_ListsTheBrokers;
     [Test] procedure MechanismNotEnabled_ListsTheBrokers;
     [Test] procedure ListenerWithoutSasl_IsIllegalSaslState;
     [Test] procedure NoSaslOnASaslListener_BrokerHangsUp;
@@ -92,7 +98,7 @@ end;
 procedure TKafkaSaslConnectionTests.Setup;
 begin
   FBroker := TKafkaFakeBroker.Create;
-  FBroker.SaslMechanisms := 'PLAIN,SCRAM-SHA-256';
+  FBroker.SaslMechanisms := 'PLAIN,SCRAM-SHA-256,SCRAM-SHA-512';
   FBroker.SaslUser := USER;
   FBroker.SaslPassword := PASSWORD;
   FParams := KafkaConnectionParams('127.0.0.1', FBroker.Port);
@@ -232,6 +238,64 @@ begin
   Connect;
   TAssert.AssertEquals(1, FBroker.SaslAuthenticatedCount);
   CallMetadata;
+end;
+
+procedure TKafkaSaslConnectionTests.Scram512_RightCredentials_EscapedUserAndNonAsciiPassword;
+var
+  R: TKafkaMetadataResponse;
+begin
+  FBroker.SaslUser := 'svc=orders,eu';
+  FBroker.SaslPassword := 'pässwörd São';
+  UseSasl(ksmScramSha512, 'svc=orders,eu', 'pässwörd São');
+  Connect;
+  TAssert.AssertEquals('SCRAM-SHA-512', FBroker.LastSaslMechanism);
+  TAssert.AssertEquals(1, FBroker.SaslAuthenticatedCount);
+  R := FConnection.Metadata(MetadataFor('after-scram-512'));
+  TAssert.AssertEquals('after-scram-512', R.Topics[0].Name);
+end;
+
+procedure TKafkaSaslConnectionTests.Scram512_WrongPasswordOrSignature_AreRefused;
+var
+  LCode: Int16;
+  LMessage: string;
+begin
+  UseSasl(ksmScramSha512, USER, 'alice-secreT');
+  LMessage := OpenFails(LCode);
+  TAssert.AssertEquals(Integer(KAFKA_ERROR_SASL_AUTHENTICATION_FAILED), Integer(LCode));
+  TAssert.AssertTrue(LMessage, Pos('Invalid user credentials', LMessage) > 0);
+  FBroker.SaslBadServerSignature := True;
+  UseSasl(ksmScramSha512, USER, PASSWORD);
+  LMessage := OpenFails(LCode);
+  TAssert.AssertEquals('the client''s own check', 0, Integer(LCode));
+  TAssert.AssertTrue(LMessage, Pos('signature', LMessage) > 0);
+end;
+
+procedure TKafkaSaslConnectionTests.Scram512_OverTls_Authenticates;
+begin
+  FreeAndNil(FBroker);
+  FBroker := TKafkaFakeBroker.CreateTls;
+  FBroker.SaslMechanisms := 'SCRAM-SHA-512';
+  FBroker.SaslUser := USER;
+  FBroker.SaslPassword := PASSWORD;
+  FParams := KafkaConnectionParams('localhost', FBroker.Port);
+  FParams.UseTls := True;
+  FParams.TlsCaFile := KafkaTestPkiDir + 'ca_cert.pem';
+  UseSasl(ksmScramSha512, USER, PASSWORD);
+  Connect;
+  TAssert.AssertEquals(1, FBroker.SaslAuthenticatedCount);
+  CallMetadata;
+end;
+
+procedure TKafkaSaslConnectionTests.Scram512_NotEnabled_ListsTheBrokers;
+var
+  LCode: Int16;
+  LMessage: string;
+begin
+  FBroker.SaslMechanisms := 'PLAIN,SCRAM-SHA-256';
+  UseSasl(ksmScramSha512, USER, PASSWORD);
+  LMessage := OpenFails(LCode);
+  TAssert.AssertEquals(Integer(KAFKA_ERROR_UNSUPPORTED_SASL_MECHANISM), Integer(LCode));
+  TAssert.AssertTrue(LMessage, Pos('the broker enables: PLAIN, SCRAM-SHA-256', LMessage) > 0);
 end;
 
 procedure TKafkaSaslConnectionTests.MechanismNotEnabled_ListsTheBrokers;

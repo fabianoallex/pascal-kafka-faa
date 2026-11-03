@@ -152,7 +152,25 @@ python tools/gen_test_captures.py
 ```
 
 SaslAuthenticate is kept every time it repeats, numbered (`-step1`, `-step2`): SCRAM sends it
-twice at the same version. The Java client sent ApiVersions v0, SaslHandshake v1,
+twice at the same version.
+
+**SCRAM-SHA-512 (2026-11-03, same file).** The same, with carol / carol-secret (SCRAM-SHA-512,
+8192 iterations, `docker/kafka-start.sh`), one connection:
+
+```sh
+python -I tools/capture_proxy.py --listen 19093 --target localhost:9096 --out .ci/cap-scram512.jsonl &
+docker exec pascal-kafka-faa-broker sh -c '
+  printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"carol\" password=\"carol-secret\";\n" > /tmp/scram512.properties
+  /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server host.docker.internal:19093 \
+    --command-config /tmp/scram512.properties'
+python -I tools/captures_from_proxy.py --in .ci/cap-scram512.jsonl --conn 1 \
+  --apis sasl-handshake,sasl-authenticate --prefix java-scram512 \
+  --source "java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512" --out tests/data/captures-4.4.0.jsonl
+python tools/gen_test_captures.py
+```
+
+282 frames. The broker's answer to SaslHandshake lists PLAIN, SCRAM-SHA-512 and SCRAM-SHA-256;
+the proof and the server signature are 64 bytes (88 Base64 characters). The Java client sent ApiVersions v0, SaslHandshake v1,
 SaslAuthenticate v2 (once for PLAIN, twice for SCRAM), then ApiVersions v5 and Metadata.
 
 ## Consumer groups: FindCoordinator, OffsetCommit, OffsetFetch, ConsumerGroupHeartbeat, ConsumerGroupDescribe (2026-11-02, same file)

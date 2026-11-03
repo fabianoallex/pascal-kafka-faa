@@ -410,23 +410,34 @@ begin
   StartBrokers(1, [1]);
   FParams.BatchSize := 1; // a batch per record
   OpenProducer;
+  // A first record, so that the broker knows the (idempotent) producer.
+  // Without it the race below has a third outcome no broker gives: the two
+  // failed requests are the first two batches, the third batch, already in
+  // flight, is the first the broker sees, and Kafka 4.4.0 takes an unknown
+  // producer's batch at any sequence (the fake does the same). Sequences 0
+  // and 1 then come back OUT_OF_ORDER for good, and the producer retries
+  // them, as Java's does, until DeliveryTimeoutMs (one run in about twenty,
+  // seen as a Flush that timed out). A real leader that moved refuses
+  // every request after it, not two.
+  TAssert.AssertTrue(Send(KafkaProducerRecord(TOPIC, Value('first'))).Get(10000).Succeeded);
   MetadataBefore := Broker(1).MetadataCount;
   Broker(1).ProduceErrorCode := KAFKA_ERROR_NOT_LEADER_OR_FOLLOWER;
   Broker(1).ProduceErrors := 2;
   for I := 0 to 4 do
     Send(KafkaProducerRecord(TOPIC, Value('v' + IntToStr(I))));
-  TAssert.AssertTrue(FProducer.Flush(10000));
-  for I := 0 to 4 do
-    TAssert.AssertTrue('v' + IntToStr(I) + ': ' + Reports[I].ErrorMessage, Reports[I].Succeeded);
+  TAssert.AssertTrue('flushed', FProducer.Flush(10000));
+  for I := 0 to 5 do
+    TAssert.AssertTrue(IntToStr(I) + ': ' + Reports[I].ErrorMessage, Reports[I].Succeeded);
   Logged := Broker(1).Logged(TOPIC, 0);
-  TAssert.AssertEquals(5, Length(Logged));
+  TAssert.AssertEquals(6, Length(Logged));
+  TAssert.AssertEquals('first', FromUtf8(Logged[0].Value));
   for I := 0 to 4 do
   begin
-    TAssert.AssertEquals('v' + IntToStr(I), FromUtf8(Logged[I].Value));
-    TAssert.AssertEquals(Int64(I), Reports[I].Offset);
+    TAssert.AssertEquals('v' + IntToStr(I), FromUtf8(Logged[1 + I].Value));
+    TAssert.AssertEquals(Int64(1 + I), Reports[1 + I].Offset);
   end;
   TAssert.AssertTrue('refreshed', Broker(1).MetadataCount > MetadataBefore);
-  TAssert.AssertTrue('sent again', Broker(1).ProduceCount >= 7);
+  TAssert.AssertTrue('sent again', Broker(1).ProduceCount >= 8);
 end;
 
 procedure TKafkaProducerTests.NoAnswer_AbandonedAfterTheRequestTimeout_SentAgain;

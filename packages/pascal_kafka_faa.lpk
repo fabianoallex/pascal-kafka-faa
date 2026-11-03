@@ -158,7 +158,7 @@
            test .lpi files point at external/ with Prefer="True". -->
       <Item>
         <PackageName Value="pascal_common_faa"/>
-        <MinVersion Major="1" Minor="27" Release="1" Valid="True"/>
+        <MinVersion Major="1" Minor="28" Valid="True"/>
       </Item>
       <Item>
         <PackageName Value="FCL"/>

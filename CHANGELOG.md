@@ -198,9 +198,18 @@ the sample against Confluent Cloud, has been run.
   integration tests (44) on a topic with `compression.type=zstd`, which `docker/kafka-start.sh`
   creates, so the broker compresses with Java's zstd; `tools/interop.py` runs Java to library
   with zstd.
+- SCRAM-SHA-512 (phase K3, step 5): `ksmScramSha512` in `TKafkaConnectionParams.SaslMechanism`,
+  over pascal-common-faa 1.28.0's SHA-512. The fake broker speaks it; `docker/` enables it with
+  a user `carol` / `carol-secret`; the samples take `--sasl scram-sha-512`. Captures: the Java
+  client's SCRAM-SHA-512 exchange (282 frames). Tests: draft-melnikov-scram-sha-512's example,
+  Java's exchange, the fake (328 unit tests in all) and Kafka 4.4.0 (47 integration tests).
 
 ### Changed
 
+- **pascal-common-faa 1.28.0 or later** (it was 1.27.1): `Kafka.Types` and the `.lpk` refuse an
+  older copy.
+- **`TKafkaScramSha256Client` is now `TKafkaScramClient`**, with the hash as its first
+  constructor parameter (`kshSha256` or `kshSha512`).
 - **`Compression := kcZstd` raises `EArgumentException`** in `TKafkaProducer.Create` with a
   message that says zstd is read but not written (it said "isn't supported yet"), and
   `KafkaCompress(kcZstd)` raises `EKafkaCompression` saying the same.

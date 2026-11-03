@@ -1,6 +1,6 @@
 #!/bin/sh
 # The broker's start for docker-compose.yml: the TLS keystore, a storage
-# format that creates the SCRAM user, then the image's own start.
+# format that creates the SCRAM users, then the image's own start.
 #
 # Kafka reads a PEM keystore (KIP-651) as one file with the key and the chain,
 # so the two PEM files of pascal-common-faa's test PKI are concatenated.
@@ -22,6 +22,7 @@
 # Users (test credentials, no security value):
 #   PLAIN          alice / alice-secret   (JAAS, in docker-compose.yml)
 #   SCRAM-SHA-256  bob   / bob-secret     (here, 8192 iterations)
+#   SCRAM-SHA-512  carol / carol-secret   (here, 8192 iterations)
 #
 # Topics: once the broker answers, pascal-kafka-faa-it-zstd is created (one
 # partition, compression.type=zstd), so that the broker compresses what it
@@ -44,7 +45,8 @@ log.dirs=/tmp/kraft-combined-logs
 EOF
   /opt/kafka/bin/kafka-storage.sh format --cluster-id "$CLUSTER_ID" \
     --config /tmp/format.properties \
-    --add-scram 'SCRAM-SHA-256=[name=bob,password=bob-secret,iterations=8192]'
+    --add-scram 'SCRAM-SHA-256=[name=bob,password=bob-secret,iterations=8192]' \
+    --add-scram 'SCRAM-SHA-512=[name=carol,password=carol-secret,iterations=8192]'
 fi
 /etc/kafka/docker/run &
 BROKER=$!

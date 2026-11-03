@@ -71,15 +71,16 @@
     ProduceErrors ones. StoredBatches gives the batches as stored, producer
     id, epoch and sequence included.
 
-  - SASL (SaslMechanisms, e.g. 'PLAIN,SCRAM-SHA-256'; '' = a listener
-    without SASL, which answers SaslHandshake with ILLEGAL_SASL_STATE, as a
-    broker's PLAINTEXT listener does). One user (SaslUser, SaslPassword) for
-    both mechanisms. Before a client authenticates, only ApiVersions,
+  - SASL (SaslMechanisms, e.g. 'PLAIN,SCRAM-SHA-256,SCRAM-SHA-512'; '' = a
+    listener without SASL, which answers SaslHandshake with
+    ILLEGAL_SASL_STATE, as a broker's PLAINTEXT listener does). One user
+    (SaslUser, SaslPassword) for every mechanism. Before a client authenticates, only ApiVersions,
     SaslHandshake and SaslAuthenticate are answered: anything else closes
     the connection, as a broker does. A mechanism not enabled gets
     UNSUPPORTED_SASL_MECHANISM with the list; wrong credentials get
-    SASL_AUTHENTICATION_FAILED with Java's messages. SCRAM-SHA-256 is the
-    server's side of RFC 5802, written here apart from Kafka.Sasl's client:
+    SASL_AUTHENTICATION_FAILED with Java's messages. SCRAM-SHA-256 and
+    SCRAM-SHA-512 are the server's side of RFC 5802 over pascal-common-faa's
+    SHA-256 and SHA-512, written here apart from Kafka.Sasl's client:
     the proof is checked as a server does (the client key recovered from
     the proof must hash to the stored key), with a fixed salt and
     SaslIterations rounds. SaslBadServerSignature sends a wrong server
@@ -975,9 +976,20 @@ begin
     Move(B[0], Result[Length(A)], Length(B));
 end;
 
-function FakeHmac(const AKey, AData: TBytes): TBytes;
+function FakeHmac(A512: Boolean; const AKey, AData: TBytes): TBytes;
 begin
-  Result := PcDigestToBytes(PcHmacSha256(AKey, AData));
+  if A512 then
+    Result := PcSha512DigestToBytes(PcHmacSha512(AKey, AData))
+  else
+    Result := PcDigestToBytes(PcHmacSha256(AKey, AData));
+end;
+
+function FakeHash(A512: Boolean; const AData: TBytes): TBytes;
+begin
+  if A512 then
+    Result := PcSha512DigestToBytes(PcSha512(AData))
+  else
+    Result := PcDigestToBytes(PcSha256(AData));
 end;
 
 /// The value of attribute AName ('r', 'p'...) in a SCRAM message; '' if absent.
@@ -1085,6 +1097,8 @@ var
   LText, LUser, LFinalWithoutProof: string;
   LParts: array[0..2] of string;
   LSalted, LClientKey, LStoredKey, LServerKey, LAuthMessage, LSignature, LProof: TBytes;
+  L512: Boolean;
+  LDigest: Integer;
   P, I, K: Integer;
   LOk: Boolean;
 begin
@@ -1170,31 +1184,39 @@ begin
       P := Pos(',p=', LText);
       LOk := LOk and (P > 0) and (ScramAttribute(LText, 'r') = AConn.FScramNonce) and
         (ScramAttribute(LText, 'c') = 'biws');
+      L512 := AConn.FSaslChosen = 'SCRAM-SHA-512';
+      if L512 then
+        LDigest := 64
+      else
+        LDigest := 32;
       LProof := nil;
       if LOk then
       begin
         LFinalWithoutProof := Copy(LText, 1, P - 1);
         LOk := KafkaTryBase64Decode(Copy(LText, P + 3, MaxInt), LProof) and
-          (Length(LProof) = 32);
+          (Length(LProof) = LDigest);
       end;
       if LOk then
       begin
-        LSalted := PcPbkdf2HmacSha256(PcStringToUtf8Bytes(SaslPassword),
-          PcStringToUtf8Bytes(SALT), SaslIterations, 32);
-        LStoredKey := PcDigestToBytes(PcSha256(FakeHmac(LSalted,
-          PcStringToUtf8Bytes('Client Key'))));
-        LServerKey := FakeHmac(LSalted, PcStringToUtf8Bytes('Server Key'));
+        if L512 then
+          LSalted := PcPbkdf2HmacSha512(PcStringToUtf8Bytes(SaslPassword),
+            PcStringToUtf8Bytes(SALT), SaslIterations, 64)
+        else
+          LSalted := PcPbkdf2HmacSha256(PcStringToUtf8Bytes(SaslPassword),
+            PcStringToUtf8Bytes(SALT), SaslIterations, 32);
+        LStoredKey := FakeHash(L512, FakeHmac(L512, LSalted, PcStringToUtf8Bytes('Client Key')));
+        LServerKey := FakeHmac(L512, LSalted, PcStringToUtf8Bytes('Server Key'));
         LAuthMessage := ConcatBytes(ConcatBytes(AConn.FScramClientFirstBare, PcStringToUtf8Bytes(',')),
           ConcatBytes(ConcatBytes(AConn.FScramServerFirst, PcStringToUtf8Bytes(',')),
           PcStringToUtf8Bytes(LFinalWithoutProof)));
         // A server's check: ClientKey = proof xor HMAC(StoredKey, AuthMessage),
         // and H(ClientKey) must be the stored key.
-        LSignature := FakeHmac(LStoredKey, LAuthMessage);
+        LSignature := FakeHmac(L512, LStoredKey, LAuthMessage);
         LClientKey := nil;
-        SetLength(LClientKey, 32);
-        for I := 0 to 31 do
+        SetLength(LClientKey, LDigest);
+        for I := 0 to LDigest - 1 do
           LClientKey[I] := LProof[I] xor LSignature[I];
-        LOk := PcSameBytes(PcDigestToBytes(PcSha256(LClientKey)), LStoredKey);
+        LOk := PcSameBytes(FakeHash(L512, LClientKey), LStoredKey);
       end;
       if not LOk then
       begin
@@ -1204,7 +1226,7 @@ begin
       end
       else
       begin
-        LSignature := FakeHmac(LServerKey, LAuthMessage);
+        LSignature := FakeHmac(L512, LServerKey, LAuthMessage);
         if SaslBadServerSignature then
           LSignature[0] := LSignature[0] xor $FF;
         R.AuthBytes := PcStringToUtf8Bytes('v=' + KafkaBase64Encode(LSignature));
