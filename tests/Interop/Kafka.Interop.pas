@@ -11,15 +11,17 @@
   drives both; each side checks what it can see.
 
     KafkaInterop consume <bootstrap> <topic> <fixture>
-      Java produced the fixture (gzip, the console producer); this reads
+      Java produced the fixture (the console producer, with gzip, snappy or
+      lz4: the script checks the codec in the broker's log); this reads
       every partition from the start and checks each record against its
       line: key (null or bytes), value, headers in order (a null value too),
       a CreateTime timestamp, the partition Java's partitioner chose for a
       keyed record (KafkaPartitionForKey: the same murmur2), and the
       fixture's order within each partition.
 
-    KafkaInterop produce <bootstrap> <topic> <fixture>
-      Sends the fixture with gzip, acks=all and fixed timestamps
+    KafkaInterop produce <bootstrap> <topic> <fixture> [<codec>]
+      Sends the fixture with <codec> (gzip, snappy or lz4; gzip when
+      omitted), acks=all and fixed timestamps
       (KAFKA_INTEROP_BASE_TIMESTAMP + 1000 * n), and prints one line per
       record, "R <n> <partition> <offset>", for the script to compare with
       what the Java console consumer and kafka-dump-log.sh read.
@@ -275,7 +277,18 @@ begin
   end;
 end;
 
-function RunProduce(const ABootstrap, ATopic: string; const AFixture: TFixture): string;
+function CodecNamed(const AName: string): TKafkaCompression;
+var
+  C: TKafkaCompression;
+begin
+  for C := Low(TKafkaCompression) to High(TKafkaCompression) do
+    if KafkaCompressionName(C) = AName then
+      Exit(C);
+  raise EInteropFailure.CreateFmt('unknown codec "%s"', [AName]);
+end;
+
+function RunProduce(const ABootstrap, ATopic: string; const AFixture: TFixture;
+  ACodec: TKafkaCompression): string;
 var
   P: TKafkaProducerParams;
   Pr: TKafkaProducer;
@@ -286,7 +299,7 @@ var
 begin
   P := KafkaProducerParams(ABootstrap);
   P.Cluster.Connection.ClientId := 'pascal-kafka-faa-interop';
-  P.Compression := kcGzip;
+  P.Compression := ACodec;
   P.Acks := kaAll;
   P.LingerMs := 50;
   Pr := TKafkaProducer.Create(P);
@@ -312,7 +325,8 @@ begin
       System.WriteLn(Format('R %d %d %d', [I, Rep.Partition, Rep.Offset]));
     end;
     F := nil;
-    Result := Format('OK pascal produced %d records', [Length(AFixture)]);
+    Result := Format('OK pascal produced %d records with %s', [Length(AFixture),
+      KafkaCompressionName(ACodec)]);
   finally
     Pr.Free;
   end;
@@ -425,10 +439,12 @@ var
   LMode: string;
 begin
   LMode := ParamStr(1);
-  if not (((ParamCount = 4) and ((LMode = 'consume') or (LMode = 'produce'))) or
+  if not (((ParamCount = 4) and (LMode = 'consume')) or
+    (((ParamCount = 4) or (ParamCount = 5)) and (LMode = 'produce')) or
     ((ParamCount = 7) and (LMode = 'group'))) then
   begin
-    System.WriteLn('usage: KafkaInterop consume|produce <bootstrap> <topic> <fixture>');
+    System.WriteLn('usage: KafkaInterop consume <bootstrap> <topic> <fixture>');
+    System.WriteLn('       KafkaInterop produce <bootstrap> <topic> <fixture> [gzip|snappy|lz4]');
     System.WriteLn('       KafkaInterop group <bootstrap> <topic> <group> <from> <to> <partitions>');
     Exit(2);
   end;
@@ -438,8 +454,11 @@ begin
         StrToInt(ParamStr(6)), StrToInt(ParamStr(7))))
     else if LMode = 'consume' then
       System.WriteLn(RunConsume(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4))))
+    else if (LMode = 'produce') and (ParamCount = 5) then
+      System.WriteLn(RunProduce(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4)),
+        CodecNamed(ParamStr(5))))
     else if LMode = 'produce' then
-      System.WriteLn(RunProduce(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4))))
+      System.WriteLn(RunProduce(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4)), kcGzip))
     else
     begin
       System.WriteLn('unknown mode: ', LMode);

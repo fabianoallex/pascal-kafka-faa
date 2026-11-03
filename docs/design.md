@@ -1,7 +1,8 @@
 # pascal-kafka-faa — design
 
 Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3's steps 1 and 2 done (the idempotent producer)** (2026-11-03:
+met against Kafka 4.4.0; K3's steps 1 to 3 done (the idempotent producer, snappy and lz4)**
+(2026-11-03:
 "K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
@@ -150,7 +151,7 @@ matched by `correlation_id` (like AMQP's channels, unlike Redis's strict order).
 ```
 Kafka.Protocol.*        primitives, envelope, record batch v2, CRC32C (hand-written)
 Kafka.Messages.*        generated requests/responses (decision 3)
-Kafka.Compression       none, gzip; snappy/lz4/zstd in later phases
+Kafka.Compression       none, gzip, snappy, lz4 (Pascal); zstd in K3's step 4
 Kafka.Sasl              PLAIN, SCRAM-SHA-256/512, OAUTHBEARER (token supplied)
 Kafka.Connection        one broker: common's endpoint, reader thread, correlation, ApiVersions, SASL
 Kafka.Cluster           bootstrap, metadata, leaders, connections per broker, refresh
@@ -219,7 +220,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | KIP-848 consumer group, OffsetCommit/OffsetFetch | K2 | decision 4's seam |
 | Auto-commit and manual commit (sync and async) | K2 | |
 | Idempotent producer (InitProducerId, sequences) | K3 | done; the default, as Java's since 3.0 |
-| snappy and lz4 (pure Pascal) | K3 | a consumer must read whatever any producer sent |
+| snappy and lz4 (pure Pascal) | K3 | done, both directions; a consumer must read whatever any producer sent |
 | zstd | K3 | large decoder: opt-in libzstd, loaded dynamically like OpenSSL |
 | SCRAM-SHA-512 | K3 | needs SHA-512 in common (a new item there) |
 | OAUTHBEARER (token supplied by the application) | K3 | no OIDC flow |
@@ -981,7 +982,8 @@ Win64, 0 leaks; the interoperability test and the samples):
    scenario per codec, both directions.
 4. **zstd.** Open question 2 (libzstd loaded on demand, or a decoder in Pascal) is put to the
    user with a recommendation at this step, not decided before. Then the same tests as step 3.
-   This step and step 3 meet the criterion's first half.
+   This step and step 3 meet the criterion's first half. *Decided 2026-11-03:* option C, a
+   decoder in Pascal; writing zstd waits for a user who asks.
 5. **SCRAM-SHA-512.** SHA-512, HMAC-SHA-512 and PBKDF2-HMAC-SHA-512 go to pascal-common-faa
    first (a release there, with its own tests and vectors); the submodule, the `Kafka.Types`
    check and the `.lpk`'s `MinVersion` move to it together. `Kafka.Sasl` takes the hash as a
@@ -1149,6 +1151,99 @@ rather than records. Kept, as Java's.
   correlation ids of requests at bytes 4 to 7 (`KafkaPeekCorrelationId` reads a response's,
   bytes 0 to 3; using it for requests matched no answer).
 
+### snappy and lz4 (2026-11-03)
+
+Step 3 of the plan. Read first: Java 4.4.0's `SnappyCompression`, `Lz4Compression`,
+`Lz4BlockInputStream` and `Lz4BlockOutputStream` (clients/.../common/compress, tag 4.4.0);
+xerial snappy-java 1.1.10.7's `SnappyOutputStream`, `SnappyInputStream` and `SnappyCodec` (the
+version 4.4.0 ships); librdkafka's `rdkafka_msgset_reader.c`, `rdkafka_msgset_writer.c` and
+`rdkafka_lz4.c`. What they do is marked "Java" and "librdkafka" below.
+
+**Done:**
+
+- **snappy** in `Kafka.Compression`, in Pascal: the raw block (google/snappy's
+  `format_description.txt`: a varint length, literals, copies with 1-, 2- and 4-byte offsets),
+  and xerial's framing, which Java's producer writes (`SnappyOutputStream`: the 16-byte header,
+  magic `82 'SNAPPY' 00`, version 1, compatible version 1, then each 32 KiB of input as a
+  big-endian length and a raw block). Reading follows `SnappyInputStream`: 16 bytes or more
+  that start with the magic are framed, anything else is one raw block; a header between chunks
+  (concatenated streams) is read on, as xerial does.
+- **lz4**: the LZ4 frame as Java's `Lz4BlockOutputStream` writes it (FLG 60: version 1,
+  independent blocks; BD 40: 64 KiB; the header checksum over the descriptor only, KIP-57;
+  blocks stored uncompressed when they don't shrink; no checksums, no content size), and
+  `KafkaXxHash32`. Reading takes what `Lz4BlockInputStream` takes (blocks of 64 KiB to 4 MiB,
+  block checksums, a content size, a content checksum) and refuses what it refuses (dependent
+  blocks, a dictionary id, reserved bits, a version other than 1, a wrong header checksum).
+- **The compressors** are the simple greedy ones (a hash table of 4-byte sequences; snappy's
+  input cut into 64 KiB fragments, lz4's end-of-block rules). They give valid streams, not the
+  reference's exact bytes; their size was within a few per cent of the reference libraries' on
+  every shape tried (text, zeros, random, runs, mixed; snappy 31 323 against 31 183 bytes for
+  160 KB of text, lz4 36 008 against 35 687).
+- `KafkaCompress`, `KafkaDecompress` and `KafkaCompressionSupported` take both codecs, so the
+  producer (`Compression := kcSnappy` or `kcLz4`), the consumer and the fake broker use them with
+  no change of their own. zstd still raises `EKafkaCompression` (step 4).
+- **Captures** (`docs/codec-captures.md`): the Java console producer's snappy and lz4 batches,
+  the gzip capture's three records and a fourth with an 80 016-byte value, so Java wrote three
+  xerial chunks and two lz4 blocks (274 frames).
+- **The fake broker**: `AppendRawBatch` stores a batch's bytes as given (Java's), so the
+  consumer reads Java's compression from the fake.
+- **Tests**: `Kafka.CompressionTests`, 20 (its header): xxHash32's published vectors; raw
+  snappy blocks and lz4 frames written by the reference libraries (`tools/codec_vectors.py`:
+  cramjam's snappy, python-lz4, with every option Java's reader takes), elements built by hand,
+  the framing Java writes, round trips, what is refused (each with the reason in the message),
+  the limit, and corrupt input; in `Kafka.ProduceFetchTests` the Java batches, decoded to the
+  records sent and framed as Java frames them; the producer and the consumer against the fake
+  (`SnappyAndLz4_LargeAndSmallRecordsArrive`, `Poll_ReadsJavasSnappyAndLz4Batches_AndThisLibrarys`);
+  four integration tests (a batch of each codec produced and fetched back, plaintext and TLS,
+  and polled by the consumer); `tools/interop.py` runs both directions with gzip, snappy and
+  lz4, and checks the codec of every batch in the broker's log in both.
+
+**Checked:** while writing, this library's compressed output and the reference libraries'
+were decoded by the other side, for 35 inputs (sizes around the 60-byte literal tags, the 32 KiB
+and 64 KiB block edges, up to 160 KB), every one the same both ways. Kafka 4.4.0 decompresses a
+compressed batch to validate it before writing it, so every batch the integration tests and the
+interop test produced was also read by Java's codecs; the Java console consumer then read the
+records as sent. A fuzz of 64 000 corrupt inputs (bytes changed, cut, inserted) against a copy
+of the unit built with range and overflow checks on: every one decoded or raised
+`EKafkaCompression`, with no index outside the data (a lighter version of it is a unit test).
+Five mutations each fail at least one test: lz4's header checksum over the magic (6 tests), no
+xerial (7), no check of a snappy length larger than its block can hold (1), and a copy or match
+reaching into the chunk or block before (1 each; the last two were found missing by the
+mutations and added).
+
+**Measured:** FPC 3.2.2 Windows x64: 307 unit and 42 integration tests, the interoperability
+test (gzip, snappy and lz4 in both directions, and the group) and both samples, 0 leaks. Linux
+(Docker): the same, and both suites 5 times in three containers at once with `--cpus=1` (30
+runs). Delphi 12 Win32 and Win64: 307 and 42, 0 leaks; the interoperability test (Win32 and
+Win64) and both samples with the Delphi programs too.
+
+**Decided while writing:**
+
+- **A raw snappy block is read, and must be.** librdkafka *writes* raw blocks (its writer calls
+  `rd_kafka_snappy_compress_slice`, no framing), so every producer built on it (confluent-kafka
+  for Python, Go, .NET) sends them; its reader, like xerial's, tells the two apart by the magic.
+- **Stricter than Java where Java is silent:** 1 to 3 bytes after the last snappy chunk, a
+  header between chunks with a bad version, and bytes after the lz4 end mark are refused (Java
+  stops reading there and ignores them); the lz4 content checksum and content size are checked
+  (Java skips both: "TODO" in its reader; the reference library checks them). No producer writes
+  any of those; a batch that has them is more likely corrupt. gzip's one-member rule is the same
+  choice.
+- **Copies stay inside their chunk or block.** Each xerial chunk is a raw block of its own, and
+  Kafka's lz4 blocks are independent: a copy that reaches before its block is refused, not read
+  from the previous one.
+- **The limit before the allocation:** a snappy block declares its length, which is checked
+  against `AMaxSize` and against what the block's bytes could hold (no element gives more than 64
+  bytes for 3: more than 22 times the bytes left is refused) before anything is allocated; lz4
+  grows its output in steps, each checked first; an lz4 content size above the limit is refused
+  from the header.
+- **One unit**, as the plan said (`Kafka.Compression`, 1 300 lines with gzip): no new unit for
+  the packages and project files to list.
+
+**Found on the way:** python-lz4 writes a one-block frame with independent blocks whatever
+`block_linked` says (LZ4F does that for a frame of one block), so the dependent-blocks case is
+built by hand (CLAUDE.md, gotcha 21). Gotcha 17 struck once more: a backslash-n in a Python
+heredoc became a line break.
+
 ## 8. Open questions
 
 1. **First real user:** which broker (Apache 4.x? Confluent Cloud? MSK? Redpanda?). It decides
@@ -1161,6 +1256,26 @@ rather than records. Kept, as Java's.
    unknown) and Event Hubs (classic protocol only, as far as its docs say) wait for a user who
    needs them.
 2. **zstd:** opt-in libzstd (proposed) or a pure-Pascal decoder (~2 000 to 3 000 lines).
+   *Answered 2026-11-03: C* (the recommendation, which the user took). What Java 4.4.0 does
+   (`ZstdCompression`): zstd-jni's streaming encoder at level 3 by default (no dictionary, no
+   content size known up front) and its streaming decoder, which reads any frame the format
+   allows. The options:
+   - **A. libzstd, loaded on demand** (as pascal-common-faa loads OpenSSL): ~400 lines of
+     bindings, both directions, the reference's speed and ratio. A DLL to ship on Windows (none
+     comes with the system); on Linux `libzstd.so.1` is almost always there. Without it, zstd
+     raises as today, on the consumer's side too: a consumer can't read a zstd topic out of
+     the box, which is the case K3's criterion is about.
+   - **B. In Pascal, both directions:** the decoder (RFC 8878: frames, raw, RLE and compressed
+     blocks, Huffman literals, FSE sequences, repeat offsets, XXH64 checksum; ~1 500 to 2 000
+     lines) and an encoder. A simple encoder (raw literals, predefined FSE tables) is ~600 to
+     900 lines and compresses about as lz4 does, not as zstd's level 3; a real one costs as much
+     as the decoder again.
+   - **C. The decoder in Pascal, writing later:** B's decoder now; the producer refuses zstd
+     until a user asks for it, then A or B's encoder. Every consumer reads zstd with no
+     dependency (the criterion), and the cost is the decoder alone.
+
+   K3's step 4 is C: the zstd decoder in Pascal; the producer keeps refusing zstd (so
+   `KafkaCompressionSupported` will need to tell reading from writing).
 3. **Version of the JSON definitions** for the generator: the latest stable 4.x on the day K1
    starts. *Answered 2026-11-02: 4.4.0* (the user chose it; 4.3.2 was the other candidate). The
    broker in `docker/` runs the same tag.

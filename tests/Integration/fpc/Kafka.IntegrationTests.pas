@@ -20,7 +20,9 @@
 
   Records: a batch written by this library (Kafka.Protocol.RecordBatch),
   produced to partition 0 and fetched back from the offset the broker gave
-  it, in plaintext and, gzip-compressed, over TLS; ListOffsets sees the
+  it, in plaintext (uncompressed and snappy) and over TLS (gzip and lz4);
+  the broker decompresses a batch to check it before it writes it, so a
+  compressed batch it took is one Java's codecs read. ListOffsets sees the
   partition's end move. With acks=0 the broker sends no answer: the test
   asks for the partition's end first, then a Fetch from there with a
   MaxWaitMs, which the broker holds until the record arrives (no Sleep). Each
@@ -40,7 +42,8 @@
   in order within each partition.
 
   The consumer (Kafka.Consumer): every partition assigned and sought to
-  its end, then records from the producer (keyed, gzip; and over TLS)
+  its end, then records from the producer (keyed; gzip, snappy, and lz4
+  over TLS; and uncompressed over TLS)
   polled back: each where the producer's report said, in order, with key,
   value and headers; a record produced from another thread while the
   consumer polls.
@@ -120,6 +123,8 @@ type
     procedure PlaintextClientOnTheTlsPort_FailsWithoutHanging;
     procedure Plaintext_ProducesAndFetchesTheRecordsBack;
     procedure Tls_ProducesAndFetchesBackGzip;
+    procedure Plaintext_ProducesAndFetchesBackSnappy;
+    procedure Tls_ProducesAndFetchesBackLz4;
     procedure Plaintext_AcksZero_TheFetchWaitsForTheRecord;
     procedure Cluster_BootstrapsPastABadAddress_LeadersOnOneConnection;
     procedure Cluster_Tls_LeaderConnectionsUseTls;
@@ -129,6 +134,8 @@ type
     procedure Producer_Tls_AcksLeader_NoKey_OneStickyPartition;
     procedure Producer_ManyRecords_AllDelivered_InOrder;
     procedure Consumer_PollsWhatTheProducerSent_Gzip;
+    procedure Consumer_PollsWhatTheProducerSent_Snappy;
+    procedure Consumer_Tls_PollsWhatTheProducerSent_Lz4;
     procedure Consumer_Tls_PollsWhatTheProducerSent;
     procedure Consumer_RecordProducedFromAnotherThread_IsPolled;
   end;
@@ -599,6 +606,18 @@ begin
   ProduceAndFetchBack(kcGzip);
 end;
 
+procedure TKafkaIntegrationTests.Plaintext_ProducesAndFetchesBackSnappy;
+begin
+  Open(Plain);
+  ProduceAndFetchBack(kcSnappy);
+end;
+
+procedure TKafkaIntegrationTests.Tls_ProducesAndFetchesBackLz4;
+begin
+  Open(Tls(tbDefault, 'ca_cert.pem'));
+  ProduceAndFetchBack(kcLz4);
+end;
+
 procedure TKafkaIntegrationTests.Plaintext_AcksZero_TheFetchWaitsForTheRecord;
 var
   TopicId: TKafkaUuid;
@@ -989,6 +1008,16 @@ end;
 procedure TKafkaIntegrationTests.Consumer_PollsWhatTheProducerSent_Gzip;
 begin
   ProduceAndConsume(False, kcGzip);
+end;
+
+procedure TKafkaIntegrationTests.Consumer_PollsWhatTheProducerSent_Snappy;
+begin
+  ProduceAndConsume(False, kcSnappy);
+end;
+
+procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheProducerSent_Lz4;
+begin
+  ProduceAndConsume(True, kcLz4);
 end;
 
 procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheProducerSent;

@@ -8,7 +8,9 @@
     the middle of a compressed batch; SeekToBeginning and SeekToEnd; a
     position past the log start's reset on OFFSET_OUT_OF_RANGE; Assign
     keeping the position of a partition it keeps.
-  - Poll: records of two partitions on two brokers, each in order;
+  - Poll: the batches the Java producer compressed with snappy and lz4
+    (captured), as Java wrote them, and this library's, in one partition;
+    records of two partitions on two brokers, each in order;
     MaxPollRecords; a control batch skipped; the long poll answered as soon
     as a record arrives; a timeout with nothing; Wakeup from another thread;
     a second thread inside the consumer refused.
@@ -38,7 +40,8 @@ uses
   Kafka.Cluster,
   Kafka.Consumer,
   Kafka.TestFakeBroker,
-  Kafka.TestMessages;
+  Kafka.TestMessages,
+  Kafka.TestHelpers;
 
 type
   [TestFixture]
@@ -62,6 +65,7 @@ type
     [Test] procedure Latest_OnlyRecordsWrittenAfter;
     [Test] procedure ResetNone_RaisesUntilSeek;
     [Test] procedure Seek_IntoACompressedBatch_StartsThere;
+    [Test] procedure Poll_ReadsJavasSnappyAndLz4Batches_AndThisLibrarys;
     [Test] procedure SeekToBeginningAndEnd;
     [Test] procedure OutOfRange_ResetsToEarliest;
     [Test] procedure MaxPollRecords_SplitsAcrossPolls;
@@ -349,6 +353,45 @@ begin
   // The broker returns the whole batch; the records before 4 are dropped.
   TAssert.AssertEquals('r4,r5', Values(PollFor(2)));
   TAssert.AssertEquals(Int64(6), FConsumer.Position(TOPIC, 0));
+end;
+
+procedure TKafkaConsumerTests.Poll_ReadsJavasSnappyAndLz4Batches_AndThisLibrarys;
+var
+  R: TKafkaConsumerRecordArray;
+  I: Integer;
+  Got: string;
+begin
+  StartBrokers(1, [1]);
+  // The console producer's batches (Kafka.ProduceFetchTests): four records
+  // each, the last 80 016 bytes long.
+  TAssert.AssertEquals(Int64(0), Broker(1).AppendRawBatch(TOPIC, 0,
+    ProduceRecords('java-producer-snappy-produce-v13')));
+  TAssert.AssertEquals(Int64(4), Broker(1).AppendRawBatch(TOPIC, 0,
+    ProduceRecords('java-producer-lz4-produce-v13')));
+  Broker(1).AppendBatch(TOPIC, 0, Batch(['s0', 's1'], kcSnappy));
+  Broker(1).AppendBatch(TOPIC, 0, Batch(['l0', 'l1', 'l2'], kcLz4));
+  FParams.AutoOffsetReset := korEarliest;
+  OpenConsumer;
+  FConsumer.Assign([KafkaTopicPartition(TOPIC, 0)]);
+  R := PollFor(13);
+  TAssert.AssertEquals(13, Length(R));
+  Got := '';
+  for I := 0 to High(R) do
+  begin
+    TAssert.AssertEquals('in order', Int64(I), R[I].Offset);
+    if (I = 3) or (I = 7) then
+    begin
+      TAssert.AssertEquals(80016, Length(R[I].Value));
+      TAssert.AssertEquals('k4', FromUtf8(R[I].Key));
+      Got := Got + '[long]';
+    end
+    else
+      Got := Got + FromUtf8(R[I].Value) + '|';
+  end;
+  TAssert.AssertEquals('olá mundo|second value|null key, null header value|[long]' +
+    'olá mundo|second value|null key, null header value|[long]s0|s1|l0|l1|l2|', Got);
+  TAssert.AssertTrue(R[2].KeyIsNull);
+  TAssert.AssertEquals('lang', R[4].Headers[1].Key);
 end;
 
 procedure TKafkaConsumerTests.SeekToBeginningAndEnd;

@@ -117,6 +117,7 @@
         <DCCReference Include="Kafka.ConsumerGroupTests.pas"/>
         <DCCReference Include="Kafka.ProduceFetchTests.pas"/>
         <DCCReference Include="Kafka.RecordBatchTests.pas"/>
+        <DCCReference Include="Kafka.CompressionTests.pas"/>
         <DCCReference Include="Kafka.PartitionerTests.pas"/>
         <DCCReference Include="Kafka.ClusterTests.pas"/>
         <DCCReference Include="Kafka.ProducerTests.pas"/>

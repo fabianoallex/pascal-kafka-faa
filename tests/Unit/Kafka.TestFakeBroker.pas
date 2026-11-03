@@ -35,7 +35,7 @@
     topics say LEADER_NOT_AVAILABLE for each, with no partitions (a topic
     being created).
   - answer Produce, Fetch and ListOffsets (OfferRecords). Produce: the records of each partition are
-    decoded (gzip too) and appended to that partition's log, offsets from 0,
+    decoded (compressed ones too) and appended to that partition's log, offsets from 0,
     and the answer gives each batch's base offset. With acks=0 nothing is
     answered. A topic is named (v3-12) or given by id (v13, resolved through
     ClusterView). The next ProduceErrors requests are answered with
@@ -44,7 +44,8 @@
     HoldProduce keeps requests unanswered and unappended until
     ReleaseHeldProduce, which handles them in the order they came.
     AppendBatch appends a batch as a producer would (a control batch
-    too). Fetch returns the stored batches that hold the fetch offset or
+    too), AppendRawBatch an encoded one as it is (a Java producer's
+    snappy or lz4 bytes). Fetch returns the stored batches that hold the fetch offset or
     come after it, up to the partition's byte limit (the first one whole,
     as a broker does), and OFFSET_OUT_OF_RANGE below the log start
     (SetLogStart) or past the end. A Fetch with nothing to return and a
@@ -293,7 +294,10 @@ type
     function SaslAuthenticateBody(AConn: TKafkaFakeConnection; AVersion: Int16;
       const AAuthBytes: TBytes): TBytes;
     procedure Accept;
-    procedure StoreBatch(const ATopic: string; APartition: Int32; var ABatch: TKafkaRecordBatch);
+    procedure StoreBatch(const ATopic: string; APartition: Int32; var ABatch: TKafkaRecordBatch;
+      const ARaw: TBytes = nil);
+    function AppendLogged(const ATopic: string; APartition: Int32; ABatch: TKafkaRecordBatch;
+      const ARaw: TBytes): Int64;
     function LogStartOf(const ATopic: string; APartition: Int32): Int64;
     function FetchTopicName(AVersion: Int16; const ATopic: TKafkaFetchTopic): string;
     /// The answer, or False when it has no records and may be parked.
@@ -400,6 +404,10 @@ type
     /// Appends ABatch to ATopic-APartition as a producer's would be (its
     /// base offset set to the partition's end); returns that base offset.
     function AppendBatch(const ATopic: string; APartition: Int32; ABatch: TKafkaRecordBatch): Int64;
+    /// Appends the encoded batch ABytes as it is (another client's bytes, a
+    /// Java producer's compression kept), its base offset set to the
+    /// partition's end; returns that base offset.
+    function AppendRawBatch(const ATopic: string; APartition: Int32; const ABytes: TBytes): Int64;
     /// Records below AOffset are gone (a Fetch there: OFFSET_OUT_OF_RANGE).
     procedure SetLogStart(const ATopic: string; APartition: Int32; AOffset: Int64);
     /// Fetch requests received.
@@ -1573,7 +1581,7 @@ begin
 end;
 
 procedure TKafkaFakeBroker.StoreBatch(const ATopic: string; APartition: Int32;
-  var ABatch: TKafkaRecordBatch);
+  var ABatch: TKafkaRecordBatch; const ARaw: TBytes);
 var
   I: Integer;
 begin
@@ -1584,7 +1592,15 @@ begin
   FBatches[FBatchCount].Partition := APartition;
   FBatches[FBatchCount].BaseOffset := ABatch.BaseOffset;
   FBatches[FBatchCount].NextOffset := ABatch.NextOffset;
-  FBatches[FBatchCount].Data := ABatch.Encode;
+  if ARaw = nil then
+    FBatches[FBatchCount].Data := ABatch.Encode
+  else
+  begin
+    // The base offset (bytes 0-7, big-endian) is outside the CRC.
+    FBatches[FBatchCount].Data := Copy(ARaw, 0, Length(ARaw));
+    for I := 0 to 7 do
+      FBatches[FBatchCount].Data[I] := Byte(ABatch.BaseOffset shr (8 * (7 - I)));
+  end;
   for I := 0 to High(ABatch.Records) do
     ABatch.Records[I].Offset := ABatch.BaseOffset + ABatch.Records[I].OffsetDelta;
   Inc(FBatchCount);
@@ -1592,6 +1608,24 @@ end;
 
 function TKafkaFakeBroker.AppendBatch(const ATopic: string; APartition: Int32;
   ABatch: TKafkaRecordBatch): Int64;
+begin
+  Result := AppendLogged(ATopic, APartition, ABatch, nil);
+end;
+
+function TKafkaFakeBroker.AppendRawBatch(const ATopic: string; APartition: Int32;
+  const ABytes: TBytes): Int64;
+var
+  LBatches: TKafkaRecordBatchArray;
+  LTrailing: Integer;
+begin
+  LBatches := KafkaDecodeRecordBatches(ABytes, MaxInt, LTrailing);
+  if (Length(LBatches) <> 1) or (LTrailing <> 0) then
+    raise EArgumentException.Create('AppendRawBatch takes one whole batch');
+  Result := AppendLogged(ATopic, APartition, LBatches[0], ABytes);
+end;
+
+function TKafkaFakeBroker.AppendLogged(const ATopic: string; APartition: Int32;
+  ABatch: TKafkaRecordBatch; const ARaw: TBytes): Int64;
 var
   K: Integer;
 begin
@@ -1599,7 +1633,7 @@ begin
   try
     Result := NextOffset(ATopic, APartition);
     ABatch.BaseOffset := Result;
-    StoreBatch(ATopic, APartition, ABatch);
+    StoreBatch(ATopic, APartition, ABatch, ARaw);
     for K := 0 to High(ABatch.Records) do
     begin
       if FLogCount = Length(FLog) then

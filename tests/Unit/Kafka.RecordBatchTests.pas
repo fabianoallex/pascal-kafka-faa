@@ -1,13 +1,15 @@
 ﻿unit Kafka.RecordBatchTests;
 
-{ Tests for record batch v2 (Kafka.Protocol.RecordBatch) and its codecs
-  (Kafka.Compression), on data built here; the batches of a real broker and
-  of the Java client are in Kafka.ProduceFetchTests.
+{ Tests for record batch v2 (Kafka.Protocol.RecordBatch) and gzip
+  (Kafka.Compression), on data built here; snappy and lz4 are in
+  Kafka.CompressionTests, the batches of a real broker and of the Java
+  client in Kafka.ProduceFetchTests.
 
   - gzip: CRC-32 vectors, round trips of several sizes, members written by
     Python's gzip module with and without the optional header fields
     (FEXTRA, FNAME, FCOMMENT, FHCRC), and what is refused: a second member, a
-    wrong trailer, a cut, zlib data, output over the limit.
+    wrong trailer, a cut, zlib data, output over the limit. zstd still
+    raises (K3's step 4).
   - The batch: encode then decode gives the records back (null against
     empty, headers, timestamps out of order, gzip); decode then encode gives
     the broker's bytes back; the attribute bits; a corrupt byte, an old magic,
@@ -50,7 +52,7 @@ type
     [Test] procedure Gzip_CutShort_IsRefused;
     [Test] procedure Gzip_ZlibData_IsRefused;
     [Test] procedure Gzip_LargerThanTheLimit_IsRefused;
-    [Test] procedure Compression_OtherCodecs_RaiseUntilK3;
+    [Test] procedure Compression_Zstd_RaisesUntilK3Step4;
     [Test] procedure RecordBatch_EncodeThenDecode_GivesTheRecordsBack;
     [Test] procedure RecordBatch_Gzip_EncodeThenDecode;
     [Test] procedure RecordBatch_DecodeThenEncode_GivesTheBrokersBytesBack;
@@ -313,18 +315,16 @@ begin
   GunzipData;
 end;
 
-procedure TKafkaRecordBatchTests.Compression_OtherCodecs_RaiseUntilK3;
+procedure TKafkaRecordBatchTests.Compression_Zstd_RaisesUntilK3Step4;
 var
   Codec: TKafkaCompression;
 begin
   FData := Utf8('x');
-  for Codec := kcSnappy to kcZstd do
-  begin
-    FCodec := Codec;
-    TAssert.AssertFalse(KafkaCompressionName(FCodec), KafkaCompressionSupported(FCodec));
-    TAssert.AssertException(EKafkaCompression, CompressData);
-  end;
-  TAssert.AssertTrue(KafkaCompressionSupported(kcGzip));
+  FCodec := kcZstd;
+  TAssert.AssertFalse(KafkaCompressionName(FCodec), KafkaCompressionSupported(FCodec));
+  TAssert.AssertException(EKafkaCompression, CompressData);
+  for Codec := kcNone to kcLz4 do
+    TAssert.AssertTrue(KafkaCompressionName(Codec), KafkaCompressionSupported(Codec));
   TAssert.AssertEquals('zstd', KafkaCompressionName(kcZstd));
   TAssert.AssertEquals(Ord(kcLz4), Ord(KafkaCompressionFromAttributes($0013)));
   TAssert.AssertException(EKafkaCompression, CodecFromBits5);

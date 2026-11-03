@@ -8,19 +8,24 @@ empty value), which is also the Java console producer's input format:
 (docker exec); the library's side is tests/Interop (KafkaInterop.dpr, or
 fpc/KafkaInteropFpc.lpr), given here as a command (--pascal).
 
-  Java -> library   kafka-console-producer.sh sends the fixture with gzip to
-                    a topic of 6 partitions; the program reads every
-                    partition and checks each record against its line, and
-                    that Java's partitioner and this library's murmur2 put
-                    each keyed record in the same partition.
-  library -> Java   the program sends the fixture with gzip and fixed
-                    timestamps and prints where each record went;
+  Java -> library   kafka-console-producer.sh sends the fixture to a topic
+                    of 6 partitions; the program reads every partition and
+                    checks each record against its line, and that Java's
+                    partitioner and this library's murmur2 put each keyed
+                    record in the same partition; kafka-dump-log.sh says
+                    every batch has the codec asked for.
+  library -> Java   the program sends the fixture with fixed timestamps and
+                    prints where each record went;
                     kafka-console-consumer.sh reads the topic and this
                     script checks every field it prints (timestamp and its
                     type, partition, offset, headers, key, value) against
                     the fixture and the program's report; kafka-dump-log.sh
                     reads the broker's log files and every batch must be
-                    gzip with a valid CRC, as Java's own reader sees it.
+                    of the codec sent, with a valid CRC, as Java's own reader
+                    sees it.
+
+  Both directions run once per codec: gzip, snappy (Java's xerial framing)
+  and lz4 (the KIP-57 frame).
 
   one group         the Java console consumer (group.protocol=consumer, the
                     KIP-848 protocol) joins a group on a topic of 6
@@ -34,9 +39,9 @@ fpc/KafkaInteropFpc.lpr), given here as a command (--pascal).
                     program's only from its partitions, and nothing of its
                     partitions read again by Java after it left.
 
-Three new topics per run (interop-java-<n>, interop-pascal-<n>,
-interop-group-<n>), deleted when the run passes and kept for a look when it
-fails.
+Seven new topics per run (interop-java-<codec>-<n>, interop-pascal-<codec>-<n>
+for each codec, interop-group-<n>), deleted when the run passes and kept for
+a look when it fails.
 
     python -I tools/interop.py --pascal tests/Interop/fpc/KafkaInteropFpc.exe
     python -I tools/interop.py --pascal "docker exec interop-runner /t/interop" \\
@@ -96,19 +101,42 @@ def fixture_records():
     return rows
 
 
-def java_to_pascal(args, pascal, topic):
+CODECS = ("gzip", "snappy", "lz4")
+
+
+def check_log(args, topic, codec, count):
+    """kafka-dump-log.sh over the topic's segments: count records, every batch of codec."""
+    batches = records = 0
+    for p in range(PARTITIONS):
+        files = broker(args.container, "sh", "-c", f"ls {LOG_DIR}/{topic}-{p}/*.log").split()
+        dump = broker(args.container, BIN + "kafka-dump-log.sh", "--files", ",".join(files))
+        for line in dump.splitlines():
+            if not line.startswith("baseOffset:"):
+                continue
+            batches += 1
+            records += int(line.split(" count: ")[1].split()[0])
+            if f"compresscodec: {codec} " not in line + " " or "isvalid: true" not in line:
+                raise Failure(f"partition {p}: {line}")
+    if records != count:
+        raise Failure(f"kafka-dump-log.sh found {records} records of {count}")
+    return batches
+
+
+def java_to_pascal(args, pascal, topic, codec, rows):
     broker(args.container, BIN + "kafka-console-producer.sh", "--bootstrap-server", args.bootstrap,
-           "--topic", topic, "--compression-codec", "gzip",
+           "--topic", topic, "--compression-codec", codec,
            "--reader-property", "parse.key=true", "--reader-property", "parse.headers=true",
            "--reader-property", "null.marker=NULL", stdin=FIXTURE.read_bytes())
+    batches = check_log(args, topic, codec, len(rows))
     out = run_pascal(pascal + ["consume", args.bootstrap, topic, args.fixture_path])
-    print(out.strip())
+    print(f"[{codec}] " + out.strip())
     if not any(l.startswith("OK java->pascal") for l in out.splitlines()):
-        raise Failure("java -> pascal failed")
+        raise Failure(f"java -> pascal failed ({codec})")
+    print(f"[{codec}] OK java->pascal: the Java producer wrote {batches} batches, all {codec}")
 
 
-def pascal_to_java(args, pascal, topic, rows):
-    out = run_pascal(pascal + ["produce", args.bootstrap, topic, args.fixture_path])
+def pascal_to_java(args, pascal, topic, codec, rows):
+    out = run_pascal(pascal + ["produce", args.bootstrap, topic, args.fixture_path, codec])
     report = {}
     for line in out.splitlines():
         if line.startswith("R "):
@@ -146,23 +174,11 @@ def pascal_to_java(args, pascal, topic, rows):
         seen.add(n)
     if len(seen) != len(rows):
         raise Failure(f"Java read {len(seen)} records of {len(rows)}:\n{out}")
-    print(f"OK pascal->java: {len(seen)} records read by kafka-console-consumer.sh as sent "
-          "(timestamp, partition, offset, headers, key, value)")
-
-    batches = records = 0
-    for p in range(PARTITIONS):
-        files = broker(args.container, "sh", "-c", f"ls {LOG_DIR}/{topic}-{p}/*.log").split()
-        dump = broker(args.container, BIN + "kafka-dump-log.sh", "--files", ",".join(files))
-        for line in dump.splitlines():
-            if not line.startswith("baseOffset:"):
-                continue
-            batches += 1
-            records += int(line.split(" count: ")[1].split()[0])
-            if "compresscodec: gzip" not in line or "isvalid: true" not in line:
-                raise Failure(f"partition {p}: {line}")
-    if records != len(rows):
-        raise Failure(f"kafka-dump-log.sh found {records} records of {len(rows)}")
-    print(f"OK pascal->java: kafka-dump-log.sh reads {batches} batches, all gzip, every CRC valid")
+    print(f"[{codec}] OK pascal->java: {len(seen)} records read by kafka-console-consumer.sh "
+          "as sent (timestamp, partition, offset, headers, key, value)")
+    batches = check_log(args, topic, codec, len(rows))
+    print(f"[{codec}] OK pascal->java: kafka-dump-log.sh reads {batches} batches, all {codec}, "
+          "every CRC valid")
 
 
 def produce_group_records(args, topic, first, last):
@@ -297,7 +313,8 @@ def main():
         pascal[0] = str(Path(pascal[0]).resolve())
     rows = fixture_records()
     stamp = f"{int(time.time() * 1000)}"
-    topics = [f"interop-java-{stamp}", f"interop-pascal-{stamp}", f"interop-group-{stamp}"]
+    topics = ([f"interop-{side}-{codec}-{stamp}" for codec in CODECS for side in ("java", "pascal")]
+              + [f"interop-group-{stamp}"])
     try:
         for t in topics:
             broker(args.container, BIN + "kafka-topics.sh", "--bootstrap-server", args.bootstrap,
@@ -306,16 +323,17 @@ def main():
                    # the default retention (7 days) the broker deletes their
                    # segment at once (measured).
                    "--config", "retention.ms=-1")
-        java_to_pascal(args, pascal, topics[0])
-        pascal_to_java(args, pascal, topics[1], rows)
-        group_interop(args, pascal, topics[2])
+        for i, codec in enumerate(CODECS):
+            java_to_pascal(args, pascal, topics[2 * i], codec, rows)
+            pascal_to_java(args, pascal, topics[2 * i + 1], codec, rows)
+        group_interop(args, pascal, topics[-1])
     except Failure as e:
         print(f"FAIL {e}\n(topics kept: {', '.join(topics)})")
         return 1
     for t in topics:
         broker(args.container, BIN + "kafka-topics.sh", "--bootstrap-server", args.bootstrap,
                "--delete", "--topic", t)
-    print("interop: both directions and the shared group OK")
+    print(f"interop: both directions with {', '.join(CODECS)}, and the shared group OK")
     return 0
 
 

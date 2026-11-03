@@ -33,7 +33,7 @@ the sample against Confluent Cloud, has been run.
   Fetch's last batch cut by the byte limit skipped.
 - `Kafka.Compression`: none and gzip (RFC 1952 over raw deflate from `System.ZLib` and
   paszlib, the same framing code on both compilers; trailer checked, output bounded).
-  `EKafkaCompression` for the other codecs (until K3) and data that doesn't decompress.
+  `EKafkaCompression` for a codec not there yet and data that doesn't decompress.
 - Generated: `Kafka.Messages.Produce` (v3-v13), `Kafka.Messages.Fetch` (v4-v18),
   `Kafka.Messages.ListOffsets` (v1-v11). The generator now reads the `records` type and tagged
   struct fields; every record has `IsDefault`.
@@ -171,6 +171,19 @@ the sample against Confluent Cloud, has been run.
   sequences as Kafka 4.4.0 does; `Kafka.TestProxy` (integration) loses a real broker's answers.
   Tests: `Kafka.IdempotentProducerTests` (16 unit tests: 283 in all) and
   `Kafka.IdempotenceIntegrationTests` (2: 38 integration tests in all).
+- snappy and lz4 in `Kafka.Compression` (phase K3, step 3), in Pascal, both directions:
+  `KafkaSnappyCompress`/`KafkaSnappyDecompress` (xerial's framing, as Java's producer writes
+  it; a raw block, as librdkafka writes it, read too), `KafkaSnappyRawCompress`/
+  `KafkaSnappyRawDecompress`, `KafkaLz4Compress`/`KafkaLz4Decompress` (the LZ4 frame as Java
+  writes it, with KIP-57's header checksum; checksums, content size and 4 MiB blocks read),
+  `KafkaLz4BlockCompress`/`KafkaLz4BlockDecompress`, `KafkaXxHash32`. `KafkaCompress`,
+  `KafkaDecompress` and `KafkaCompressionSupported` take both, so the producer
+  (`TKafkaProducerParams.Compression := kcSnappy` or `kcLz4`) and the consumer use them with no
+  change of their own. Output bounded as gzip's. Captures: the Java console producer's snappy
+  and lz4 batches (274 frames). Tests: `Kafka.CompressionTests` (20, against the reference
+  libraries' vectors), the Java batches, the producer and consumer against the fake, the fake's
+  `AppendRawBatch` (307 unit tests in all); 4 integration tests (42); `tools/interop.py` runs
+  both directions with gzip, snappy and lz4, and checks the codec in the broker's log for both.
 
 ### Changed
 

@@ -110,9 +110,10 @@ first).
   `ClusterView` (`KafkaFakeClusterView`, `KafkaFakeUseView`); `Kafka.ConsumerTests` too. The
   fake also answers Produce (and can fail, hold or drop it), Fetch (with a long poll, on a
   thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
-  the batches per partition (`AppendBatch`, `SetLogStart`), and speaks SASL (`SaslMechanisms`,
-  one user; PLAIN, and SCRAM-SHA-256 written as a server, apart from `Kafka.Sasl`): before a
-  client authenticates it answers only ApiVersions and SASL, as a broker. It serves any number
+  the batches per partition (`AppendBatch`, `AppendRawBatch` for another client's bytes as
+  they are, `SetLogStart`), and speaks SASL (`SaslMechanisms`, one user; PLAIN, and
+  SCRAM-SHA-256 written as a server, apart from `Kafka.Sasl`): before a client authenticates
+  it answers only ApiVersions and SASL, as a broker. It serves any number
   of connections at once (a thread each, with its own SASL state; `DropClient` aborts them
   all), and it is every group's coordinator (`OfferGroups`, on with `KafkaFakeUseView`;
   `Kafka.TestFakeGroup`): FindCoordinator (`FindCoordinatorMax` for an older broker, injected
@@ -125,6 +126,10 @@ first).
   (`LoseProduceAnswers` writes a batch and loses its answer; `StoredBatches`):
   `Kafka.IdempotentProducerTests`. `ReleaseHeldProduce` answers in arrival order, the ones
   that came meanwhile too (a broker answers a connection in order).
+- **The codecs' vectors** (`Kafka.CompressionTests`): hex constants written by
+  `tools/codec_vectors.py` with the reference libraries (cramjam, lz4, xxhash for Python, in a
+  venv of their own: the build never needs them). The Java producer's own snappy and lz4
+  batches are captures (`docs/codec-captures.md`).
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
   SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
@@ -138,9 +143,10 @@ first).
   `docker exec` in the broker's container, which a Linux test container can't do). Its records
   are `tests/data/interop-records.tsv`, the Java console producer's input format. The topics
   it creates have `retention.ms=-1` (its records' fixed 2026-01-01 timestamps would otherwise
-  be deleted at once by retention). Its third scenario puts the Java console consumer
-  (`group.protocol=consumer`, in the background) and the program's `group` mode in one group
-  (`interop-group-<n>`, 6 partitions) and checks every record is read once.
+  be deleted at once by retention). Both directions run once per codec (gzip, snappy, lz4),
+  and `kafka-dump-log.sh` checks every batch's codec. The last scenario puts the Java console
+  consumer (`group.protocol=consumer`, in the background) and the program's `group` mode in
+  one group (`interop-group-<n>`, 6 partitions) and checks every record is read once.
 - **The samples** `samples/ProduceConsume` (K1: `Assign`) and `samples/ConsumerGroup` (K2: a
   group, `KafkaGroupSample`), one `.dpr` each for Delphi and Lazarus, run with their defaults
   against the SASL_SSL listener in the test scripts; each must print `done`.
@@ -245,3 +251,9 @@ first).
     fixture's teardown). Stop on nil, as `Kafka.TestFakeBroker` does.
 20. **`KafkaPeekCorrelationId` reads a response's correlation id** (bytes 0 to 3). A request's
     is at bytes 4 to 7, after the API key and version.
+21. **python-lz4 writes a one-block frame with independent blocks** whatever `block_linked`
+    says (LZ4F turns a frame of one block independent). A dependent-blocks frame for a test is
+    built by hand: FLG 40 and the header checksum recomputed.
+22. **librdkafka writes raw snappy**, with no xerial framing (`rd_kafka_snappy_compress_slice`);
+    Java writes xerial's. A reader must take both, told apart by xerial's magic (16 bytes or
+    more starting with `82 53 4E 41 50 50 59 00`).

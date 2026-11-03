@@ -23,7 +23,9 @@
   - Limits: a record larger than MaxRequestSize fails at once; with
     BufferMemory taken, Send waits up to MaxBlockMs and then fails; a topic
     that never appears fails after MaxBlockMs.
-  - acks=0, gzip, headers, a tombstone, an explicit timestamp.
+  - acks=0, gzip, headers, a tombstone, an explicit timestamp; snappy and
+    lz4, small records batched and a 100 000-byte one (several xerial
+    chunks, several lz4 blocks).
   - Flush and Close: callbacks have run when Flush returns, Close delivers
     what was sent, Close with a timeout fails what is left, a callback can't
     call Flush, and Send before Open or after Close raises.
@@ -50,7 +52,8 @@ uses
   Kafka.Partitioner,
   Kafka.Producer,
   Kafka.TestFakeBroker,
-  Kafka.TestMessages;
+  Kafka.TestMessages,
+  Kafka.TestHelpers;
 
 type
   TKafkaDeliveryReportArray = array of TKafkaDeliveryReport;
@@ -94,6 +97,7 @@ type
     procedure UnknownTopic_FailsAfterMaxBlock;
     procedure AcksNone_DoneOnceWritten_WithoutOffsets;
     procedure Gzip_Headers_Tombstone_Timestamp_Arrive;
+    procedure SnappyAndLz4_LargeAndSmallRecordsArrive;
     procedure Close_DeliversWhatWasSent;
     procedure Close_WithTimeout_FailsWhatIsLeft;
     procedure Callback_CannotFlush;
@@ -608,6 +612,46 @@ begin
   TAssert.AssertTrue(Logged[0].Headers[1].ValueIsNull);
   TAssert.AssertFalse(Logged[1].KeyIsNull);
   TAssert.AssertTrue('a tombstone', Logged[1].ValueIsNull);
+end;
+
+procedure TKafkaProducerTests.SnappyAndLz4_LargeAndSmallRecordsArrive;
+var
+  Codec: TKafkaCompression;
+  Big: TBytes;
+  I, N, First: Integer;
+  Logged: TKafkaRecordArray;
+begin
+  StartBrokers(1, [1]);
+  Big := nil;
+  SetLength(Big, 100000);
+  for I := 0 to High(Big) do
+    Big[I] := Byte(Ord('a') + (I div 7) mod 26);
+  First := 0;
+  for Codec := kcSnappy to kcLz4 do
+  begin
+    FParams.Compression := Codec;
+    FParams.LingerMs := 50;
+    OpenProducer;
+    for I := 0 to 19 do
+      Send(KafkaProducerRecord(TOPIC, Value('k' + IntToStr(I)),
+        Value(KafkaCompressionName(Codec) + ' record ' + IntToStr(I))));
+    TAssert.AssertTrue(Send(KafkaProducerRecord(TOPIC, Value('big'), Big)).Get(10000).Succeeded);
+    TAssert.AssertTrue(FProducer.Flush(10000));
+    FreeAndNil(FProducer);
+    Logged := Broker(1).Logged(TOPIC, 0);
+    N := Length(Logged);
+    TAssert.AssertEquals(First + 21, N);
+    for I := 0 to 19 do
+    begin
+      TAssert.AssertEquals(KafkaCompressionName(Codec) + ' record ' + IntToStr(I),
+        FromUtf8(Logged[First + I].Value));
+      TAssert.AssertEquals(KafkaCompressionName(Codec), Ord(Codec),
+        Broker(1).LoggedCompression(First + I));
+    end;
+    TAssert.AssertTrue('the big one', SameBytes(Big, Logged[First + 20].Value));
+    TAssert.AssertEquals(Ord(Codec), Broker(1).LoggedCompression(First + 20));
+    First := N;
+  end;
 end;
 
 procedure TKafkaProducerTests.Close_DeliversWhatWasSent;

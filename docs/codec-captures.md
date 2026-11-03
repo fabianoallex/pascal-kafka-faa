@@ -271,6 +271,48 @@ sequence 0, acks all). Both answers are kept; the first one's name was given the
 suffix by hand, since both are v5 from the same tool. The Java request body is byte for byte the
 hand-built v5.
 
+## snappy and lz4: the Java producer's batches (2026-11-03, same file)
+
+Through the capture listener, as the gzip batch above. Four records: the gzip capture's three
+and a fourth, `size:long` / `k4` / `the long value: ` and `abcdefghij` 8000 times (80 016
+bytes), so that Java writes more than one xerial chunk (32 KiB) and more than one lz4 block
+(64 KiB). `batch.size=262144` keeps the four in one batch. One topic per codec, one partition.
+
+```sh
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d --wait
+python -c "
+long = 'the long value: ' + 'abcdefghij' * 8000
+with open('.ci/records.txt', 'w', encoding='utf-8', newline='\n') as f:
+    f.write('trace:00-abc-01,lang:pt\tk1\tolá mundo\n')
+    f.write('trace:00-def-01\tk2\tsecond value\n')
+    f.write('empty:NULL\tNULL\tnull key, null header value\n')
+    f.write('size:long\tk4\t' + long + '\n')
+"
+for c in snappy lz4; do
+  docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 --create --topic captured-java-$c --partitions 1
+  python -I tools/capture_proxy.py --listen 19092 --target localhost:9095 --out .ci/cap-$c.jsonl &
+  docker exec -i pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server host.docker.internal:19092 --topic captured-java-$c --compression-codec $c \
+    --reader-property parse.key=true --reader-property parse.headers=true \
+    --reader-property null.marker=NULL --producer-property linger.ms=200 \
+    --producer-property batch.size=262144 < .ci/records.txt
+  kill %1
+  python -I tools/captures_from_proxy.py --in .ci/cap-$c.jsonl --conn 2 --apis produce \
+    --prefix java-producer-$c --source "java kafka-console-producer.sh 4.4.0, --compression-codec $c" \
+    --out tests/data/captures-4.4.0.jsonl
+done
+python tools/gen_test_captures.py
+docker compose -f docker/docker-compose.yml up -d --wait
+```
+
+(The script that ran was a file in `.ci/`, gotcha 17: a heredoc would break the backslashes
+above.) Connection 2 is the leader's, where the Produce went, in both. `kafka-dump-log.sh` on
+the two topics: one batch of 4 records each, `compresscodec: snappy` (4 028 bytes) and
+`compresscodec: lz4` (577 bytes), both `isvalid: true`. The snappy payload is xerial's header
+and three chunks; the lz4 one a frame with FLG 60, BD 40, header checksum 82 and two blocks, no
+checksums.
+
 ## Partitions: the Java producer's choice for each key (2026-11-02)
 
 `tests/data/partitions-java-4.4.0.tsv`: 70 keys and the partition the Java console producer
@@ -325,6 +367,11 @@ accepted, every OffsetFetch version reading 110, the member's id, epoch, interva
 assignment, the group Stable with the uniform assignor, epoch -1 on leaving); Java's heartbeats
 give ConsumerGroupHeartbeatResponse.Assignment null and present, the generator's first nullable
 struct.
+
+`Kafka.ProduceFetchTests` also decodes the Java snappy and lz4 batches to the four records
+sent, checks their framing (xerial's header and 32 KiB chunks; the lz4 frame's descriptor and
+blocks) and compresses them again with this library; `Kafka.ConsumerTests` polls them from the
+fake broker as Java wrote them (`AppendRawBatch`).
 
 `Kafka.ProducerIdMessagesTests`: the hand-built InitProducerId requests and idempotent Produce
 requests (their batches with `TKafkaRecordBatch`) rebuilt from the generated records encode to

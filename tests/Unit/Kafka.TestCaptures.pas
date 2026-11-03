@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 270;
-  KAFKA_CAPTURES: array[0..269] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 274;
+  KAFKA_CAPTURES: array[0..273] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -1181,7 +1181,65 @@ const
           '00000000000000000000000000000000000316000000046b31066f6e650016001c02046b320674776f001a001c04046b330a746872656500000000'),
     (Name: 'java-idempotent-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0 (idempotent by default)'; KafkaTag: '4.4.0';
      IsRequest: False; ApiKey: 0; ApiVersion: 13;
-     Hex: '000000060002510dd715f30d42edbd61e0bd630b2ffd020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000')
+     Hex: '000000060002510dd715f30d42edbd61e0bd630b2ffd020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'java-producer-snappy-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0, --compression-codec snappy'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d000000060010636f6e736f6c652d70726f64756365720000ffff000005dc02efb7bcf717bf4d0e8594c79f51d4f54f0200000000bd1f000000000000000000000fb0ffffffff02c05e242a000200000003000001a1a1ae7131000001a1a1ae71' +
+          '6800000000000000000000000000000000000482534e415050590000000001000000010000068e808002f04054000000046b31146f6cc3a1206d756e646f040a74726163651230302d6162632d3031086c616e6704707448006602046b32187365636f6e' +
+          '642076616c7565020a152d546465662d30315000680401366e756c6c206b65792c20050a14686561646572113264656d70747901c8e209006e06046b34a0e209746865206c6f6e6709222c3a206162636465666768696afe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00820a000000060e808002246a616263646566676869fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00d60a00000002c7a0722468696a61626364656667fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe' +
+          '0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a' +
+          '00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00' +
+          'fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a00fe0a001d0a28020873697a65086c6f6e67000000'),
+    (Name: 'java-producer-snappy-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0, --compression-codec snappy'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '000000060002efb7bcf717bf4d0e8594c79f51d4f54f020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000'),
+    (Name: 'java-producer-lz4-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0, --compression-codec lz4'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000d000000050010636f6e736f6c652d70726f64756365720000ffff000005dc028a318c3ee9694794892c381317c985270200000000c204000000000000000000000235ffffffff0225bdabf7000300000003000001a1a1ae825b000001a1a1ae82' +
+          'b800000000000000010000000000000000000404224d186040829e010000f63254000000046b31146f6cc3a1206d756e646f040a74726163651230302d6162632d3031086c616e670470744a00ae0102046b32187365636f6e642076616c7565022e00f1' +
+          '086465662d30315200ae010401366e756c6c206b65792c200a00646865616465723300f20c656d70747901cae20900ba0106046b34a0e209746865206c6f6e672300cf3a206162636465666768696a0a00ffffffffffffffffffffffffffffffffffffff' +
+          'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' +
+          'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' +
+          'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff46506a6162636453000000af65666768696a616263640a00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' +
+          'ffffffffffffffffffffffffffffffffffff34b0020873697a65086c6f6e6700000000000000'),
+    (Name: 'java-producer-lz4-produce-v13'; Source: 'java kafka-console-producer.sh 4.4.0, --compression-codec lz4'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 0; ApiVersion: 13;
+     Hex: '0000000500028a318c3ee9694794892c381317c98527020000000000000000000000000000ffffffffffffffff0000000000000000010000000000000000')
   );
 
 /// The capture's bytes.
