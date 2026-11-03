@@ -8,7 +8,7 @@
   goes to a callback and to a future.
 
   The shape is Java's KafkaProducer (docs/design.md, section 4, "Threads"),
-  without idempotence (phase K3). The parameters keep Java's names and
+  idempotent by default as Java's since 3.0. The parameters keep Java's names and
   defaults (KafkaProducerParams): acks=all, linger.ms=5, batch.size=16384,
   buffer.memory=32 MB, delivery.timeout.ms=120000, max.request.size=1 MB,
   max.in.flight.requests.per.connection=5, retries=MAX_INT bounded by the
@@ -33,12 +33,38 @@
   it), when it has waited LingerMs, or while a Flush or Close is waiting. A
   pass takes the first ready batch of each partition, groups them by leader
   into Produce requests of up to MaxRequestSize, and sends them with up to
-  MaxInFlightPerBroker requests waiting per broker. A partition has at most
-  one batch in flight (Java mutes it so when it can't use idempotence to
-  keep order): a retried batch goes back to the head of its partition's
-  queue, so records are written in the order they were sent, retries
-  included. Records may be written twice (a request that timed out may have
-  been written): at-least-once until the idempotent producer of phase K3.
+  MaxInFlightPerBroker requests waiting per broker. Without idempotence a
+  partition has at most one batch in flight (Java mutes it so): a retried
+  batch goes back to the head of its partition's queue, so records are
+  written in the order they were sent, retries included, but may be written
+  twice (a request that timed out may have been written): at-least-once.
+
+  Idempotence (Params.Idempotence; Java 4.4.0's TransactionManager,
+  RecordAccumulator and Sender, read for it). On by default: kidAuto turns
+  it off when Acks isn't kaAll or Retries is 0, as Java does when
+  enable.idempotence wasn't set; kidOn refuses those; MaxInFlightPerBroker
+  above 5 is refused unless it is off. The sender asks any broker for a
+  producer id (InitProducerId, no transactional id) before the first batch
+  goes, again after a retriable error, and fails the records waiting on any
+  other. Each batch carries the id, the epoch and its partition's next
+  sequence, fixed when it is first sent and kept through its retries, so a
+  broker that wrote it already answers the retry with the first offset
+  instead of writing it again (the broker keeps the last five batches of
+  each producer and partition). Up to five batches of a partition are in
+  flight (one per request); a retried batch goes back in sequence order and
+  is sent again only when it is the first not done, so retries go one at a
+  time. DUPLICATE_SEQUENCE_NUMBER counts as delivered (offset -1).
+  OUT_OF_ORDER_SEQUENCE_NUMBER is retried: for a batch whose predecessor
+  failed, in its turn; for the next batch itself, a gap, after an epoch
+  bump. UNKNOWN_PRODUCER_ID is retried after a bump. A batch that fails with
+  its sequence used (INVALID_PRODUCER_EPOCH, a broken request out of time)
+  bumps the epoch; one that expires while waiting for a retry leaves its
+  sequence unresolved, and new batches of the partition wait until those
+  before them are done, then either go on or bump. A bump is local, as
+  Java's: the epoch plus one, the partition's batches not done renumbered
+  from 0 and encoded again (a broker takes a higher epoch from sequence 0);
+  a new id from InitProducerId only when the epoch is spent. Other
+  partitions start from 0 on the new epoch once their old batches are done.
 
   Errors. A retriable error (KafkaErrorIsRetriable: a leader that moved, not
   enough replicas, a connection that broke, a request that timed out) sends
@@ -102,11 +128,22 @@ const
   KAFKA_DEFAULT_DELIVERY_TIMEOUT_MS = 120000;
   KAFKA_DEFAULT_MAX_REQUEST_SIZE = 1024 * 1024;
   KAFKA_DEFAULT_MAX_IN_FLIGHT = 5;
+  /// The most requests in flight per broker an idempotent producer may have:
+  /// a broker keeps the last five batches of each producer and partition.
+  KAFKA_MAX_IN_FLIGHT_FOR_IDEMPOTENCE = 5;
 
 type
   /// Java's acks: all (-1, the default), 1, 0. The zero of the enumeration
   /// is the default on purpose.
   TKafkaAcks = (kaAll, kaLeader, kaNone);
+
+  /// Java's enable.idempotence, with "left at its default" as a value of its
+  /// own, since a record can't tell it from "set": kidAuto (the default) is
+  /// on unless Acks isn't kaAll or Retries is 0, and then off without a word;
+  /// kidOn refuses those two at Create; kidOff is the producer of phase K1.
+  /// MaxInFlightPerBroker above 5 is refused whenever idempotence is on,
+  /// kidAuto included, as Java does.
+  TKafkaIdempotence = (kidAuto, kidOn, kidOff);
 
   { Start from KafkaProducerParams: it sets Java's defaults. A field at 0
     takes its default too, except LingerMs and Retries, where 0 means 0. }
@@ -131,6 +168,8 @@ type
     MaxInFlightPerBroker: Integer;
     /// How many times a batch is sent again after a retriable error.
     Retries: Integer;
+    /// The idempotent producer (the unit's header, "Idempotence").
+    Idempotence: TKafkaIdempotence;
   end;
 
   TKafkaProducerRecord = record
@@ -226,6 +265,20 @@ type
     FNodeBackoff: TDictionary<Int32, UInt64>;
     FNextMetadataAt: UInt64;
     FRequestsSent: Integer;
+    // Idempotence (the sender thread's, but FProducerId and FProducerEpoch
+    // are written under FMonitor for the diagnostics).
+    FIdempotent: Boolean;
+    FProducerId: Int64;
+    FProducerEpoch: Int16;
+    FInitBroker: IKafkaBrokerConnection;
+    FInitFuture: IKafkaResponseFuture;
+    FInitVersion: Int16;
+    FInitSentAt: UInt64;
+    FInitAt: UInt64;
+    FInitCount: Integer;
+    FBumpRequired: Boolean;
+    FRewrite: TList<TObject>;
+    FEpochBumps: Integer;
     procedure CheckNotSenderThread(const AWhat: string);
     function TopicFor(const AName: string): TKafkaTopicInfo;
     function Append(ADelivery: TObject; const ARecord: TKafkaProducerRecord;
@@ -249,6 +302,24 @@ type
     procedure ReleaseBatch(ABatch: TObject);
     procedure LeaveTransit(ABatch: TObject);
     procedure AbortAll;
+    function CanRetryNow(ABatch: TObject): Boolean;
+    // Idempotence, on the sender thread.
+    function QueueOf(ABatch: TObject): TObject;
+    function IsStale(AQueue: TObject): Boolean;
+    procedure SetProducer(AId: Int64; AEpoch: Int16);
+    procedure StepInitProducerId(ANow: UInt64; var ANext: UInt64);
+    procedure FailUnsequenced(AClass: EKafkaClass; ACode: Int16; const AMessage: string);
+    procedure ResolveSequences;
+    procedure RequestBump(AQueue: TObject);
+    procedure ApplyBump;
+    procedure RewriteSequences;
+    procedure StartSequencesAtBeginning(AQueue: TObject);
+    function ShouldStopDrain(AQueue, ABatch: TObject): Boolean;
+    procedure AssignSequence(AQueue, ABatch: TObject);
+    function IdempotentCanRetry(ABatch: TObject; ACode: Int16; ALogStartOffset: Int64): Boolean;
+    procedure BatchAcked(ABatch: TObject; ABaseOffset: Int64);
+    procedure BatchFailed(ABatch: TObject; ACode: Int16; AAdjust: Boolean);
+    procedure MarkUnresolved(ABatch: TObject);
   public
     /// Checks the parameters (EArgumentException); no I/O.
     constructor Create(const AParams: TKafkaProducerParams);
@@ -276,6 +347,16 @@ type
     function PendingCount: Integer;
     /// Produce requests written since Open (for tests and diagnostics).
     function RequestsSent: Integer;
+    /// Whether the producer is idempotent (Params.Idempotence resolved).
+    function Idempotent: Boolean;
+    /// The producer id and epoch in use; -1 and -1 before the first
+    /// InitProducerId answer, and without idempotence.
+    function ProducerId: Int64;
+    function ProducerEpoch: Int16;
+    /// InitProducerId requests sent, and epoch bumps made, since Open (for
+    /// tests and diagnostics).
+    function InitProducerIdCount: Integer;
+    function EpochBumps: Integer;
     property Cluster: TKafkaCluster read FCluster;
     property Params: TKafkaProducerParams read FParams;
   end;
@@ -297,7 +378,8 @@ uses
   PascalCommon.Tracing,
   Kafka.Errors,
   Kafka.Messages.Apis,
-  Kafka.Messages.Produce;
+  Kafka.Messages.Produce,
+  Kafka.Messages.InitProducerId;
 
 const
   // What a record adds to a batch beyond its key, value and header bytes:
@@ -361,7 +443,12 @@ type
     Encoded: TBytes;
     /// Taken by the sender once: no record is appended after that.
     Closed: Boolean;
+    /// Idempotence: the batch was renumbered by an epoch bump (Java's
+    /// sequenceHasBeenReset).
+    SequenceReset: Boolean;
     procedure Add(ADelivery: TDelivery);
+    function HasSequence: Boolean;
+    function LastSequence: Int32;
   end;
 
   TPartitionQueue = class
@@ -369,8 +456,22 @@ type
     Topic: string;
     Partition: Int32;
     Batches: TList<TProducerBatch>;
-    /// A batch of this partition is in flight.
+    /// A batch of this partition is in flight (without idempotence).
     Muted: Boolean;
+    // Idempotence (Java's TxnPartitionEntry), the sender thread's.
+    /// The id and epoch this partition's sequences belong to.
+    SeqProducerId: Int64;
+    SeqProducerEpoch: Int16;
+    NextSequence: Int32;
+    LastAckedSequence: Int32;
+    LastAckedOffset: Int64;
+    /// The batches with a sequence not done yet (in flight, or queued for a
+    /// retry), by sequence.
+    Sequenced: TList<TProducerBatch>;
+    /// A batch with a sequence failed without an answer: whether the broker
+    /// has it is unknown until the batches after it say.
+    Unresolved: Boolean;
+    UnresolvedNext: Int32;
     constructor Create(const ATopic: string; APartition: Int32);
     destructor Destroy; override;
   end;
@@ -628,6 +729,26 @@ begin
   Inc(Count);
 end;
 
+/// ASequence plus AIncrement, wrapping past MaxInt to 0 (Java's
+/// DefaultRecordBatch.incrementSequence).
+function IncrementSequence(ASequence: Int32; AIncrement: Integer): Int32;
+begin
+  if Int64(ASequence) > Int64(High(Int32)) - AIncrement then
+    Result := Int32(Int64(AIncrement) - (Int64(High(Int32)) - ASequence) - 1)
+  else
+    Result := ASequence + AIncrement;
+end;
+
+function TProducerBatch.HasSequence: Boolean;
+begin
+  Result := Batch.BaseSequence <> KAFKA_NO_SEQUENCE;
+end;
+
+function TProducerBatch.LastSequence: Int32;
+begin
+  Result := IncrementSequence(Batch.BaseSequence, Count - 1);
+end;
+
 { TPartitionQueue }
 
 constructor TPartitionQueue.Create(const ATopic: string; APartition: Int32);
@@ -636,10 +757,16 @@ begin
   Topic := ATopic;
   Partition := APartition;
   Batches := TList<TProducerBatch>.Create;
+  Sequenced := TList<TProducerBatch>.Create;
+  SeqProducerId := KAFKA_NO_PRODUCER_ID;
+  SeqProducerEpoch := KAFKA_NO_PRODUCER_EPOCH;
+  LastAckedSequence := -1;
+  LastAckedOffset := -1;
 end;
 
 destructor TPartitionQueue.Destroy;
 begin
+  Sequenced.Free;
   Batches.Free;
   inherited;
 end;
@@ -693,6 +820,27 @@ begin
       FRequestTimeoutMs]);
   if not KafkaCompressionSupported(FParams.Compression) then
     raise EArgumentException.Create('This compression codec isn''t supported yet');
+  // Java's ProducerConfig.postProcessAndValidateIdempotenceConfigs.
+  case FParams.Idempotence of
+    kidOff:
+      FIdempotent := False;
+    kidOn:
+      begin
+        if FParams.Acks <> kaAll then
+          raise EArgumentException.Create('Acks must be kaAll to use the idempotent producer');
+        if FParams.Retries = 0 then
+          raise EArgumentException.Create('Retries must not be 0 to use the idempotent producer');
+        FIdempotent := True;
+      end;
+  else
+    FIdempotent := (FParams.Acks = kaAll) and (FParams.Retries > 0);
+  end;
+  if FIdempotent and (FParams.MaxInFlightPerBroker > KAFKA_MAX_IN_FLIGHT_FOR_IDEMPOTENCE) then
+    raise EArgumentException.CreateFmt('MaxInFlightPerBroker must be at most %d for the ' +
+      'idempotent producer (it is %d); set Idempotence to kidOff for more',
+      [KAFKA_MAX_IN_FLIGHT_FOR_IDEMPOTENCE, FParams.MaxInFlightPerBroker]);
+  FProducerId := KAFKA_NO_PRODUCER_ID;
+  FProducerEpoch := KAFKA_NO_PRODUCER_EPOCH;
   FCluster := TKafkaCluster.Create(FParams.Cluster);
   FMonitor := TPcMonitor.Create;
   FHub := TDeliveryHub.Create as IDeliveryHub;
@@ -704,12 +852,14 @@ begin
   FWake := TKafkaEventSignal.Create;
   FWakeSignal := FWake;
   FNodeBackoff := TDictionary<Int32, UInt64>.Create;
+  FRewrite := TList<TObject>.Create;
 end;
 
 destructor TKafkaProducer.Destroy;
 begin
   if FMonitor <> nil then
     Close(KAFKA_WAIT_INFINITE);
+  FRewrite.Free;
   FNodeBackoff.Free;
   FWakeSignal := nil;
   FSticky.Free;
@@ -1084,6 +1234,51 @@ begin
   end;
 end;
 
+function TKafkaProducer.Idempotent: Boolean;
+begin
+  Result := FIdempotent;
+end;
+
+function TKafkaProducer.ProducerId: Int64;
+begin
+  FMonitor.Enter;
+  try
+    Result := FProducerId;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaProducer.ProducerEpoch: Int16;
+begin
+  FMonitor.Enter;
+  try
+    Result := FProducerEpoch;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaProducer.InitProducerIdCount: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FInitCount;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaProducer.EpochBumps: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FEpochBumps;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
 { The sender thread }
 
 procedure TKafkaProducer.RunSender;
@@ -1107,6 +1302,14 @@ begin
     try
       HandleCompletions(LNow, LNext);
       MaybeRefreshMetadata(LNow);
+      if FIdempotent then
+      begin
+        // Java's Sender.runOnce: resolve, bump, then a producer id if
+        // there is none.
+        ResolveSequences;
+        ApplyBump;
+        StepInitProducerId(LNow, LNext);
+      end;
       ExpireBatches(LNow, LNext);
       SendReady(LNow, LNext);
     except
@@ -1211,8 +1414,19 @@ begin
           if LPart.Index <> B.Partition then
             Continue;
           LFound := True;
-          if LPart.ErrorCode = KAFKA_ERROR_NONE then
-            CompleteBatch(B, LPart.BaseOffset, LPart.LogAppendTimeMs)
+          if (LPart.ErrorCode = KAFKA_ERROR_NONE) or (FIdempotent and
+            (LPart.ErrorCode = KAFKA_ERROR_DUPLICATE_SEQUENCE_NUMBER)) then
+          begin
+            // DUPLICATE_SEQUENCE_NUMBER: written before, and too long ago for
+            // the broker to say at which offset; Java reports success with
+            // offset -1, and so does this (the broker sends -1).
+            if FIdempotent then
+              BatchAcked(B, LPart.BaseOffset);
+            if LPart.ErrorCode <> KAFKA_ERROR_NONE then
+              CompleteBatch(B, -1, -1)
+            else
+              CompleteBatch(B, LPart.BaseOffset, LPart.LogAppendTimeMs);
+          end
           else
           begin
             LMessage := Format('%s-%d: %s', [B.Topic, B.Partition,
@@ -1225,8 +1439,14 @@ begin
                   LPart.RecordErrors[I].BatchIndexErrorMessage]);
             if KafkaErrorIsInvalidMetadata(LPart.ErrorCode) then
               FCluster.Invalidate;
-            RetryOrFail(B, EKafkaBrokerError, LPart.ErrorCode, LMessage,
-              KafkaErrorIsRetriable(LPart.ErrorCode));
+            // Java checks the attempts and the deadline before asking the
+            // transaction manager, which may request a bump.
+            if FIdempotent then
+              RetryOrFail(B, EKafkaBrokerError, LPart.ErrorCode, LMessage, CanRetryNow(B) and
+                IdempotentCanRetry(B, LPart.ErrorCode, LPart.LogStartOffset))
+            else
+              RetryOrFail(B, EKafkaBrokerError, LPart.ErrorCode, LMessage,
+                KafkaErrorIsRetriable(LPart.ErrorCode));
           end;
           Break;
         end;
@@ -1234,8 +1454,12 @@ begin
           Break;
       end;
       if not LFound then
+      begin
+        if FIdempotent then
+          BatchFailed(B, 0, True);
         FailBatch(B, EKafkaProtocol, 0, Format('The Produce response from broker %d has no ' +
           'answer for %s-%d', [F.NodeId, B.Topic, B.Partition]));
+      end;
     end;
   finally
     F.Free;
@@ -1289,9 +1513,15 @@ begin
       FMonitor.Leave;
     end;
     for B in LExpired do
+    begin
+      // A batch with a sequence was sent and is waiting for a retry: the
+      // broker may have it (Java's markSequenceUnresolved).
+      if FIdempotent and B.HasSequence then
+        MarkUnresolved(B);
       FailBatch(B, EKafkaTimeout, 0, Format('Expiring %d record(s) for %s-%d: %d ms has ' +
         'passed since batch creation', [B.Count, B.Topic, B.Partition,
         Int64(ANow - B.CreatedAt)]));
+    end;
   finally
     LExpired.Free;
   end;
@@ -1321,6 +1551,10 @@ begin
     LMetadata := FCluster.Metadata;
     FMonitor.Enter;
     try
+      // Nothing goes out before the producer has an id (Java's
+      // shouldStopDrainBatchesForPartition).
+      if FIdempotent and (FProducerId = KAFKA_NO_PRODUCER_ID) then
+        Exit;
       LAll := (FFlushing > 0) or (FState <> psOpen);
       for I := 0 to FInFlight.Count - 1 do
       begin
@@ -1348,6 +1582,9 @@ begin
           MinTo(ANext, B.CreatedAt + FParams.LingerMs);
           Continue;
         end;
+        // Woken when the batch it waits for completes.
+        if FIdempotent and ShouldStopDrain(Q, B) then
+          Continue;
         if (LMetadata = nil) or not LMetadata.FindTopic(Q.Topic, LTopic) or
           (Q.Partition >= Length(LTopic.Partitions)) or
           (LTopic.Partitions[Q.Partition].LeaderId < 0) then
@@ -1381,7 +1618,13 @@ begin
         end;
         LSizes[LNode] := LSize;
         Q.Batches.Delete(0);
-        Q.Muted := True;
+        if FIdempotent then
+        begin
+          if not B.HasSequence then
+            AssignSequence(Q, B);
+        end
+        else
+          Q.Muted := True;
         B.Closed := True;
         B.TopicId := LTopic.TopicId;
         LList.Add(B);
@@ -1432,7 +1675,11 @@ begin
       FCluster.Invalidate;
       for I := 0 to ABatches.Count - 1 do
         if E is EKafkaUnsupportedVersion then
-          FailBatch(ABatches[I], EKafkaUnsupportedVersion, 0, E.Message)
+        begin
+          if FIdempotent then
+            BatchFailed(ABatches[I], 0, True);
+          FailBatch(ABatches[I], EKafkaUnsupportedVersion, 0, E.Message);
+        end
         else
           Requeue(ABatches[I], False);
       Exit;
@@ -1453,6 +1700,8 @@ begin
         except
           on E: EKafka do
           begin
+            if FIdempotent then
+              BatchFailed(B, 0, True);
             FailBatch(B, EKafkaClass(E.ClassType), 0, E.Message);
             Continue;
           end;
@@ -1536,8 +1785,7 @@ begin
   end;
 end;
 
-procedure TKafkaProducer.RetryOrFail(ABatch: TObject; AClass: EKafkaClass; ACode: Int16;
-  const AMessage: string; ARetriable: Boolean);
+function TKafkaProducer.CanRetryNow(ABatch: TObject): Boolean;
 var
   B: TProducerBatch;
   LStopping: Boolean;
@@ -1549,11 +1797,26 @@ begin
   finally
     FMonitor.Leave;
   end;
-  if ARetriable and not LStopping and (B.Attempts <= FParams.Retries) and
-    (PcTickMs + FRetryBackoffMs < B.CreatedAt + FParams.DeliveryTimeoutMs) then
+  Result := not LStopping and (B.Attempts <= FParams.Retries) and
+    (PcTickMs + FRetryBackoffMs < B.CreatedAt + FParams.DeliveryTimeoutMs);
+end;
+
+procedure TKafkaProducer.RetryOrFail(ABatch: TObject; AClass: EKafkaClass; ACode: Int16;
+  const AMessage: string; ARetriable: Boolean);
+var
+  B: TProducerBatch;
+begin
+  B := TProducerBatch(ABatch);
+  if ARetriable and CanRetryNow(B) then
     Requeue(B, True)
   else
+  begin
+    // Java adjusts the sequences only when the batch still had attempts
+    // left: otherwise whether the broker took it is unknown.
+    if FIdempotent then
+      BatchFailed(B, ACode, B.Attempts <= FParams.Retries);
     FailBatch(B, AClass, ACode, AMessage);
+  end;
 end;
 
 procedure TKafkaProducer.Requeue(ABatch: TObject; ACountAttempt: Boolean);
@@ -1561,6 +1824,7 @@ var
   B: TProducerBatch;
   LObj: TObject;
   Q: TPartitionQueue;
+  I: Integer;
 begin
   B := TProducerBatch(ABatch);
   FMonitor.Enter;
@@ -1569,8 +1833,15 @@ begin
       B.RetryAt := PcTickMs + FRetryBackoffMs;
     FQueues.TryGetValue(QueueKey(B.Topic, B.Partition), LObj);
     Q := TPartitionQueue(LObj);
-    // At the head: the partition's order holds through retries.
-    Q.Batches.Insert(0, B);
+    // At the head: the partition's order holds through retries. With
+    // idempotence, behind the queued batches with a lower sequence (several
+    // were in flight and come back one by one: Java's insertInSequenceOrder).
+    I := 0;
+    if FIdempotent and B.HasSequence then
+      while (I < Q.Batches.Count) and Q.Batches[I].HasSequence and
+        (Q.Batches[I].Batch.BaseSequence < B.Batch.BaseSequence) do
+        Inc(I);
+    Q.Batches.Insert(I, B);
     Q.Muted := False;
     FTransit.Remove(B);
   finally
@@ -1589,7 +1860,11 @@ begin
   try
     Dec(FBuffered, B.Bytes);
     if FQueues.TryGetValue(QueueKey(B.Topic, B.Partition), LObj) then
+    begin
       TPartitionQueue(LObj).Muted := False;
+      // The batch is freed next: no list may keep it.
+      TPartitionQueue(LObj).Sequenced.Remove(B);
+    end;
     // Sends waiting for memory.
     FMonitor.PulseAll;
   finally
@@ -1693,6 +1968,12 @@ begin
     finally
       FMonitor.Leave;
     end;
+    if FInitFuture <> nil then
+    begin
+      FInitBroker.Connection.Abandon(FInitFuture);
+      FInitFuture := nil;
+    end;
+    FInitBroker := nil;
     for I := 0 to LFlights.Count - 1 do
     begin
       F := TInFlight(LFlights[I]);
@@ -1710,6 +1991,407 @@ begin
     LQueued.Free;
     LFlights.Free;
   end;
+end;
+
+{ Idempotence: Java's TransactionManager (its idempotent half), on the sender
+  thread. }
+
+function TKafkaProducer.QueueOf(ABatch: TObject): TObject;
+var
+  B: TProducerBatch;
+begin
+  B := TProducerBatch(ABatch);
+  FMonitor.Enter;
+  try
+    if not FQueues.TryGetValue(QueueKey(B.Topic, B.Partition), Result) then
+      Result := nil;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaProducer.IsStale(AQueue: TObject): Boolean;
+var
+  Q: TPartitionQueue;
+begin
+  Q := TPartitionQueue(AQueue);
+  Result := (Q.SeqProducerId <> FProducerId) or (Q.SeqProducerEpoch <> FProducerEpoch);
+end;
+
+procedure TKafkaProducer.SetProducer(AId: Int64; AEpoch: Int16);
+begin
+  FMonitor.Enter;
+  try
+    FProducerId := AId;
+    FProducerEpoch := AEpoch;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaProducer.StepInitProducerId(ANow: UInt64; var ANext: UInt64);
+var
+  LRequest: TKafkaInitProducerIdRequest;
+  LResponse: TKafkaInitProducerIdResponse;
+  LBroker: IKafkaBrokerConnection;
+  LVersion: Int16;
+  LFuture: IKafkaResponseFuture;
+begin
+  if FProducerId <> KAFKA_NO_PRODUCER_ID then
+    Exit;
+  if FInitFuture <> nil then
+  begin
+    if not FInitFuture.IsDone then
+    begin
+      if ANow < FInitSentAt + FRequestTimeoutMs then
+      begin
+        MinTo(ANext, FInitSentAt + FRequestTimeoutMs);
+        Exit;
+      end;
+      // Fails the future with EKafkaTimeout, handled below.
+      FInitBroker.Connection.Abandon(FInitFuture);
+    end;
+    LFuture := FInitFuture;
+    FInitFuture := nil;
+    FInitBroker := nil;
+    FInitAt := ANow + FRetryBackoffMs;
+    try
+      LResponse.FromBytes(LFuture.Body, FInitVersion);
+    except
+      on E: EKafka do
+      begin
+        // No answer (a broken connection, a timeout): asked again after the
+        // backoff, as Java re-enqueues it.
+        if E is EKafkaConnection then
+          FCluster.Invalidate;
+        MinTo(ANext, FInitAt);
+        Exit;
+      end;
+    end;
+    if LResponse.ErrorCode = KAFKA_ERROR_NONE then
+    begin
+      SetProducer(LResponse.ProducerId, LResponse.ProducerEpoch);
+      // A bump asked for while there was no id: the fresh id is the bump.
+      FBumpRequired := False;
+      RewriteSequences;
+      FInitAt := 0;
+    end
+    else if KafkaErrorIsRetriable(LResponse.ErrorCode) then
+      MinTo(ANext, FInitAt) // a broker loading its producer ids (seen at startup)
+    else
+    begin
+      // Java fails the producer for good on most of these (fatal state); here
+      // the batches waiting fail with the error and the request is made again
+      // after the backoff, as Java does for an authorization error.
+      FailUnsequenced(EKafkaBrokerError, LResponse.ErrorCode,
+        'InitProducerId: ' + KafkaErrorText(LResponse.ErrorCode));
+      MinTo(ANext, FInitAt);
+    end;
+    Exit;
+  end;
+  if ANow < FInitAt then
+  begin
+    MinTo(ANext, FInitAt);
+    Exit;
+  end;
+  try
+    // Any broker answers it without a transactional id (Java's least loaded
+    // node).
+    LBroker := FCluster.AnyBroker;
+    LVersion := LBroker.Connection.NegotiatedVersion(KAFKA_API_KEY_INIT_PRODUCER_ID);
+    LRequest.Init;
+    LRequest.TransactionalIdIsNull := True;
+    LRequest.TransactionTimeoutMs := High(Int32);
+    FInitFuture := LBroker.Connection.Send(KAFKA_API_KEY_INIT_PRODUCER_ID, LVersion,
+      LRequest.ToBytes(LVersion), FWakeSignal);
+    FInitBroker := LBroker;
+    FInitVersion := LVersion;
+    FInitSentAt := ANow;
+    FMonitor.Enter;
+    try
+      Inc(FInitCount);
+    finally
+      FMonitor.Leave;
+    end;
+    MinTo(ANext, ANow + FRequestTimeoutMs);
+  except
+    on E: EKafka do
+    begin
+      FInitAt := ANow + FRetryBackoffMs;
+      MinTo(ANext, FInitAt);
+      // A broker without InitProducerId, or credentials refused: waiting
+      // won't help the records already queued.
+      if (E is EKafkaUnsupportedVersion) or (E is EKafkaAuthentication) then
+        FailUnsequenced(EKafkaClass(E.ClassType), 0, E.Message)
+      else
+        FCluster.Invalidate;
+    end;
+  end;
+end;
+
+procedure TKafkaProducer.FailUnsequenced(AClass: EKafkaClass; ACode: Int16;
+  const AMessage: string);
+var
+  LFailed: TList<TProducerBatch>;
+  Q: TPartitionQueue;
+  B: TProducerBatch;
+  I, K: Integer;
+begin
+  LFailed := TList<TProducerBatch>.Create;
+  try
+    FMonitor.Enter;
+    try
+      for I := 0 to FQueueList.Count - 1 do
+      begin
+        Q := TPartitionQueue(FQueueList[I]);
+        K := 0;
+        while K < Q.Batches.Count do
+        begin
+          B := Q.Batches[K];
+          if B.HasSequence then
+            Inc(K)
+          else
+          begin
+            Q.Batches.Delete(K);
+            B.Closed := True;
+            LFailed.Add(B);
+            FTransit.Add(B);
+          end;
+        end;
+      end;
+    finally
+      FMonitor.Leave;
+    end;
+    for B in LFailed do
+      FailBatch(B, AClass, ACode, AMessage);
+  finally
+    LFailed.Free;
+  end;
+end;
+
+procedure TKafkaProducer.ResolveSequences;
+var
+  LQueues: array of TPartitionQueue;
+  Q: TPartitionQueue;
+  I: Integer;
+begin
+  LQueues := nil;
+  FMonitor.Enter;
+  try
+    SetLength(LQueues, FQueueList.Count);
+    for I := 0 to FQueueList.Count - 1 do
+      LQueues[I] := TPartitionQueue(FQueueList[I]);
+  finally
+    FMonitor.Leave;
+  end;
+  for Q in LQueues do
+    if Q.Unresolved and (Q.Sequenced.Count = 0) then
+    begin
+      // Every batch after the unknown one is done: if the last acknowledged
+      // sequence is the one before the next, the broker had it after all
+      // (a batch expired, the ones after it succeeded); otherwise a gap
+      // stays, and only a new epoch gets past it.
+      if Int64(Q.NextSequence) - Q.LastAckedSequence <> 1 then
+        RequestBump(Q);
+      Q.Unresolved := False;
+    end;
+end;
+
+procedure TKafkaProducer.RequestBump(AQueue: TObject);
+begin
+  FBumpRequired := True;
+  if FRewrite.IndexOf(AQueue) < 0 then
+    FRewrite.Add(AQueue);
+end;
+
+procedure TKafkaProducer.ApplyBump;
+begin
+  if not FBumpRequired or (FProducerId = KAFKA_NO_PRODUCER_ID) then
+    Exit;
+  FBumpRequired := False;
+  FMonitor.Enter;
+  try
+    Inc(FEpochBumps);
+  finally
+    FMonitor.Leave;
+  end;
+  if FProducerEpoch = High(Int16) then
+  begin
+    // The epoch is spent: a new id from InitProducerId, then the
+    // partitions to renumber are renumbered with it.
+    SetProducer(KAFKA_NO_PRODUCER_ID, KAFKA_NO_PRODUCER_EPOCH);
+    FInitAt := 0;
+    Exit;
+  end;
+  // Java bumps an idempotent producer's epoch by itself: a broker takes a
+  // higher epoch that starts at sequence 0 (docs/codec-captures.md).
+  SetProducer(FProducerId, FProducerEpoch + 1);
+  RewriteSequences;
+end;
+
+procedure TKafkaProducer.RewriteSequences;
+var
+  I: Integer;
+begin
+  for I := 0 to FRewrite.Count - 1 do
+    StartSequencesAtBeginning(FRewrite[I]);
+  FRewrite.Clear;
+end;
+
+procedure TKafkaProducer.StartSequencesAtBeginning(AQueue: TObject);
+var
+  Q: TPartitionQueue;
+  B: TProducerBatch;
+  LSequence: Int32;
+begin
+  // Java's TxnPartitionEntry.startSequencesAtBeginning: the batches not done
+  // yet take the new id and epoch, numbered from 0 in their order; they are
+  // encoded again when next sent.
+  Q := TPartitionQueue(AQueue);
+  LSequence := 0;
+  for B in Q.Sequenced do
+  begin
+    B.Batch.ProducerId := FProducerId;
+    B.Batch.ProducerEpoch := FProducerEpoch;
+    B.Batch.BaseSequence := LSequence;
+    B.Encoded := nil;
+    B.SequenceReset := True;
+    LSequence := IncrementSequence(LSequence, B.Count);
+  end;
+  Q.SeqProducerId := FProducerId;
+  Q.SeqProducerEpoch := FProducerEpoch;
+  Q.NextSequence := LSequence;
+  Q.LastAckedSequence := -1;
+  Q.Unresolved := False;
+end;
+
+function TKafkaProducer.ShouldStopDrain(AQueue, ABatch: TObject): Boolean;
+var
+  Q: TPartitionQueue;
+  B: TProducerBatch;
+begin
+  // Java's RecordAccumulator.shouldStopDrainBatchesForPartition.
+  Q := TPartitionQueue(AQueue);
+  B := TProducerBatch(ABatch);
+  if not B.HasSequence then
+  begin
+    // A new batch doesn't start a new epoch's sequence 0 while batches of
+    // the old one are still out, nor go while a sequence is unresolved.
+    if (Q.Sequenced.Count > 0) and IsStale(Q) then
+      Exit(True);
+    if Q.Unresolved then
+      Exit(True);
+  end;
+  // A retried batch goes only when it is the first not done: retries go one
+  // at a time, in order.
+  Result := B.HasSequence and (Q.Sequenced.Count > 0) and
+    (Q.Sequenced[0].Batch.BaseSequence <> B.Batch.BaseSequence);
+end;
+
+procedure TKafkaProducer.AssignSequence(AQueue, ABatch: TObject);
+var
+  Q: TPartitionQueue;
+  B: TProducerBatch;
+begin
+  Q := TPartitionQueue(AQueue);
+  B := TProducerBatch(ABatch);
+  // A partition whose sequences belong to an older id or epoch starts again
+  // at 0 once nothing of the old one is out (Java's
+  // maybeUpdateProducerIdAndEpoch; ShouldStopDrain waited for that).
+  if IsStale(Q) then
+    StartSequencesAtBeginning(Q);
+  B.Batch.ProducerId := FProducerId;
+  B.Batch.ProducerEpoch := FProducerEpoch;
+  B.Batch.BaseSequence := Q.NextSequence;
+  B.Encoded := nil;
+  Q.NextSequence := IncrementSequence(Q.NextSequence, B.Count);
+  Q.Sequenced.Add(B);
+end;
+
+function TKafkaProducer.IdempotentCanRetry(ABatch: TObject; ACode: Int16;
+  ALogStartOffset: Int64): Boolean;
+var
+  B: TProducerBatch;
+  Q: TPartitionQueue;
+begin
+  // Java's TransactionManager.canRetry, without its transactional branches.
+  B := TProducerBatch(ABatch);
+  Q := TPartitionQueue(QueueOf(B));
+  if ACode = KAFKA_ERROR_UNKNOWN_PRODUCER_ID then
+  begin
+    // The broker lost the producer's state. Retried in every case; with a
+    // new epoch unless the answer has no log start yet or the batch was
+    // renumbered already.
+    if (ALogStartOffset <> -1) and not B.SequenceReset then
+      RequestBump(Q);
+    Exit(True);
+  end;
+  if ACode = KAFKA_ERROR_OUT_OF_ORDER_SEQUENCE_NUMBER then
+  begin
+    // Not the next batch: one before it failed, and this one is retried in
+    // its turn. The next batch itself: a gap the broker won't get past
+    // without a new epoch (unless an unresolved sequence may still explain
+    // it).
+    if not Q.Unresolved and (B.SequenceReset or
+      (Int64(B.Batch.BaseSequence) - Q.LastAckedSequence <> 1)) then
+      Exit(True);
+    if not Q.Unresolved or (B.Batch.BaseSequence = Q.UnresolvedNext) then
+      RequestBump(Q);
+    Exit(True);
+  end;
+  Result := KafkaErrorIsRetriable(ACode);
+end;
+
+procedure TKafkaProducer.BatchAcked(ABatch: TObject; ABaseOffset: Int64);
+var
+  B: TProducerBatch;
+  Q: TPartitionQueue;
+begin
+  B := TProducerBatch(ABatch);
+  Q := TPartitionQueue(QueueOf(B));
+  if (Q = nil) or not B.HasSequence then
+    Exit;
+  if B.LastSequence > Q.LastAckedSequence then
+    Q.LastAckedSequence := B.LastSequence;
+  if ABaseOffset >= 0 then
+    Q.LastAckedOffset := ABaseOffset + B.Count - 1;
+  Q.Sequenced.Remove(B);
+end;
+
+procedure TKafkaProducer.BatchFailed(ABatch: TObject; ACode: Int16; AAdjust: Boolean);
+var
+  B: TProducerBatch;
+  Q: TPartitionQueue;
+begin
+  // Java's TransactionManager.handleFailedBatch for an idempotent producer:
+  // the sequence was used and nothing will fill it, so the partition needs a
+  // new epoch; not when the batch ran out of retries (AAdjust False): the
+  // broker may have it, and the next batch's answer says.
+  B := TProducerBatch(ABatch);
+  Q := TPartitionQueue(QueueOf(B));
+  if (Q = nil) or not B.HasSequence then
+    Exit;
+  Q.Sequenced.Remove(B);
+  if (ACode = KAFKA_ERROR_OUT_OF_ORDER_SEQUENCE_NUMBER) or
+    (ACode = KAFKA_ERROR_UNKNOWN_PRODUCER_ID) or AAdjust then
+    RequestBump(Q);
+end;
+
+procedure TKafkaProducer.MarkUnresolved(ABatch: TObject);
+var
+  B: TProducerBatch;
+  Q: TPartitionQueue;
+  LNext: Int32;
+begin
+  B := TProducerBatch(ABatch);
+  Q := TPartitionQueue(QueueOf(B));
+  if Q = nil then
+    Exit;
+  LNext := IncrementSequence(B.LastSequence, 1);
+  if not Q.Unresolved or (LNext > Q.UnresolvedNext) then
+    Q.UnresolvedNext := LNext;
+  Q.Unresolved := True;
+  Q.Sequenced.Remove(B);
 end;
 
 end.

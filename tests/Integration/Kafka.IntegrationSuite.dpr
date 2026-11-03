@@ -48,10 +48,12 @@ uses
   Kafka.Group.Consumer in '..\..\src\Kafka.Group.Consumer.pas',
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
+  Kafka.TestProxy in 'Kafka.TestProxy.pas',
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
   Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas',
   Kafka.GroupIntegrationTests in 'Kafka.GroupIntegrationTests.pas',
   Kafka.ConsumerGroupIntegrationTests in 'Kafka.ConsumerGroupIntegrationTests.pas',
+  Kafka.IdempotenceIntegrationTests in 'Kafka.IdempotenceIntegrationTests.pas',
   Kafka.CloudIntegrationTests in 'Kafka.CloudIntegrationTests.pas';
 
 var

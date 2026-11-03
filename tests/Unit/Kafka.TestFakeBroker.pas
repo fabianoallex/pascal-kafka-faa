@@ -54,6 +54,22 @@
     the log start, -1 the end, any other timestamp the first record at or
     after it.
 
+  - the idempotent producer (with OfferRecords, unless OfferInitProducerId is
+    False): InitProducerId hands out a new id with epoch 0 every time, as
+    Kafka 4.4.0 does without a transactional id; the next InitProducerIdErrors
+    answer InitProducerIdErrorCode. A batch with a producer id is checked as
+    4.4.0 checked them in docs/codec-captures.md ("The idempotent producer"):
+    per producer id and partition the last five batches are kept; a batch
+    among them gets no error and its first offset, appending nothing; the
+    next sequence is appended; a gap, or a batch older than those five,
+    OUT_OF_ORDER_SEQUENCE_NUMBER; a lower epoch INVALID_PRODUCER_EPOCH; a
+    higher one from sequence 0 starts over; an id it doesn't know is taken
+    at any sequence. LoseProduceAnswers: the next N Produce requests are
+    appended and not answered (the answer lost, the case a retry must not
+    duplicate). ProduceErrorSkip: that many requests go through before the
+    ProduceErrors ones. StoredBatches gives the batches as stored, producer
+    id, epoch and sequence included.
+
   - SASL (SaslMechanisms, e.g. 'PLAIN,SCRAM-SHA-256'; '' = a listener
     without SASL, which answers SaslHandshake with ILLEGAL_SASL_STATE, as a
     broker's PLAINTEXT listener does). One user (SaslUser, SaslPassword) for
@@ -111,6 +127,7 @@ uses
   Kafka.Messages.ConsumerGroupHeartbeat,
   Kafka.Messages.OffsetCommit,
   Kafka.Messages.OffsetFetch,
+  Kafka.Messages.InitProducerId,
   Kafka.Protocol.RecordBatch,
   Kafka.TestFakeGroup,
   Generics.Collections;
@@ -190,6 +207,17 @@ type
     end;
     TStoredBatchArray = array of TStoredBatch;
 
+    // An idempotent producer's state on one partition, as a broker keeps it.
+    TProducerState = class
+    public
+      Epoch: Int16;
+      Count: Integer;
+      FirstSeq: array[0..4] of Int32;
+      LastSeq: array[0..4] of Int32;
+      Offsets: array[0..4] of Int64;
+      procedure Add(AFirst, ALast: Int32; AOffset: Int64);
+    end;
+
     TParkedFetch = record
       Connection: TKafkaFakeConnection;
       CorrelationId: Int32;
@@ -246,6 +274,17 @@ type
     FGroups: TKafkaFakeGroups;
     FFindCoordinatorCount: Integer;
     FLastFindCoordinatorVersion: Int16;
+    FProducers: TObjectDictionary<string, TProducerState>;
+    FNextProducerId: Int64;
+    FInitProducerIdCount: Integer;
+    function HandleInitProducerId(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
+      const AContent: TBytes): Boolean;
+    /// KAFKA_ERROR_NONE to append, or the error; ADuplicateOffset >= 0: the
+    /// batch is a duplicate written at that offset.
+    function CheckSequence(const ATopic: string; APartition: Int32;
+      const ABatch: TKafkaRecordBatch; out ADuplicateOffset: Int64): Int16;
+    procedure RecordSequence(const ATopic: string; APartition: Int32;
+      const ABatch: TKafkaRecordBatch; ABaseOffset: Int64);
     function HandleGroup(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
       const AContent: TBytes): Boolean;
     function FindCoordinatorBody(AVersion: Int16; const ARequest: TKafkaFindCoordinatorRequest): TBytes;
@@ -292,6 +331,14 @@ type
     HoldProduce: Boolean;
     FetchErrors: Integer;
     FetchErrorCode: Int16;
+    /// The next N Produce requests are appended but get no answer.
+    LoseProduceAnswers: Integer;
+    /// Requests let through before the ProduceErrors ones.
+    ProduceErrorSkip: Integer;
+    /// Offer InitProducerId with OfferRecords (True by default).
+    OfferInitProducerId: Boolean;
+    InitProducerIdErrors: Integer;
+    InitProducerIdErrorCode: Int16;
     SaslMechanisms: string;
     SaslUser: string;
     SaslPassword: string;
@@ -347,7 +394,8 @@ type
     function LoggedCompression(AIndex: Integer): Integer;
     /// Waits up to ATimeoutMs until ACount Produce requests came.
     function WaitProduceCount(ACount: Integer; ATimeoutMs: Cardinal): Boolean;
-    /// Answers the held Produce requests, oldest first, and stops holding.
+    /// Answers the held Produce requests, oldest first, then those held
+    /// meanwhile, and stops holding once none is left.
     procedure ReleaseHeldProduce;
     /// Appends ABatch to ATopic-APartition as a producer's would be (its
     /// base offset set to the partition's end); returns that base offset.
@@ -366,6 +414,11 @@ type
     /// FindCoordinator requests received, and the version of the last.
     function FindCoordinatorCount: Integer;
     function LastFindCoordinatorVersion: Int16;
+    /// InitProducerId requests received.
+    function InitProducerIdCount: Integer;
+    /// The batches stored for ATopic-APartition, in offset order, decoded
+    /// (producer id, epoch and sequence as they came).
+    function StoredBatches(const ATopic: string; APartition: Int32): TKafkaRecordBatchArray;
     /// The groups this broker coordinates (Kafka.TestFakeGroup).
     property Groups: TKafkaFakeGroups read FGroups;
   end;
@@ -552,6 +605,9 @@ begin
   if FListener = nil then
     FListener := PcTcpListen('127.0.0.1', 0, Default(TPcTcpOptions));
   FLogStart := TDictionary<string, Int64>.Create;
+  FProducers := TObjectDictionary<string, TProducerState>.Create([doOwnsValues]);
+  FNextProducerId := 1000;
+  OfferInitProducerId := True;
   FThread := TAcceptThread.Create(Self);
   FThread.Start;
   FParkThread := TParkThread.Create(Self);
@@ -578,6 +634,7 @@ begin
   FParkThread.Free;
   FConnections.Free;
   FLogStart.Free;
+  FProducers.Free;
   FListener.Free;
   FGroups.Free;
   FMonitor.Free;
@@ -739,6 +796,8 @@ begin
   if HandleSasl(AConn, LKey, LVersion, AContent) then
     Exit;
   if HandleGroup(AConn, LKey, LVersion, AContent) then
+    Exit;
+  if HandleInitProducerId(AConn, LKey, LVersion, AContent) then
     Exit;
   if LKey = KAFKA_API_KEY_API_VERSIONS then
   begin
@@ -1339,8 +1398,13 @@ var
   LTrailing: Integer;
   LBase: Int64;
   LPart: TKafkaProduceResponsePartitionProduceResponse;
+  LError: Boolean;
+  LDuplicate: Int64;
+  LCode: Int16;
+  LLose: Boolean;
 begin
   R.Init;
+  LLose := False;
   SetLength(R.Responses, Length(ARequest.TopicData));
   FMonitor.Enter;
   try
@@ -1355,19 +1419,35 @@ begin
       begin
         LPart.Init;
         LPart.Index := ARequest.TopicData[T].PartitionData[P].Index;
+        LError := (ProduceErrors > 0) and (ProduceErrorSkip = 0);
+        LDuplicate := -1;
+        LCode := KAFKA_ERROR_NONE;
+        LBatches := nil;
+        if (LName <> '') and not LError then
+        begin
+          LBatches := KafkaDecodeRecordBatches(ARequest.TopicData[T].PartitionData[P].Records,
+            16 * 1024 * 1024, LTrailing);
+          // One batch per partition, as a producer sends: its sequence
+          // decides for the whole partition.
+          if Length(LBatches) > 0 then
+            LCode := CheckSequence(LName, LPart.Index, LBatches[0], LDuplicate);
+        end;
         if LName = '' then
           LPart.ErrorCode := KAFKA_ERROR_UNKNOWN_TOPIC_ID
-        else if ProduceErrors > 0 then
+        else if LError then
           LPart.ErrorCode := ProduceErrorCode
+        else if LCode <> KAFKA_ERROR_NONE then
+          LPart.ErrorCode := LCode
+        else if LDuplicate >= 0 then
+          LPart.BaseOffset := LDuplicate
         else
         begin
           LBase := NextOffset(LName, LPart.Index);
           LPart.BaseOffset := LBase;
-          LBatches := KafkaDecodeRecordBatches(ARequest.TopicData[T].PartitionData[P].Records,
-            16 * 1024 * 1024, LTrailing);
           for B := 0 to High(LBatches) do
           begin
             LBatches[B].BaseOffset := LBase;
+            RecordSequence(LName, LPart.Index, LBatches[B], LBase);
             StoreBatch(LName, LPart.Index, LBatches[B]);
             for K := 0 to High(LBatches[B].Records) do
             begin
@@ -1383,15 +1463,29 @@ begin
             end;
           end;
         end;
+        if LName <> '' then
+          LPart.LogStartOffset := LogStartOf(LName, LPart.Index);
         R.Responses[T].PartitionResponses[P] := LPart;
       end;
     end;
     if ProduceErrors > 0 then
-      Dec(ProduceErrors);
+    begin
+      if ProduceErrorSkip > 0 then
+        Dec(ProduceErrorSkip)
+      else
+        Dec(ProduceErrors);
+    end;
+    if LoseProduceAnswers > 0 then
+    begin
+      Dec(LoseProduceAnswers);
+      LLose := True;
+    end;
     FMonitor.PulseAll;
   finally
     FMonitor.Leave;
   end;
+  if LLose then
+    Exit;
   if ARequest.Acks <> 0 then
     SendResponse(AConn, ACorrelationId, KAFKA_API_KEY_PRODUCE, AVersion, R.ToBytes(AVersion));
 end;
@@ -1726,6 +1820,170 @@ begin
   end;
 end;
 
+{ TKafkaFakeBroker.TProducerState }
+
+procedure TKafkaFakeBroker.TProducerState.Add(AFirst, ALast: Int32; AOffset: Int64);
+var
+  I: Integer;
+begin
+  if Count = 5 then
+  begin
+    for I := 0 to 3 do
+    begin
+      FirstSeq[I] := FirstSeq[I + 1];
+      LastSeq[I] := LastSeq[I + 1];
+      Offsets[I] := Offsets[I + 1];
+    end;
+    Count := 4;
+  end;
+  FirstSeq[Count] := AFirst;
+  LastSeq[Count] := ALast;
+  Offsets[Count] := AOffset;
+  Inc(Count);
+end;
+
+function ProducerKey(const ATopic: string; APartition: Int32; AProducerId: Int64): string;
+begin
+  Result := ATopic + #0 + IntToStr(APartition) + #0 + IntToStr(AProducerId);
+end;
+
+function TKafkaFakeBroker.CheckSequence(const ATopic: string; APartition: Int32;
+  const ABatch: TKafkaRecordBatch; out ADuplicateOffset: Int64): Int16;
+var
+  S: TProducerState;
+  LLast: Int32;
+  I: Integer;
+begin
+  // Called under FMonitor.
+  ADuplicateOffset := -1;
+  Result := KAFKA_ERROR_NONE;
+  if ABatch.ProducerId < 0 then
+    Exit;
+  // An id the broker doesn't know: taken at any sequence (4.4.0 did).
+  if not FProducers.TryGetValue(ProducerKey(ATopic, APartition, ABatch.ProducerId), S) then
+    Exit;
+  if ABatch.ProducerEpoch < S.Epoch then
+    Exit(KAFKA_ERROR_INVALID_PRODUCER_EPOCH);
+  if ABatch.ProducerEpoch > S.Epoch then
+  begin
+    if ABatch.BaseSequence <> 0 then
+      Exit(KAFKA_ERROR_OUT_OF_ORDER_SEQUENCE_NUMBER);
+    Exit;
+  end;
+  LLast := ABatch.BaseSequence + Length(ABatch.Records) - 1;
+  for I := 0 to S.Count - 1 do
+    if (S.FirstSeq[I] = ABatch.BaseSequence) and (S.LastSeq[I] = LLast) then
+    begin
+      ADuplicateOffset := S.Offsets[I];
+      Exit;
+    end;
+  if (S.Count = 0) or (Int64(ABatch.BaseSequence) <> Int64(S.LastSeq[S.Count - 1]) + 1) then
+    Result := KAFKA_ERROR_OUT_OF_ORDER_SEQUENCE_NUMBER;
+end;
+
+procedure TKafkaFakeBroker.RecordSequence(const ATopic: string; APartition: Int32;
+  const ABatch: TKafkaRecordBatch; ABaseOffset: Int64);
+var
+  S: TProducerState;
+  LKey: string;
+begin
+  // Called under FMonitor, after CheckSequence accepted the batch.
+  if ABatch.ProducerId < 0 then
+    Exit;
+  LKey := ProducerKey(ATopic, APartition, ABatch.ProducerId);
+  if not FProducers.TryGetValue(LKey, S) then
+  begin
+    S := TProducerState.Create;
+    FProducers.Add(LKey, S);
+    S.Epoch := ABatch.ProducerEpoch;
+  end;
+  if ABatch.ProducerEpoch <> S.Epoch then
+  begin
+    S.Epoch := ABatch.ProducerEpoch;
+    S.Count := 0;
+  end;
+  S.Add(ABatch.BaseSequence, ABatch.BaseSequence + Length(ABatch.Records) - 1, ABaseOffset);
+end;
+
+function TKafkaFakeBroker.HandleInitProducerId(AConn: TKafkaFakeConnection;
+  AKey, AVersion: Int16; const AContent: TBytes): Boolean;
+var
+  LReader: TKafkaReader;
+  LHeader: TKafkaRequestHeader;
+  LRequest: TKafkaInitProducerIdRequest;
+  R: TKafkaInitProducerIdResponse;
+begin
+  Result := (AKey = KAFKA_API_KEY_INIT_PRODUCER_ID) and OfferRecords and OfferInitProducerId;
+  if not Result then
+    Exit;
+  LReader := TKafkaReader.Create(AContent);
+  try
+    LHeader := KafkaReadRequestHeader(LReader,
+      KafkaRequestHeaderVersion(KafkaApiIsFlexible(AKey, AVersion)));
+    LRequest.FromBytes(Copy(AContent, LReader.Position, Length(AContent) - LReader.Position),
+      AVersion);
+  finally
+    LReader.Free;
+  end;
+  R.Init;
+  FMonitor.Enter;
+  try
+    Inc(FInitProducerIdCount);
+    if InitProducerIdErrors > 0 then
+    begin
+      Dec(InitProducerIdErrors);
+      R.ErrorCode := InitProducerIdErrorCode;
+      R.ProducerId := -1;
+      R.ProducerEpoch := -1;
+    end
+    else
+    begin
+      // A new id each time, epoch 0, whatever id and epoch the request
+      // names: what 4.4.0 answers without a transactional id.
+      R.ProducerId := FNextProducerId;
+      Inc(FNextProducerId);
+      R.ProducerEpoch := 0;
+    end;
+    FMonitor.PulseAll;
+  finally
+    FMonitor.Leave;
+  end;
+  SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion, R.ToBytes(AVersion));
+end;
+
+function TKafkaFakeBroker.InitProducerIdCount: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Result := FInitProducerIdCount;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.StoredBatches(const ATopic: string;
+  APartition: Int32): TKafkaRecordBatchArray;
+var
+  I, N: Integer;
+  LData: TBytes;
+begin
+  Result := nil;
+  FMonitor.Enter;
+  try
+    N := 0;
+    for I := 0 to FBatchCount - 1 do
+      if (FBatches[I].Topic = ATopic) and (FBatches[I].Partition = APartition) then
+      begin
+        LData := FBatches[I].Data;
+        SetLength(Result, N + 1);
+        Result[N] := KafkaDecodeRecordBatch(LData, 0, Length(LData), 16 * 1024 * 1024);
+        Inc(N);
+      end;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
 function TKafkaFakeBroker.ProduceCount: Integer;
 begin
   FMonitor.Enter;
@@ -1816,17 +2074,27 @@ var
   LHeld: THeldProduceArray;
   I: Integer;
 begin
-  FMonitor.Enter;
-  try
-    LHeld := Copy(FHeldProduce, 0, Length(FHeldProduce));
-    FHeldProduce := nil;
-    HoldProduce := False;
-  finally
-    FMonitor.Leave;
+  // Requests that come while the held ones are answered are held too, and
+  // answered after them: a broker answers a connection's requests in order,
+  // and a client sends more as the first answers arrive.
+  while True do
+  begin
+    FMonitor.Enter;
+    try
+      if Length(FHeldProduce) = 0 then
+      begin
+        HoldProduce := False;
+        Exit;
+      end;
+      LHeld := Copy(FHeldProduce, 0, Length(FHeldProduce));
+      FHeldProduce := nil;
+    finally
+      FMonitor.Leave;
+    end;
+    for I := 0 to High(LHeld) do
+      HandleProduce(LHeld[I].Connection, LHeld[I].CorrelationId, LHeld[I].Version,
+        LHeld[I].Request);
   end;
-  for I := 0 to High(LHeld) do
-    HandleProduce(LHeld[I].Connection, LHeld[I].CorrelationId, LHeld[I].Version,
-      LHeld[I].Request);
 end;
 
 procedure TKafkaFakeBroker.SendResponse(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
@@ -1919,6 +2187,15 @@ begin
     R.ApiKeys[N - 1].ApiKey := KAFKA_API_KEY_LIST_OFFSETS;
     R.ApiKeys[N - 1].MinVersion := 1;
     R.ApiKeys[N - 1].MaxVersion := 11;
+    if OfferInitProducerId then
+    begin
+      N := Length(R.ApiKeys);
+      SetLength(R.ApiKeys, N + 1);
+      R.ApiKeys[N].Init;
+      R.ApiKeys[N].ApiKey := KAFKA_API_KEY_INIT_PRODUCER_ID;
+      R.ApiKeys[N].MinVersion := 0;
+      R.ApiKeys[N].MaxVersion := 5;
+    end;
   end;
   if AVersion < 0 then
   begin

@@ -29,6 +29,7 @@ uses
   Kafka.MessagesTests,
   Kafka.GroupMessagesTests,
   Kafka.ProducerIdMessagesTests,
+  Kafka.IdempotentProducerTests,
   Kafka.GroupTests,
   Kafka.ConsumerGroupTests,
   Kafka.ProduceFetchTests,

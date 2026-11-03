@@ -4,10 +4,10 @@ A native Apache Kafka client for **Delphi** and **Free Pascal/Lazarus** from one
 with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, chosen at run
 time.
 
-**Status: early, not released.** Phases K1 and K2: the protocol, the codecs generated from
+**Status: early, not released.** Phases K1, K2 and the start of K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
-cluster layer (bootstrap, metadata, leaders), the producer, and the consumer with partitions
+cluster layer (bootstrap, metadata, leaders), the producer (idempotent by default), and the consumer with partitions
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
 events, synchronous, asynchronous and automatic commits), checked against the Java client in
 both directions and in one group with it. The plan is [`docs/design.md`](docs/design.md).
@@ -60,6 +60,12 @@ listener without SASL raise `EKafkaAuthentication` (with the broker's error code
 never retried); a client without SASL on a SASL listener is hung up on by the broker
 (`EKafkaConnection`). A broker with `connections.max.reauth.ms` (KIP-368) gets a new
 connection before each session ends.
+
+The producer is **idempotent by default**, as Java's since 3.0: a retry after a lost answer
+isn't written twice, and up to five batches of a partition are in flight with their order
+kept. It needs `Acks = kaAll` (the default) and `Retries > 0`; with `Acks = kaLeader` or
+`kaNone` it is off, as Java's. `Params.Idempotence := kidOff` gives the at-least-once producer,
+one batch in flight per partition; `MaxInFlightPerBroker` above 5 needs it.
 
 Reading partitions assigned by hand:
 

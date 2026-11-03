@@ -1,7 +1,8 @@
 # pascal-kafka-faa — design
 
 Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3 planned, its step 1 done** (2026-11-03: "K1 progress",
+met against Kafka 4.4.0; K3's steps 1 and 2 done (the idempotent producer)** (2026-11-03:
+"K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
 accepted (3 and 4, and the transport's T1–T8).
@@ -217,7 +218,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | Minimal admin (create and delete topics) | K1/K2 | for the integration tests |
 | KIP-848 consumer group, OffsetCommit/OffsetFetch | K2 | decision 4's seam |
 | Auto-commit and manual commit (sync and async) | K2 | |
-| Idempotent producer (InitProducerId, sequences) | K3 | Java's default since 3.0 |
+| Idempotent producer (InitProducerId, sequences) | K3 | done; the default, as Java's since 3.0 |
 | snappy and lz4 (pure Pascal) | K3 | a consumer must read whatever any producer sent |
 | zstd | K3 | large decoder: opt-in libzstd, loaded dynamically like OpenSSL |
 | SCRAM-SHA-512 | K3 | needs SHA-512 in common (a new item there) |
@@ -947,12 +948,13 @@ Win64, 0 leaks; the interoperability test and the samples):
      on its side. Which of the two Java uses, and which errors fail the batch and which retry
      it, is Java's table, read in step 2, not decided here.
    - **The parameter:** `Idempotence` in `TKafkaProducerParams`, three values as Java's
-     behaviour has them: `kidAuto` (the default: on when `Acks` is all, `MaxInFlightPerBroker`
-     at most 5 and `Retries` above 0, silently off otherwise, as Java 3.0+ does when
-     `enable.idempotence` wasn't set), `kidOn` (those three checked at `Open`, an `EKafka`
-     naming the conflict, Java's `ConfigException`), `kidOff` (K1's producer, one batch in
-     flight per partition). A Pascal record can't tell "left at its default" from "set", which
-     is why the third value.
+     behaviour has them: `kidAuto` (the default: on when `Acks` is all and `Retries` above 0,
+     silently off otherwise, as Java 3.0+ does when `enable.idempotence` wasn't set), `kidOn`
+     (those checked, Java's `ConfigException`), `kidOff` (K1's producer, one batch in flight per
+     partition). A Pascal record can't tell "left at its default" from "set", which is why the
+     third value. *Corrected in step 2:* Java refuses `MaxInFlightPerBroker` above 5 whenever
+     idempotence is on, the default included, and only acks and retries turn it off silently;
+     the checks raise in `Create`.
    - **The fake broker** answers InitProducerId (a new id each time, injected errors) and
      checks sequences as 4.4.0 did in step 1's captures: per producer id and partition, the last
      5 batches kept; a batch among them gets no error and its first offset; a gap, or a retry
@@ -1047,6 +1049,105 @@ interoperability test (three scenarios) and both samples, 0 leaks. Linux (Docker
 and both suites 5 times in three containers at once with `--cpus=1` (30 runs). Delphi 12 Win32
 and Win64: 267 and 36, 0 leaks; the interoperability test and both samples with the Delphi
 programs too.
+
+### The idempotent producer (2026-11-03)
+
+Step 2 of the plan. Java 4.4.0's `TransactionManager`, `TxnPartitionEntry`, `RecordAccumulator`,
+`Sender` and `ProducerConfig` were read first; what they do is marked "Java" below.
+
+**Done:**
+
+- **`Kafka.Producer` is idempotent by default** (`Idempotence`, `TKafkaIdempotence`): an
+  InitProducerId (no transactional id, `TransactionTimeoutMs` MaxInt, as Java) to any broker
+  before the first batch goes; the id, the epoch and the partition's next sequence written into
+  each batch when it is first sent, and kept through its retries; up to five batches of a
+  partition in flight (one per request), lifting K1's "one batch in flight per partition".
+- **Java's rules**, the idempotent half of `TransactionManager.canRetry` and `handleFailedBatch`:
+  - a retried batch goes back into its partition's queue in sequence order, and is sent again
+    only when it is the first not done (Java's `insertInSequenceOrder` and
+    `shouldStopDrainBatchesForPartition`), so retries go one at a time;
+  - DUPLICATE_SEQUENCE_NUMBER is delivered, offset -1;
+  - OUT_OF_ORDER_SEQUENCE_NUMBER is retried: without a new epoch when the batch isn't the one
+    after the last acknowledged (an earlier one failed), with one when it is (a gap);
+  - UNKNOWN_PRODUCER_ID is retried with a new epoch (unless the answer has no log start yet, or
+    the batch was renumbered already);
+  - any other failure of a batch whose sequence was used (INVALID_PRODUCER_EPOCH, a request out
+    of time) bumps the epoch; a batch that expires while queued for a retry leaves its sequence
+    *unresolved*: new batches of the partition wait until the ones before them are done, then
+    either go on (the broker had it) or bump.
+- **The bump is local, as Java's** (`bumpIdempotentProducerEpoch`): the epoch plus one, the
+  partition's batches not done renumbered from 0 and encoded again; other partitions start
+  from 0 on the new epoch once their old batches are done; a new id only when the epoch reaches
+  32767. Step 1's captures had shown the broker takes a higher epoch from sequence 0.
+- **InitProducerId errors:** retriable ones (COORDINATOR_LOAD_IN_PROGRESS, as the Java producer
+  met) and a lost answer are asked again after `RetryBackoffMs`; any other error, a broker
+  without the API or refused credentials fail the records waiting, and the request is made
+  again after the backoff.
+- **The parameter, as Java's `postProcessAndValidateIdempotenceConfigs`:** `kidAuto` is off,
+  silently, when `Acks` isn't `kaAll` or `Retries` is 0; `kidOn` refuses those two;
+  `MaxInFlightPerBroker` above 5 is refused whenever idempotence is on, `kidAuto` included
+  (Java refuses it with the default too), so a K1 producer with more needs `kidOff`. The checks
+  raise `EArgumentException` in `Create`, as the producer's other parameter checks (the plan
+  said `EKafka` at `Open`).
+- Diagnostics: `Idempotent`, `ProducerId`, `ProducerEpoch`, `InitProducerIdCount`,
+  `EpochBumps`.
+- **The fake broker** answers InitProducerId and checks sequences as 4.4.0 did in step 1's
+  captures (its header); `LoseProduceAnswers` writes a batch and loses the answer;
+  `ProduceErrorSkip` fails a later request; `StoredBatches` returns the batches as stored.
+- **`Kafka.TestProxy`** (integration helper): relays a real broker's connections, rewrites the
+  brokers in Metadata answers to itself (gotcha 9) with the generated codec, can lose Produce
+  answers, and counts the Produce requests in flight on a connection.
+- Tests: `Kafka.IdempotentProducerTests`, 16 unit tests (its header), and
+  `Kafka.IdempotenceIntegrationTests`, 2 against Kafka 4.4.0 through the proxy.
+
+**K3's criterion for idempotence is met** against Kafka 4.4.0: the proxy swallowed the answer
+to a batch the broker had written; the producer sent the batch again after its request
+timeout, with the same sequence; the broker answered with the first write's offset; a consumer
+reading the partition found the record once. And 3 000 single-record batches of one partition
+went with up to five requests in flight on the connection (the proxy counted them), all read
+back once and in order.
+
+**Measured:** FPC 3.2.2 Windows x64: 283 unit and 38 integration tests, the
+interoperability test (three scenarios) and both samples, 0 leaks; the new unit fixture 40
+times in a row. Linux (Docker): the same, and both suites 5 times in three containers at once
+with `--cpus=1` (30 runs). Delphi 12 Win32 and Win64: 283 and 38, 0 leaks; the
+interoperability test and both samples with the Delphi programs too.
+
+Three mutations, each run against the idempotent fixture: a retried batch given a new
+sequence fails `LostAnswer_SentAgain_WrittenOnce` (the record written twice); a bump that
+keeps the epoch fails five tests. Retries allowed to overtake the first batch in flight fail
+none: against one broker that answers a connection in order, the broker's own sequence check
+keeps the log in order, and Java's rule saves requests (and bumps, with several brokers)
+rather than records. Kept, as Java's.
+
+**Decided while writing:**
+
+- **InitProducerId is sent at once when the sender starts**, not with the first record (Java's
+  `bumpIdempotentEpochAndResetIdIfNeeded` runs on every pass of its sender too). An idle
+  producer costs one request.
+- **A non-retriable InitProducerId error doesn't end the producer.** Java moves to a fatal
+  state for most of them; here the records waiting fail with the error and the next request
+  is made after the backoff (Java's behaviour for authorization errors). A producer that can
+  never get an id fails each record, which is what a caller would see either way.
+- **The connection stays open after a Produce request times out** (K1's decision, Java closes
+  it): with idempotence the retry on the same connection reaches the broker after the
+  original, and the broker answers it as a duplicate.
+- **Not done yet:** splitting a batch the broker refuses as too large (with idempotence the
+  split batches need sequences of their own, Java's `splitAndReenqueue`), and the transactional
+  producer (K4).
+
+**Found on the way:**
+
+- The fake broker's `ReleaseHeldProduce` stopped holding before it answered the held
+  requests, so a request the producer sent after the first answer was handled before the
+  ones still held: answers out of order on one connection, which no broker gives. The
+  producer saw a gap on its next batch and bumped the epoch, as Java would (one run in about
+  twenty). Requests that come while the held ones are answered are now held and answered after
+  them.
+- The proxy hung its fixture's teardown: after `Close`, pascal-common-faa's listener `Accept`
+  returns nil rather than raising, and the loop went on accepting nothing. It reads
+  correlation ids of requests at bytes 4 to 7 (`KafkaPeekCorrelationId` reads a response's,
+  bytes 0 to 3; using it for requests matched no answer).
 
 ## 8. Open questions
 

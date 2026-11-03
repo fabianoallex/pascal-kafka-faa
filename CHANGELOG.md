@@ -161,8 +161,25 @@ the sample against Confluent Cloud, has been run.
   gap, a new epoch, the old one, an unknown producer and an evicted retry; from the Java console
   producer, its InitProducerId (answered COORDINATOR_LOAD_IN_PROGRESS first) and its batch;
   `Kafka.ProducerIdMessagesTests` (267 unit tests in all).
+- The idempotent producer (phase K3, step 2), after Java 4.4.0: `TKafkaProducerParams.Idempotence`
+  (`kidAuto`, the default, `kidOn`, `kidOff`), InitProducerId, the producer id, epoch and
+  per-partition sequences in each batch, up to five batches of a partition in flight with
+  retries kept in sequence order, Java's handling of OUT_OF_ORDER_SEQUENCE_NUMBER,
+  UNKNOWN_PRODUCER_ID, INVALID_PRODUCER_EPOCH and DUPLICATE_SEQUENCE_NUMBER, the local epoch
+  bump, unresolved sequences after an expiry. `Idempotent`, `ProducerId`, `ProducerEpoch`,
+  `InitProducerIdCount`, `EpochBumps`. The fake broker answers InitProducerId and checks
+  sequences as Kafka 4.4.0 does; `Kafka.TestProxy` (integration) loses a real broker's answers.
+  Tests: `Kafka.IdempotentProducerTests` (16 unit tests: 283 in all) and
+  `Kafka.IdempotenceIntegrationTests` (2: 38 integration tests in all).
 
 ### Changed
+
+- **The producer is idempotent by default** (`Idempotence = kidAuto`, Java's default since
+  3.0): with `Acks = kaAll` and `Retries > 0` it asks the broker for a producer id and keeps up
+  to five batches of a partition in flight. A broker that refuses InitProducerId (an ACL
+  without IdempotentWrite) fails the records with that error: set `Idempotence := kidOff`.
+  `MaxInFlightPerBroker` above 5 now raises `EArgumentException` in `Create` unless
+  idempotence is off (Java's rule).
 
 - `TKafkaTopicPartition`, `TKafkaTopicPartitionArray` and `KafkaTopicPartition` moved from
   `Kafka.Consumer` to `Kafka.Types` (the group units need them and the consumer will use the

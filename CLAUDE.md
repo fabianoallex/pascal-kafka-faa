@@ -99,7 +99,8 @@ first).
   Delphi by `tests/Unit/Kafka.DUnitXCompat.pas` (the skill's canonical copy:
   `check_test_kit.py` reports drift). Helpers whose names don't end in `Tests`
   (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`,
-  `Kafka.TestPartitions`, `Kafka.TestFakeGroup`) are shared, not mirrored.
+  `Kafka.TestPartitions`, `Kafka.TestFakeGroup`, and in `tests/Integration` `Kafka.TestProxy`)
+  are shared, not mirrored.
 - **A new test unit** ends with `initialization TDUnitX.RegisterTestFixture(...)` (the mirror
   turns it into `RegisterTest`) and goes into the `.dpr`, the `.dproj` and the FPC `.lpr`.
   Without the registration both runners compile it and run none of it, silently.
@@ -120,11 +121,18 @@ first).
   and OffsetFetch with the member's epoch checked; `WaitMemberOwns`, `WaitMemberHeartbeats`
   and the like wait on its monitor. `Kafka.GroupTests` (the membership) and
   `Kafka.ConsumerGroupTests` (the consumer in a group, two of them on one fake) run against it.
+  It answers InitProducerId and checks idempotent batches' sequences as Kafka 4.4.0 does
+  (`LoseProduceAnswers` writes a batch and loses its answer; `StoredBatches`):
+  `Kafka.IdempotentProducerTests`. `ReleaseHeldProduce` answers in arrival order, the ones
+  that came meanwhile too (a broker answers a connection in order).
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
   SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
   bob-secret): `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
   file needs the container recreated (`up -d` does it).
+- **`Kafka.TestProxy`** (integration): relays a real broker's connections, rewrites
+  Metadata's brokers to itself (gotcha 9), loses Produce answers on request, counts the Produce
+  requests in flight; `Kafka.IdempotenceIntegrationTests` (K3's criterion) runs through it.
 - **Interoperability with the Java client:** `tools/interop.py --pascal <program>` (the
   library's side is `tests/Interop`, a console program, not a fixture: the Java side runs by
   `docker exec` in the broker's container, which a Linux test container can't do). Its records
@@ -232,3 +240,8 @@ first).
     closes at the directive's `}`, and FPC then reports a syntax error far from the cause
     ("INTERFACE expected but ')' found" on a unit's header comment). Name directives in prose
     inside `{ }` comments, or use `//`.
+19. **pascal-common-faa's `TPcListener.Accept` returns nil once the listener is closed**; it
+    doesn't raise. An accept loop that only catches exceptions spins forever (the proxy hung a
+    fixture's teardown). Stop on nil, as `Kafka.TestFakeBroker` does.
+20. **`KafkaPeekCorrelationId` reads a response's correlation id** (bytes 0 to 3). A request's
+    is at bytes 4 to 7, after the API key and version.
