@@ -73,12 +73,6 @@ type
   /// Java's auto.offset.reset; the zero (latest) is Java's default.
   TKafkaOffsetReset = (korLatest, korEarliest, korNone);
 
-  TKafkaTopicPartition = record
-    Topic: string;
-    Partition: Int32;
-  end;
-  TKafkaTopicPartitionArray = array of TKafkaTopicPartition;
-
   TKafkaTimestampType = (kttCreateTime, kttLogAppendTime);
 
   TKafkaConsumerRecord = record
@@ -246,7 +240,6 @@ type
 
 /// Java's defaults, with ABootstrapServers.
 function KafkaConsumerParams(const ABootstrapServers: string): TKafkaConsumerParams;
-function KafkaTopicPartition(const ATopic: string; APartition: Int32): TKafkaTopicPartition;
 
 implementation
 
@@ -274,12 +267,6 @@ begin
   Result.FetchMaxBytes := KAFKA_DEFAULT_FETCH_MAX_BYTES;
   Result.MaxPartitionFetchBytes := KAFKA_DEFAULT_MAX_PARTITION_FETCH_BYTES;
   Result.MaxPollRecords := KAFKA_DEFAULT_MAX_POLL_RECORDS;
-end;
-
-function KafkaTopicPartition(const ATopic: string; APartition: Int32): TKafkaTopicPartition;
-begin
-  Result.Topic := ATopic;
-  Result.Partition := APartition;
 end;
 
 function KeyOf(const ATopic: string; APartition: Int32): string;

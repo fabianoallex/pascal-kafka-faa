@@ -97,7 +97,7 @@ first).
   Delphi by `tests/Unit/Kafka.DUnitXCompat.pas` (the skill's canonical copy:
   `check_test_kit.py` reports drift). Helpers whose names don't end in `Tests`
   (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`,
-  `Kafka.TestPartitions`) are shared, not mirrored.
+  `Kafka.TestPartitions`, `Kafka.TestFakeGroup`) are shared, not mirrored.
 - **A new test unit** ends with `initialization TDUnitX.RegisterTestFixture(...)` (the mirror
   turns it into `RegisterTest`) and goes into the `.dpr`, the `.dproj` and the FPC `.lpr`.
   Without the registration both runners compile it and run none of it, silently.
@@ -109,9 +109,14 @@ first).
   thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
   the batches per partition (`AppendBatch`, `SetLogStart`), and speaks SASL (`SaslMechanisms`,
   one user; PLAIN, and SCRAM-SHA-256 written as a server, apart from `Kafka.Sasl`): before a
-  client authenticates it answers only ApiVersions and SASL, as a broker. It serves one
-  connection at a time: a test that needs two to the same broker (a producer and a consumer, a
-  connection and its replacement) hangs.
+  client authenticates it answers only ApiVersions and SASL, as a broker. It serves any number
+  of connections at once (a thread each, with its own SASL state; `DropClient` aborts them
+  all), and it is every group's coordinator (`OfferGroups`, on with `KafkaFakeUseView`;
+  `Kafka.TestFakeGroup`): FindCoordinator (`FindCoordinatorMax` for an older broker, injected
+  errors), heartbeats with a round-robin assignor that moves a partition only after its owner
+  let it go, fencing (`FenceNext`, `RemoveMember`), passive members (`AddMember`), OffsetCommit
+  and OffsetFetch with the member's epoch checked; `WaitMemberOwns`, `WaitMemberHeartbeats`
+  and the like wait on its monitor. `Kafka.GroupTests` runs against it.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
   SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
@@ -216,3 +221,7 @@ first).
     session): "unexpected EOF while looking for matching `'`" with nothing written, and a
     backslash-n inside a Python string turned into a real line break in a Markdown file (and in
     this very item). Write the script with the Write tool, then run it.
+18. **A compiler directive inside a brace comment ends it.** `{ ... (FPC's {$MODE DELPHI}) ... }`
+    closes at the directive's `}`, and FPC then reports a syntax error far from the cause
+    ("INTERFACE expected but ')' found" on a unit's header comment). Name directives in prose
+    inside `{ }` comments, or use `//`.

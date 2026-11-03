@@ -98,6 +98,36 @@ the sample against Confluent Cloud, has been run.
   (v0-v1). `tools/gen_messages.py` generates nullable struct fields (Java's int8 marker). 38
   more captured exchanges (234 frames), by hand for every version and from the Java consumer in
   a KIP-848 group; `Kafka.GroupMessagesTests` (226 unit tests in all).
+- Consumer groups, KIP-848 (phase K2, steps 2 to 4): `Kafka.Group` (the membership interface
+  `IKafkaGroupMembership`, decision 4's seam; its events `kgeRevoked`, `kgeAssigned`, `kgeLost`;
+  `TKafkaCommittedOffset`; the wait hub), `Kafka.Group.Coordinator` (FindCoordinator in the list
+  form, v4+, and the single-key form for older brokers; the coordinator's own connection;
+  lookups again on NOT_COORDINATOR and COORDINATOR_NOT_AVAILABLE, spaced by an exponential
+  backoff with jitter) and `Kafka.Group.Consumer` (`TKafkaConsumerProtocol`: a client-chosen
+  member id, KIP-1082; a heartbeat thread at the coordinator's interval, sending only the
+  fields that changed; reconciliation by topic id, named through the metadata, revoked
+  partitions handed to the consumer before the new assignment is acknowledged; fenced and
+  unknown members lose their partitions and join again; `Leave` with epoch -1; `Commit` and
+  `Committed` over OffsetCommit and OffsetFetch with Java's retries). The consumer itself
+  doesn't use it yet (next step).
+- `TKafkaCluster.Coordinator` (a connection of its own for a group coordinator, as Java keeps)
+  and `TKafkaCluster.AnyBroker`.
+- `KafkaBackoffMs`: Java's exponential backoff (factor 2, jitter 0.2), and
+  `KAFKA_DEFAULT_RETRY_BACKOFF_MAX_MS` (`retry.backoff.max.ms`).
+- Tests: the fake broker serves any number of connections at once (a thread each, with its own
+  SASL state) and is a group coordinator (`Kafka.TestFakeGroup`: heartbeats with a round-robin
+  assignor that moves a partition only after its owner let it go, fencing, OffsetCommit and
+  OffsetFetch with the member's epoch checked, passive members, injected errors).
+  `Kafka.GroupTests` (24 unit tests: 250 in all) and `Kafka.GroupIntegrationTests` (one member
+  joins, commits, reads back and leaves; two members split a topic and one leaves; against
+  Kafka 4.4.0: 34 integration tests in all).
+
+### Changed
+
+- `TKafkaTopicPartition`, `TKafkaTopicPartitionArray` and `KafkaTopicPartition` moved from
+  `Kafka.Consumer` to `Kafka.Types` (the group units need them and the consumer will use the
+  group units). A program that names them through `Kafka.Consumer` only needs `Kafka.Types` in
+  its `uses`.
 
 ### Fixed
 

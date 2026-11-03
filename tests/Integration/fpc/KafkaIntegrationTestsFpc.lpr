@@ -26,6 +26,7 @@ uses
   Classes, consoletestrunner, testregistry,
   Kafka.IntegrationTests,
   Kafka.SaslIntegrationTests,
+  Kafka.GroupIntegrationTests,
   Kafka.CloudIntegrationTests;
 
 var

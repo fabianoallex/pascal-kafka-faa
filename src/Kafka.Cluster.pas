@@ -46,7 +46,15 @@
   on the next Broker call, and so is one whose SASL session is near its
   end (ReauthenticationDue, KIP-368: Kafka.Connection's header).
   Connections are opened one at a time (a lock), so
-  two threads asking for the same broker open it once. No reconnect backoff
+  two threads asking for the same broker open it once.
+
+  Coordinators. A consumer group's coordinator gets a connection of its own
+  (Coordinator), apart from the one Broker gives for the same node: a broker
+  answers one connection's requests in order, so a heartbeat sent behind a
+  Fetch that long-polls for half a second would wait that long. Java's client
+  does the same (the coordinator is node Integer.MAX_VALUE - id, a separate
+  connection). It is replaced as Broker's are, and also when FindCoordinator
+  gives the node another address. No reconnect backoff
   yet: the producer's and consumer's retry backoff spaces the attempts.
 
   The connection parameters are a template (TKafkaClusterParams.Connection):
@@ -160,6 +168,7 @@ type
     FMetadata: IKafkaClusterMetadata;
     FTracked: TStringList;
     FBrokers: TDictionary<Int32, IKafkaBrokerConnection>;
+    FCoordinators: TDictionary<Int32, IKafkaBrokerConnection>;
     FInvalid: Boolean;
     FOpened: Boolean;
     FClosed: Boolean;
@@ -208,6 +217,15 @@ type
     /// broke. EKafkaConnection when the broker isn't in the metadata or
     /// can't be reached.
     function Broker(ANodeId: Int32): IKafkaBrokerConnection;
+    /// A connection to some broker, for a request any broker answers
+    /// (FindCoordinator): one already open if there is one, otherwise the
+    /// metadata's brokers in order. EKafkaConnection when none can be
+    /// reached; EKafkaAuthentication at once when one refused the
+    /// credentials.
+    function AnyBroker: IKafkaBrokerConnection;
+    /// The group coordinator's connection: node ANodeId at AHost:APort, as
+    /// FindCoordinator gave it (the unit's header, "Coordinators").
+    function Coordinator(ANodeId: Int32; const AHost: string; APort: Int32): IKafkaBrokerConnection;
 
     /// Metadata requests sent since Create (for tests and diagnostics).
     function RefreshCount: Integer;
@@ -484,6 +502,7 @@ begin
   FTracked.Sorted := True;
   FTracked.Duplicates := dupIgnore;
   FBrokers := TDictionary<Int32, IKafkaBrokerConnection>.Create;
+  FCoordinators := TDictionary<Int32, IKafkaBrokerConnection>.Create;
 end;
 
 destructor TKafkaCluster.Destroy;
@@ -491,6 +510,7 @@ begin
   if FLock <> nil then
     Close;
   FBrokers.Free;
+  FCoordinators.Free;
   FTracked.Free;
   FClosedEvent.Free;
   FConnectLock.Free;
@@ -547,14 +567,20 @@ begin
       Exit;
     FClosed := True;
     FClosedEvent.SetEvent;
-    SetLength(LAll, FBrokers.Count);
+    SetLength(LAll, FBrokers.Count + FCoordinators.Count);
     I := 0;
     for LBroker in FBrokers.Values do
     begin
       LAll[I] := LBroker;
       Inc(I);
     end;
+    for LBroker in FCoordinators.Values do
+    begin
+      LAll[I] := LBroker;
+      Inc(I);
+    end;
     FBrokers.Clear;
+    FCoordinators.Clear;
     FMetadata := nil;
   finally
     FLock.Leave;
@@ -703,6 +729,85 @@ begin
       end;
       // A broken one it replaces goes when its last holder lets go.
       FBrokers.AddOrSetValue(ANodeId, Result);
+    finally
+      FLock.Leave;
+    end;
+  finally
+    FConnectLock.Leave;
+  end;
+end;
+
+function TKafkaCluster.AnyBroker: IKafkaBrokerConnection;
+var
+  LBroker: IKafkaBrokerConnection;
+  LMetadata: IKafkaClusterMetadata;
+  LInfos: TKafkaBrokerInfoArray;
+  LErrors: string;
+  I: Integer;
+begin
+  CheckUsable;
+  FLock.Enter;
+  try
+    for LBroker in FBrokers.Values do
+      if Usable(LBroker) then
+        Exit(LBroker);
+    LMetadata := FMetadata;
+  finally
+    FLock.Leave;
+  end;
+  if LMetadata = nil then
+    raise EKafkaConnection.Create('The cluster has no metadata yet');
+  LInfos := LMetadata.Brokers;
+  LErrors := '';
+  for I := 0 to High(LInfos) do
+    try
+      Exit(Broker(LInfos[I].NodeId));
+    except
+      on E: EKafkaConnection do
+        LErrors := LErrors + Format('; %s:%d: %s', [LInfos[I].Host, LInfos[I].Port, E.Message]);
+    end;
+  raise EKafkaConnection.Create('No broker could be reached' + LErrors);
+end;
+
+function TKafkaCluster.Coordinator(ANodeId: Int32; const AHost: string;
+  APort: Int32): IKafkaBrokerConnection;
+
+  function Fits(const AConn: IKafkaBrokerConnection): Boolean;
+  begin
+    Result := Usable(AConn) and (AConn.Connection.Params.Host = AHost) and
+      (AConn.Connection.Params.Port = APort);
+  end;
+
+begin
+  FLock.Enter;
+  try
+    if FClosed then
+      raise EKafkaConnection.Create('The cluster is closed');
+    if FCoordinators.TryGetValue(ANodeId, Result) and Fits(Result) then
+      Exit;
+  finally
+    FLock.Leave;
+  end;
+  FConnectLock.Enter;
+  try
+    FLock.Enter;
+    try
+      if FClosed then
+        raise EKafkaConnection.Create('The cluster is closed');
+      if FCoordinators.TryGetValue(ANodeId, Result) and Fits(Result) then
+        Exit;
+    finally
+      FLock.Leave;
+    end;
+    Result := OpenConnection(ANodeId, AHost, APort);
+    FLock.Enter;
+    try
+      if FClosed then
+      begin
+        Result.Connection.Close;
+        raise EKafkaConnection.Create('The cluster is closed');
+      end;
+      FCoordinators.AddOrSetValue(ANodeId, Result);
     finally
       FLock.Leave;
     end;

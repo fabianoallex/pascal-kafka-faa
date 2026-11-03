@@ -1,9 +1,18 @@
 ﻿unit Kafka.TestFakeBroker;
 
 { An in-process broker for Kafka.ConnectionTests: it listens on 127.0.0.1,
-  port 0, accepts one connection at a time, and answers ApiVersions and
-  Metadata with the library's own codecs, so the connection's behaviour can be
-  tested without Docker and deterministically.
+  port 0, serves any number of connections at once (a thread each), and
+  answers ApiVersions and Metadata with the library's own codecs, so the
+  connection's behaviour can be tested without Docker and deterministically.
+
+  Connections. Each has its socket, a lock its answers are written under,
+  and its own SASL state; everything else (the log, the counters, the held
+  and parked requests, the group) is the broker's, under one monitor. A held
+  or parked request remembers its connection and is answered there, or not
+  at all when that client left. A consumer in a group talks to the
+  partition leaders and to the group coordinator on separate connections,
+  to the same broker in a one-broker test: that is why. DropClient aborts
+  every connection.
 
   What it can be told to do (set the fields before the client connects, or
   between requests):
@@ -60,6 +69,14 @@
     signature (a broker that doesn't know the password);
     SaslSessionLifetimeMs goes into SaslAuthenticate v1+ (KIP-368).
 
+  - be every consumer group's coordinator (OfferGroups; KafkaFakeUseView
+    turns it on): FindCoordinator answers this broker (CoordinatorNodeId,
+    CoordinatorPort), in the list form or, up to FindCoordinatorMax 3, the
+    single-key form, and the next FindCoordinatorErrors lookups answer
+    FindCoordinatorErrorCode; ConsumerGroupHeartbeat (unless
+    OfferConsumerGroupHeartbeat is False), OffsetCommit and OffsetFetch are
+    Groups' (Kafka.TestFakeGroup), with ClusterView's topics.
+
   CreateTls listens with TLS instead, with the server certificate of
   pascal-common-faa's test PKI (CN=localhost, SAN localhost and 127.0.0.1):
   srv.pfx on SChannel (Windows' default backend), the PEM pair elsewhere
@@ -90,13 +107,55 @@ uses
   Kafka.Messages.ListOffsets,
   Kafka.Messages.SaslHandshake,
   Kafka.Messages.SaslAuthenticate,
+  Kafka.Messages.FindCoordinator,
+  Kafka.Messages.ConsumerGroupHeartbeat,
+  Kafka.Messages.OffsetCommit,
+  Kafka.Messages.OffsetFetch,
   Kafka.Protocol.RecordBatch,
+  Kafka.TestFakeGroup,
   Generics.Collections;
 
 type
+  TKafkaFakeBroker = class;
+
+  { One client connection: its socket, the lock its answers are written under,
+    and its SASL state (under the broker's monitor). Freed with the broker,
+    so a held or parked request may keep a reference after the client left
+    (answering it then writes nothing). }
+  TKafkaFakeConnection = class
+  private type
+    TServeThread = class(TThread)
+    private
+      FConnection: TKafkaFakeConnection;
+    protected
+      procedure Execute; override;
+    public
+      constructor Create(AConnection: TKafkaFakeConnection);
+    end;
+    TSaslState = (ssNone, ssHandshaken, ssScramFirst, ssAuthenticated);
+  private
+    FOwner: TKafkaFakeBroker;
+    FEndpoint: TPcEndpoint;
+    FWriteLock: TCriticalSection;
+    FThread: TServeThread;
+    FSaslState: TSaslState;
+    FSaslChosen: string;
+    FScramClientFirstBare: TBytes;
+    FScramServerFirst: TBytes;
+    FScramNonce: string;
+  public
+    constructor Create(AOwner: TKafkaFakeBroker; AEndpoint: TPcEndpoint);
+    destructor Destroy; override;
+    /// Writes a whole frame; nothing once the client is gone.
+    procedure SendRaw(const AFrame: TBytes);
+    /// Aborts the socket (the broker "goes away" for this client).
+    procedure Abort;
+  end;
+
   TKafkaFakeBroker = class
   private type
     THeld = record
+      Connection: TKafkaFakeConnection;
       CorrelationId: Int32;
       Version: Int16;
       Topic: string;
@@ -115,6 +174,7 @@ type
     TLoggedRecordArray = array of TLoggedRecord;
 
     THeldProduce = record
+      Connection: TKafkaFakeConnection;
       CorrelationId: Int32;
       Version: Int16;
       Request: TKafkaProduceRequest;
@@ -131,6 +191,7 @@ type
     TStoredBatchArray = array of TStoredBatch;
 
     TParkedFetch = record
+      Connection: TKafkaFakeConnection;
       CorrelationId: Int32;
       Version: Int16;
       Request: TKafkaFetchRequest;
@@ -147,9 +208,7 @@ type
       constructor Create(AOwner: TKafkaFakeBroker);
     end;
 
-    TSaslState = (ssNone, ssHandshaken, ssScramFirst, ssAuthenticated);
-
-    TServeThread = class(TThread)
+    TAcceptThread = class(TThread)
     private
       FOwner: TKafkaFakeBroker;
     protected
@@ -159,9 +218,10 @@ type
     end;
   private
     FListener: TPcListener;
-    FThread: TServeThread;
-    FClient: TPcEndpoint;
-    FWriteLock: TCriticalSection;
+    FThread: TAcceptThread;
+    // Every connection accepted, live or gone, under FMonitor; freed by
+    // Destroy.
+    FConnections: TObjectList<TKafkaFakeConnection>;
     FMonitor: TPcMonitor;
     FHeld: THeldArray;
     FRequestCount: Integer;
@@ -180,34 +240,38 @@ type
     FStopping: Boolean;
     FFetchCount: Integer;
     FListOffsetsCount: Integer;
-    // SASL, per connection (one at a time), under FMonitor.
-    FSaslState: TSaslState;
-    FSaslChosen: string;
-    FScramClientFirstBare: TBytes;
-    FScramServerFirst: TBytes;
-    FScramNonce: string;
+    FConnectionCount: Integer;
     FSaslAuthenticatedCount: Integer;
     FLastSaslMechanism: string;
-    function HandleSasl(AKey, AVersion: Int16; const AContent: TBytes): Boolean;
-    function SaslAuthenticateBody(AVersion: Int16; const AAuthBytes: TBytes): TBytes;
-    procedure Serve;
+    FGroups: TKafkaFakeGroups;
+    FFindCoordinatorCount: Integer;
+    FLastFindCoordinatorVersion: Int16;
+    function HandleGroup(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
+      const AContent: TBytes): Boolean;
+    function FindCoordinatorBody(AVersion: Int16; const ARequest: TKafkaFindCoordinatorRequest): TBytes;
+    function HandleSasl(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
+      const AContent: TBytes): Boolean;
+    function SaslAuthenticateBody(AConn: TKafkaFakeConnection; AVersion: Int16;
+      const AAuthBytes: TBytes): TBytes;
+    procedure Accept;
     procedure StoreBatch(const ATopic: string; APartition: Int32; var ABatch: TKafkaRecordBatch);
     function LogStartOf(const ATopic: string; APartition: Int32): Int64;
     function FetchTopicName(AVersion: Int16; const ATopic: TKafkaFetchTopic): string;
     /// The answer, or False when it has no records and may be parked.
     function BuildFetch(AVersion: Int16; const ARequest: TKafkaFetchRequest; AForce: Boolean;
       out ABody: TBytes): Boolean;
-    procedure HandleListOffsets(ACorrelationId: Int32; AVersion: Int16;
-      const ARequest: TKafkaListOffsetsRequest);
+    procedure HandleListOffsets(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
+      AVersion: Int16; const ARequest: TKafkaListOffsetsRequest);
     procedure ParkLoop;
-    procedure HandleProduce(ACorrelationId: Int32; AVersion: Int16;
+    procedure HandleProduce(AConn: TKafkaFakeConnection; ACorrelationId: Int32; AVersion: Int16;
       const ARequest: TKafkaProduceRequest);
     function TopicNameOf(AVersion: Int16; const ATopic: TKafkaProduceRequestTopicProduceData): string;
     function NextOffset(const ATopic: string; APartition: Int32): Int64;
-    procedure ServeClient(AClient: TPcEndpoint);
-    procedure HandleRequest(const AContent: TBytes);
-    procedure SendResponse(ACorrelationId: Int32; AApiKey, AVersion: Int16; const ABody: TBytes);
-    procedure SendRaw(const AFrame: TBytes);
+    procedure ServeClient(AConn: TKafkaFakeConnection);
+    procedure ConnectionEnded(AConn: TKafkaFakeConnection);
+    procedure HandleRequest(AConn: TKafkaFakeConnection; const AContent: TBytes);
+    procedure SendResponse(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
+      AApiKey, AVersion: Int16; const ABody: TBytes);
     function ApiVersionsBody(AVersion: Int16): TBytes;
     function MetadataBody(AVersion: Int16; const ATopic: string): TBytes;
     function ClusterViewBody(AVersion: Int16; const ARequest: TKafkaMetadataRequest): TBytes;
@@ -234,6 +298,21 @@ type
     SaslIterations: Integer;
     SaslBadServerSignature: Boolean;
     SaslSessionLifetimeMs: Int64;
+    /// Offer and answer FindCoordinator (up to FindCoordinatorMax),
+    /// ConsumerGroupHeartbeat (unless OfferConsumerGroupHeartbeat is False),
+    /// OffsetCommit (v2-v10) and OffsetFetch (v8-v10): the broker is every
+    /// group's coordinator (Groups, Kafka.TestFakeGroup), with ClusterView's
+    /// topics. KafkaFakeUseView turns it on.
+    OfferGroups: Boolean;
+    OfferConsumerGroupHeartbeat: Boolean;
+    FindCoordinatorMax: Int16;
+    /// What FindCoordinator answers: node CoordinatorNodeId (1) at
+    /// 127.0.0.1:CoordinatorPort (0: this broker's port).
+    CoordinatorNodeId: Int32;
+    CoordinatorPort: Integer;
+    /// The next FindCoordinatorErrors lookups answer FindCoordinatorErrorCode.
+    FindCoordinatorErrors: Integer;
+    FindCoordinatorErrorCode: Int16;
 
     constructor Create;
     constructor CreateTls;
@@ -243,8 +322,12 @@ type
     function WaitHeld(ACount: Integer; ATimeoutMs: Cardinal): Boolean;
     /// Answers every held request, last received first.
     procedure ReleaseHeld;
-    /// Aborts the current client connection (the broker "goes away").
+    /// Aborts every client connection (the broker "goes away").
     procedure DropClient;
+    /// Connections accepted since Create.
+    function ConnectionCount: Integer;
+    /// Connections whose client is still there.
+    function LiveConnectionCount: Integer;
     /// Requests received on any connection.
     function RequestCount: Integer;
     /// Metadata requests received (answered or not).
@@ -280,6 +363,11 @@ type
     function SaslAuthenticatedCount: Integer;
     /// The mechanism of the last SaslHandshake ('' before any).
     function LastSaslMechanism: string;
+    /// FindCoordinator requests received, and the version of the last.
+    function FindCoordinatorCount: Integer;
+    function LastFindCoordinatorVersion: Int16;
+    /// The groups this broker coordinates (Kafka.TestFakeGroup).
+    property Groups: TKafkaFakeGroups read FGroups;
   end;
   TKafkaFakeBrokerArray = array of TKafkaFakeBroker;
 
@@ -351,21 +439,78 @@ begin
     ABrokers[I].ClusterView := AView;
     ABrokers[I].UseClusterView := True;
     ABrokers[I].OfferRecords := True;
+    ABrokers[I].OfferGroups := True;
   end;
 end;
 
-{ TKafkaFakeBroker.TServeThread }
+{ TKafkaFakeConnection.TServeThread }
 
-constructor TKafkaFakeBroker.TServeThread.Create(AOwner: TKafkaFakeBroker);
+constructor TKafkaFakeConnection.TServeThread.Create(AConnection: TKafkaFakeConnection);
+begin
+  inherited Create(True);
+  FConnection := AConnection;
+  FreeOnTerminate := False;
+end;
+
+procedure TKafkaFakeConnection.TServeThread.Execute;
+begin
+  FConnection.FOwner.ServeClient(FConnection);
+end;
+
+{ TKafkaFakeConnection }
+
+constructor TKafkaFakeConnection.Create(AOwner: TKafkaFakeBroker; AEndpoint: TPcEndpoint);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FEndpoint := AEndpoint;
+  FWriteLock := TCriticalSection.Create;
+  FThread := TServeThread.Create(Self);
+end;
+
+destructor TKafkaFakeConnection.Destroy;
+begin
+  // The broker joined the thread already (it aborts the socket first).
+  FThread.Free;
+  FEndpoint.Free;
+  FWriteLock.Free;
+  inherited;
+end;
+
+procedure TKafkaFakeConnection.SendRaw(const AFrame: TBytes);
+begin
+  FWriteLock.Enter;
+  try
+    if FEndpoint <> nil then
+      KafkaWriteExactly(FEndpoint, AFrame[0], Length(AFrame), 'fake broker');
+  finally
+    FWriteLock.Leave;
+  end;
+end;
+
+procedure TKafkaFakeConnection.Abort;
+begin
+  FWriteLock.Enter;
+  try
+    if FEndpoint <> nil then
+      FEndpoint.CloseAbort;
+  finally
+    FWriteLock.Leave;
+  end;
+end;
+
+{ TKafkaFakeBroker.TAcceptThread }
+
+constructor TKafkaFakeBroker.TAcceptThread.Create(AOwner: TKafkaFakeBroker);
 begin
   inherited Create(True);
   FOwner := AOwner;
   FreeOnTerminate := False;
 end;
 
-procedure TKafkaFakeBroker.TServeThread.Execute;
+procedure TKafkaFakeBroker.TAcceptThread.Execute;
 begin
-  FOwner.Serve;
+  FOwner.Accept;
 end;
 
 { TKafkaFakeBroker }
@@ -397,33 +542,45 @@ begin
   MetadataMax := 13;
   OfferMetadata := True;
   SaslIterations := 4096;
-  FWriteLock := TCriticalSection.Create;
+  OfferConsumerGroupHeartbeat := True;
+  FindCoordinatorMax := 6;
+  CoordinatorNodeId := 1;
+  FLastFindCoordinatorVersion := -1;
   FMonitor := TPcMonitor.Create;
+  FGroups := TKafkaFakeGroups.Create(FMonitor);
+  FConnections := TObjectList<TKafkaFakeConnection>.Create(True);
   if FListener = nil then
     FListener := PcTcpListen('127.0.0.1', 0, Default(TPcTcpOptions));
   FLogStart := TDictionary<string, Int64>.Create;
-  FThread := TServeThread.Create(Self);
+  FThread := TAcceptThread.Create(Self);
   FThread.Start;
   FParkThread := TParkThread.Create(Self);
   FParkThread.Start;
 end;
 
 destructor TKafkaFakeBroker.Destroy;
+var
+  I: Integer;
 begin
+  // No connection is accepted once the accept thread is gone, so DropClient
+  // then reaches every one.
   FListener.Close;
-  DropClient;
   FThread.WaitFor;
   FThread.Free;
+  DropClient;
+  for I := 0 to FConnections.Count - 1 do
+    FConnections[I].FThread.WaitFor;
   FMonitor.Enter;
   FStopping := True;
   FMonitor.PulseAll;
   FMonitor.Leave;
   FParkThread.WaitFor;
   FParkThread.Free;
+  FConnections.Free;
   FLogStart.Free;
   FListener.Free;
+  FGroups.Free;
   FMonitor.Free;
-  FWriteLock.Free;
   inherited;
 end;
 
@@ -432,9 +589,10 @@ begin
   Result := FListener.Port;
 end;
 
-procedure TKafkaFakeBroker.Serve;
+procedure TKafkaFakeBroker.Accept;
 var
   LClient: TPcEndpoint;
+  LConn: TKafkaFakeConnection;
 begin
   try
     while True do
@@ -442,63 +600,124 @@ begin
       LClient := FListener.Accept;
       if LClient = nil then
         Exit; // listener closed
-      FWriteLock.Enter;
-      FClient := LClient;
-      FWriteLock.Leave;
+      LConn := TKafkaFakeConnection.Create(Self, LClient);
       FMonitor.Enter;
-      FSaslState := ssNone;
-      FSaslChosen := '';
-      FMonitor.Leave;
       try
-        ServeClient(LClient);
+        FConnections.Add(LConn);
+        Inc(FConnectionCount);
       finally
-        FWriteLock.Enter;
-        FClient := nil;
-        FWriteLock.Leave;
-        // Their correlation ids belong to the connection that went.
-        FMonitor.Enter;
-        FParked := nil;
         FMonitor.Leave;
-        LClient.Free;
       end;
+      LConn.FThread.Start;
     end;
   except
     // A test broker never takes the test runner down.
   end;
 end;
 
-procedure TKafkaFakeBroker.ServeClient(AClient: TPcEndpoint);
+procedure TKafkaFakeBroker.ConnectionEnded(AConn: TKafkaFakeConnection);
+var
+  LKeep: TParkedFetchArray;
+  I, K: Integer;
+  LEndpoint: TPcEndpoint;
+begin
+  AConn.FWriteLock.Enter;
+  try
+    LEndpoint := AConn.FEndpoint;
+    AConn.FEndpoint := nil;
+  finally
+    AConn.FWriteLock.Leave;
+  end;
+  LEndpoint.Free;
+  // Its parked fetches' correlation ids went with it.
+  FMonitor.Enter;
+  try
+    LKeep := nil;
+    K := 0;
+    for I := 0 to High(FParked) do
+      if FParked[I].Connection <> AConn then
+      begin
+        SetLength(LKeep, K + 1);
+        LKeep[K] := FParked[I];
+        Inc(K);
+      end;
+    FParked := LKeep;
+    FMonitor.PulseAll;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaFakeBroker.ServeClient(AConn: TKafkaFakeConnection);
 var
   LSize: array[0..3] of Byte;
   N: Int32;
   LContent: TBytes;
+  LClient: TPcEndpoint;
 begin
   FillChar(LSize, SizeOf(LSize), 0);
+  // Only this thread frees the endpoint (ConnectionEnded), so it can read
+  // without the write lock.
+  LClient := AConn.FEndpoint;
   try
     try
-      AClient.Handshake; // server-side TLS; nothing on plain TCP
+      try
+        LClient.Handshake; // server-side TLS; nothing on plain TCP
+      except
+        on EPcTransport do
+          Exit; // a client that doesn't trust us, for instance
+      end;
+      while True do
+      begin
+        KafkaReadExactly(LClient, LSize[0], 4, 'fake broker');
+        N := Int32((Cardinal(LSize[0]) shl 24) or (Cardinal(LSize[1]) shl 16) or
+          (Cardinal(LSize[2]) shl 8) or Cardinal(LSize[3]));
+        if (N < 8) or (N > 1024 * 1024) then
+          Exit; // not Kafka (a TLS ClientHello, for instance): hang up
+        LContent := nil;
+        SetLength(LContent, N);
+        KafkaReadExactly(LClient, LContent[0], N, 'fake broker');
+        HandleRequest(AConn, LContent);
+      end;
     except
-      on EPcTransport do
-        Exit; // a client that doesn't trust us, for instance
+      on EKafka do ; // the client went away, or DropClient
     end;
-    while True do
-    begin
-      KafkaReadExactly(AClient, LSize[0], 4, 'fake broker');
-      N := Int32((Cardinal(LSize[0]) shl 24) or (Cardinal(LSize[1]) shl 16) or
-        (Cardinal(LSize[2]) shl 8) or Cardinal(LSize[3]));
-      if (N < 8) or (N > 1024 * 1024) then
-        Exit; // not Kafka (a TLS ClientHello, for instance): hang up
-      LContent := nil;
-      SetLength(LContent, N);
-      KafkaReadExactly(AClient, LContent[0], N, 'fake broker');
-      HandleRequest(LContent);
+  finally
+    try
+      ConnectionEnded(AConn);
+    except
+      // A test broker never takes the test runner down.
     end;
-  except
-    on EKafka do ; // the client went away, or DropClient
   end;
 end;
 
-procedure TKafkaFakeBroker.HandleRequest(const AContent: TBytes);
+function TKafkaFakeBroker.ConnectionCount: Integer;
+begin
+  FMonitor.Enter;
+  Result := FConnectionCount;
+  FMonitor.Leave;
+end;
+
+function TKafkaFakeBroker.LiveConnectionCount: Integer;
+var
+  I: Integer;
+begin
+  Result := 0;
+  FMonitor.Enter;
+  try
+    for I := 0 to FConnections.Count - 1 do
+    begin
+      FConnections[I].FWriteLock.Enter;
+      if FConnections[I].FEndpoint <> nil then
+        Inc(Result);
+      FConnections[I].FWriteLock.Leave;
+    end;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+procedure TKafkaFakeBroker.HandleRequest(AConn: TKafkaFakeConnection; const AContent: TBytes);
 var
   LKey, LVersion: Int16;
   LReader: TKafkaReader;
@@ -517,7 +736,9 @@ begin
   FMonitor.Enter;
   Inc(FRequestCount);
   FMonitor.Leave;
-  if HandleSasl(LKey, LVersion, AContent) then
+  if HandleSasl(AConn, LKey, LVersion, AContent) then
+    Exit;
+  if HandleGroup(AConn, LKey, LVersion, AContent) then
     Exit;
   if LKey = KAFKA_API_KEY_API_VERSIONS then
   begin
@@ -527,7 +748,7 @@ begin
       begin
         // KIP-511: an unknown version gets the error in v0, read with a v1 header.
         LHeader := KafkaReadRequestHeader(LReader, 1);
-        SendResponse(LHeader.CorrelationId, LKey, 0, ApiVersionsBody(-1));
+        SendResponse(AConn, LHeader.CorrelationId, LKey, 0, ApiVersionsBody(-1));
         Exit;
       end;
       LHeaderVersion := KafkaRequestHeaderVersion(KafkaApiIsFlexible(LKey, LVersion));
@@ -539,7 +760,7 @@ begin
     FLastClientId := LHeader.ClientId;
     FLastHeaderVersion := LHeaderVersion;
     FMonitor.Leave;
-    SendResponse(LHeader.CorrelationId, LKey, LVersion, ApiVersionsBody(LVersion));
+    SendResponse(AConn, LHeader.CorrelationId, LKey, LVersion, ApiVersionsBody(LVersion));
     Exit;
   end;
   if LKey = KAFKA_API_KEY_PRODUCE then
@@ -566,6 +787,7 @@ begin
       begin
         N := Length(FHeldProduce);
         SetLength(FHeldProduce, N + 1);
+        FHeldProduce[N].Connection := AConn;
         FHeldProduce[N].CorrelationId := LHeader.CorrelationId;
         FHeldProduce[N].Version := LVersion;
         FHeldProduce[N].Request := LProduce;
@@ -574,7 +796,7 @@ begin
     finally
       FMonitor.Leave;
     end;
-    HandleProduce(LHeader.CorrelationId, LVersion, LProduce);
+    HandleProduce(AConn, LHeader.CorrelationId, LVersion, LProduce);
     Exit;
   end;
   if (LKey = KAFKA_API_KEY_FETCH) or (LKey = KAFKA_API_KEY_LIST_OFFSETS) then
@@ -590,7 +812,7 @@ begin
     if LKey = KAFKA_API_KEY_LIST_OFFSETS then
     begin
       LListOffsets.FromBytes(LBody, LVersion);
-      HandleListOffsets(LHeader.CorrelationId, LVersion, LListOffsets);
+      HandleListOffsets(AConn, LHeader.CorrelationId, LVersion, LListOffsets);
       Exit;
     end;
     LFetch.FromBytes(LBody, LVersion);
@@ -601,6 +823,7 @@ begin
       begin
         N := Length(FParked);
         SetLength(FParked, N + 1);
+        FParked[N].Connection := AConn;
         FParked[N].CorrelationId := LHeader.CorrelationId;
         FParked[N].Version := LVersion;
         FParked[N].Request := LFetch;
@@ -611,7 +834,7 @@ begin
     finally
       FMonitor.Leave;
     end;
-    SendResponse(LHeader.CorrelationId, LKey, LVersion, LBig);
+    SendResponse(AConn, LHeader.CorrelationId, LKey, LVersion, LBig);
     Exit;
   end;
   if LKey <> KAFKA_API_KEY_METADATA then
@@ -636,7 +859,7 @@ begin
     if UseClusterView then
     begin
       LBig := ClusterViewBody(LVersion, LMetadata);
-      SendResponse(LHeader.CorrelationId, LKey, LVersion, LBig);
+      SendResponse(AConn, LHeader.CorrelationId, LKey, LVersion, LBig);
       Exit;
     end;
     if DropNextMetadata > 0 then
@@ -648,6 +871,7 @@ begin
     begin
       N := Length(FHeld);
       SetLength(FHeld, N + 1);
+      FHeld[N].Connection := AConn;
       FHeld[N].CorrelationId := LHeader.CorrelationId;
       FHeld[N].Version := LVersion;
       FHeld[N].Topic := LTopic;
@@ -668,10 +892,10 @@ begin
     LBig[5] := Byte(Cardinal(LHeader.CorrelationId) shr 16);
     LBig[6] := Byte(Cardinal(LHeader.CorrelationId) shr 8);
     LBig[7] := Byte(LHeader.CorrelationId);
-    SendRaw(LBig);
+    AConn.SendRaw(LBig);
     Exit;
   end;
-  SendResponse(LHeader.CorrelationId, LKey, LVersion, MetadataBody(LVersion, LTopic));
+  SendResponse(AConn, LHeader.CorrelationId, LKey, LVersion, MetadataBody(LVersion, LTopic));
 end;
 
 function ConcatBytes(const A, B: TBytes): TBytes;
@@ -708,7 +932,8 @@ begin
   Result := '';
 end;
 
-function TKafkaFakeBroker.HandleSasl(AKey, AVersion: Int16; const AContent: TBytes): Boolean;
+function TKafkaFakeBroker.HandleSasl(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
+  const AContent: TBytes): Boolean;
 var
   LReader: TKafkaReader;
   LHeader: TKafkaRequestHeader;
@@ -716,13 +941,13 @@ var
   LHandshake: TKafkaSaslHandshakeRequest;
   LHandshakeAnswer: TKafkaSaslHandshakeResponse;
   LAuth: TKafkaSaslAuthenticateRequest;
-  LState: TSaslState;
+  LState: TKafkaFakeConnection.TSaslState;
   LMechanisms: string;
   P, N: Integer;
 begin
   FMonitor.Enter;
   try
-    LState := FSaslState;
+    LState := AConn.FSaslState;
     LMechanisms := SaslMechanisms;
   finally
     FMonitor.Leave;
@@ -758,8 +983,8 @@ begin
         LHandshakeAnswer.ErrorCode := KAFKA_ERROR_UNSUPPORTED_SASL_MECHANISM
       else
       begin
-        FSaslChosen := LHandshake.Mechanism;
-        FSaslState := ssHandshaken;
+        AConn.FSaslChosen := LHandshake.Mechanism;
+        AConn.FSaslState := ssHandshaken;
       end;
     finally
       FMonitor.Leave;
@@ -776,15 +1001,16 @@ begin
       Inc(N);
       Delete(LMechanisms, 1, P);
     end;
-    SendResponse(LHeader.CorrelationId, AKey, AVersion, LHandshakeAnswer.ToBytes(AVersion));
+    SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion, LHandshakeAnswer.ToBytes(AVersion));
     Exit;
   end;
   LAuth.FromBytes(LBody, AVersion);
-  SendResponse(LHeader.CorrelationId, AKey, AVersion,
-    SaslAuthenticateBody(AVersion, LAuth.AuthBytes));
+  SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion,
+    SaslAuthenticateBody(AConn, AVersion, LAuth.AuthBytes));
 end;
 
-function TKafkaFakeBroker.SaslAuthenticateBody(AVersion: Int16; const AAuthBytes: TBytes): TBytes;
+function TKafkaFakeBroker.SaslAuthenticateBody(AConn: TKafkaFakeConnection; AVersion: Int16;
+  const AAuthBytes: TBytes): TBytes;
 const
   SALT = 'fake-broker-salt';
 var
@@ -799,19 +1025,19 @@ begin
   LUser := '';
   FMonitor.Enter;
   try
-    if FSaslState = ssNone then
+    if AConn.FSaslState = ssNone then
     begin
       R.ErrorCode := KAFKA_ERROR_ILLEGAL_SASL_STATE;
       R.ErrorMessage := 'SaslAuthenticate before SaslHandshake';
       R.ErrorMessageIsNull := False;
     end
-    else if FSaslState = ssAuthenticated then
+    else if AConn.FSaslState = ssAuthenticated then
     begin
       R.ErrorCode := KAFKA_ERROR_ILLEGAL_SASL_STATE;
       R.ErrorMessage := 'Already authenticated';
       R.ErrorMessageIsNull := False;
     end
-    else if FSaslChosen = 'PLAIN' then
+    else if AConn.FSaslChosen = 'PLAIN' then
     begin
       // authzid NUL authcid NUL passwd
       LOk := PcTryUtf8BytesToString(AAuthBytes, LText);
@@ -831,7 +1057,7 @@ begin
             LParts[K] := LParts[K] + LText[I];
       if LOk and (K = 2) and (LParts[1] = SaslUser) and (LParts[2] = SaslPassword) then
       begin
-        FSaslState := ssAuthenticated;
+        AConn.FSaslState := ssAuthenticated;
         Inc(FSaslAuthenticatedCount);
         R.SessionLifetimeMs := SaslSessionLifetimeMs;
       end
@@ -842,20 +1068,20 @@ begin
         R.ErrorMessageIsNull := False;
       end;
     end
-    else if FSaslState = ssHandshaken then
+    else if AConn.FSaslState = ssHandshaken then
     begin
       // SCRAM client-first: n,,n=<name>,r=<nonce>
       LOk := PcTryUtf8BytesToString(AAuthBytes, LText) and (Copy(LText, 1, 3) = 'n,,');
-      FScramNonce := '';
+      AConn.FScramNonce := '';
       if LOk then
       begin
-        FScramClientFirstBare := Copy(AAuthBytes, 3, Length(AAuthBytes) - 3);
+        AConn.FScramClientFirstBare := Copy(AAuthBytes, 3, Length(AAuthBytes) - 3);
         LUser := ScramAttribute(Copy(LText, 4, MaxInt), 'n');
         LUser := StringReplace(LUser, '=2C', ',', [rfReplaceAll]);
         LUser := StringReplace(LUser, '=3D', '=', [rfReplaceAll]);
-        FScramNonce := ScramAttribute(Copy(LText, 4, MaxInt), 'r');
+        AConn.FScramNonce := ScramAttribute(Copy(LText, 4, MaxInt), 'r');
       end;
-      if not LOk or (FScramNonce = '') or (LUser <> SaslUser) then
+      if not LOk or (AConn.FScramNonce = '') or (LUser <> SaslUser) then
       begin
         R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
         R.ErrorMessage := 'Authentication failed: Invalid user credentials';
@@ -863,11 +1089,11 @@ begin
       end
       else
       begin
-        FScramNonce := FScramNonce + KafkaBase64Encode(PcRandomBytes(18));
-        FScramServerFirst := PcStringToUtf8Bytes('r=' + FScramNonce + ',s=' +
+        AConn.FScramNonce := AConn.FScramNonce + KafkaBase64Encode(PcRandomBytes(18));
+        AConn.FScramServerFirst := PcStringToUtf8Bytes('r=' + AConn.FScramNonce + ',s=' +
           KafkaBase64Encode(PcStringToUtf8Bytes(SALT)) + ',i=' + IntToStr(SaslIterations));
-        R.AuthBytes := FScramServerFirst;
-        FSaslState := ssScramFirst;
+        R.AuthBytes := AConn.FScramServerFirst;
+        AConn.FSaslState := ssScramFirst;
       end;
     end
     else
@@ -875,7 +1101,7 @@ begin
       // SCRAM client-final: c=biws,r=<nonce>,p=<proof>
       LOk := PcTryUtf8BytesToString(AAuthBytes, LText);
       P := Pos(',p=', LText);
-      LOk := LOk and (P > 0) and (ScramAttribute(LText, 'r') = FScramNonce) and
+      LOk := LOk and (P > 0) and (ScramAttribute(LText, 'r') = AConn.FScramNonce) and
         (ScramAttribute(LText, 'c') = 'biws');
       LProof := nil;
       if LOk then
@@ -891,8 +1117,8 @@ begin
         LStoredKey := PcDigestToBytes(PcSha256(FakeHmac(LSalted,
           PcStringToUtf8Bytes('Client Key'))));
         LServerKey := FakeHmac(LSalted, PcStringToUtf8Bytes('Server Key'));
-        LAuthMessage := ConcatBytes(ConcatBytes(FScramClientFirstBare, PcStringToUtf8Bytes(',')),
-          ConcatBytes(ConcatBytes(FScramServerFirst, PcStringToUtf8Bytes(',')),
+        LAuthMessage := ConcatBytes(ConcatBytes(AConn.FScramClientFirstBare, PcStringToUtf8Bytes(',')),
+          ConcatBytes(ConcatBytes(AConn.FScramServerFirst, PcStringToUtf8Bytes(',')),
           PcStringToUtf8Bytes(LFinalWithoutProof)));
         // A server's check: ClientKey = proof xor HMAC(StoredKey, AuthMessage),
         // and H(ClientKey) must be the stored key.
@@ -916,17 +1142,149 @@ begin
           LSignature[0] := LSignature[0] xor $FF;
         R.AuthBytes := PcStringToUtf8Bytes('v=' + KafkaBase64Encode(LSignature));
         R.SessionLifetimeMs := SaslSessionLifetimeMs;
-        FSaslState := ssAuthenticated;
+        AConn.FSaslState := ssAuthenticated;
         Inc(FSaslAuthenticatedCount);
       end;
     end;
     if R.ErrorCode <> 0 then
-      FSaslState := ssNone;
+      AConn.FSaslState := ssNone;
   finally
     FMonitor.Leave;
   end;
   // SessionLifetimeMs is ignorable: v0 drops it rather than refusing it.
   Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaFakeBroker.FindCoordinatorBody(AVersion: Int16;
+  const ARequest: TKafkaFindCoordinatorRequest): TBytes;
+var
+  R: TKafkaFindCoordinatorResponse;
+  LError: Int16;
+  LPort: Integer;
+  I: Integer;
+begin
+  FMonitor.Enter;
+  try
+    Inc(FFindCoordinatorCount);
+    FLastFindCoordinatorVersion := AVersion;
+    LError := 0;
+    if FindCoordinatorErrors > 0 then
+    begin
+      Dec(FindCoordinatorErrors);
+      LError := FindCoordinatorErrorCode;
+    end;
+    LPort := CoordinatorPort;
+    if LPort = 0 then
+      LPort := Port;
+    R.Init;
+    if AVersion >= 4 then
+    begin
+      SetLength(R.Coordinators, Length(ARequest.CoordinatorKeys));
+      for I := 0 to High(ARequest.CoordinatorKeys) do
+      begin
+        R.Coordinators[I].Init;
+        R.Coordinators[I].Key := ARequest.CoordinatorKeys[I];
+        R.Coordinators[I].ErrorCode := LError;
+        if LError = 0 then
+        begin
+          R.Coordinators[I].NodeId := CoordinatorNodeId;
+          R.Coordinators[I].Host := '127.0.0.1';
+          R.Coordinators[I].Port := LPort;
+        end
+        else
+          R.Coordinators[I].NodeId := -1;
+      end;
+    end
+    else
+    begin
+      R.ErrorCode := LError;
+      if LError = 0 then
+      begin
+        R.NodeId := CoordinatorNodeId;
+        R.Host := '127.0.0.1';
+        R.Port := LPort;
+      end
+      else
+        R.NodeId := -1;
+    end;
+    FMonitor.PulseAll;
+  finally
+    FMonitor.Leave;
+  end;
+  Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaFakeBroker.HandleGroup(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
+  const AContent: TBytes): Boolean;
+var
+  LReader: TKafkaReader;
+  LHeader: TKafkaRequestHeader;
+  LBody: TBytes;
+  LView: TKafkaMetadataResponse;
+  LFind: TKafkaFindCoordinatorRequest;
+  LHeartbeat: TKafkaConsumerGroupHeartbeatRequest;
+  LCommit: TKafkaOffsetCommitRequest;
+  LFetch: TKafkaOffsetFetchRequest;
+begin
+  Result := (AKey = KAFKA_API_KEY_FIND_COORDINATOR) or
+    (AKey = KAFKA_API_KEY_CONSUMER_GROUP_HEARTBEAT) or (AKey = KAFKA_API_KEY_OFFSET_COMMIT) or
+    (AKey = KAFKA_API_KEY_OFFSET_FETCH);
+  if not Result then
+    Exit;
+  LReader := TKafkaReader.Create(AContent);
+  try
+    LHeader := KafkaReadRequestHeader(LReader,
+      KafkaRequestHeaderVersion(KafkaApiIsFlexible(AKey, AVersion)));
+    LBody := Copy(AContent, LReader.Position, Length(AContent) - LReader.Position);
+  finally
+    LReader.Free;
+  end;
+  FMonitor.Enter;
+  try
+    LView := ClusterView;
+  finally
+    FMonitor.Leave;
+  end;
+  case AKey of
+    KAFKA_API_KEY_FIND_COORDINATOR:
+      begin
+        LFind.FromBytes(LBody, AVersion);
+        SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion,
+          FindCoordinatorBody(AVersion, LFind));
+      end;
+    KAFKA_API_KEY_CONSUMER_GROUP_HEARTBEAT:
+      begin
+        LHeartbeat.FromBytes(LBody, AVersion);
+        SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion,
+          FGroups.Heartbeat(LView, LHeartbeat).ToBytes(AVersion));
+      end;
+    KAFKA_API_KEY_OFFSET_COMMIT:
+      begin
+        LCommit.FromBytes(LBody, AVersion);
+        SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion,
+          FGroups.OffsetCommit(LView, AVersion, LCommit).ToBytes(AVersion));
+      end;
+    KAFKA_API_KEY_OFFSET_FETCH:
+      begin
+        LFetch.FromBytes(LBody, AVersion);
+        SendResponse(AConn, LHeader.CorrelationId, AKey, AVersion,
+          FGroups.OffsetFetch(LView, AVersion, LFetch).ToBytes(AVersion));
+      end;
+  end;
+end;
+
+function TKafkaFakeBroker.FindCoordinatorCount: Integer;
+begin
+  FMonitor.Enter;
+  Result := FFindCoordinatorCount;
+  FMonitor.Leave;
+end;
+
+function TKafkaFakeBroker.LastFindCoordinatorVersion: Int16;
+begin
+  FMonitor.Enter;
+  Result := FLastFindCoordinatorVersion;
+  FMonitor.Leave;
 end;
 
 function TKafkaFakeBroker.SaslAuthenticatedCount: Integer;
@@ -970,7 +1328,8 @@ begin
       Result := FBatches[I].NextOffset;
 end;
 
-procedure TKafkaFakeBroker.HandleProduce(ACorrelationId: Int32; AVersion: Int16;
+procedure TKafkaFakeBroker.HandleProduce(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
+  AVersion: Int16;
   const ARequest: TKafkaProduceRequest);
 var
   R: TKafkaProduceResponse;
@@ -1034,7 +1393,7 @@ begin
     FMonitor.Leave;
   end;
   if ARequest.Acks <> 0 then
-    SendResponse(ACorrelationId, KAFKA_API_KEY_PRODUCE, AVersion, R.ToBytes(AVersion));
+    SendResponse(AConn, ACorrelationId, KAFKA_API_KEY_PRODUCE, AVersion, R.ToBytes(AVersion));
 end;
 
 { TKafkaFakeBroker.TParkThread }
@@ -1055,6 +1414,7 @@ procedure TKafkaFakeBroker.ParkLoop;
 var
   LAnswers: array of TBytes;
   LIds: array of Int32;
+  LConns: array of TKafkaFakeConnection;
   LVersions: array of Int16;
   LKeep: TParkedFetchArray;
   I, N, K: Integer;
@@ -1066,6 +1426,7 @@ begin
     begin
       LAnswers := nil;
       LIds := nil;
+      LConns := nil;
       LVersions := nil;
       FMonitor.Enter;
       try
@@ -1082,9 +1443,11 @@ begin
           begin
             SetLength(LAnswers, N + 1);
             SetLength(LIds, N + 1);
+            SetLength(LConns, N + 1);
             SetLength(LVersions, N + 1);
             LAnswers[N] := LBody;
             LIds[N] := FParked[I].CorrelationId;
+            LConns[N] := FParked[I].Connection;
             LVersions[N] := FParked[I].Version;
             Inc(N);
           end
@@ -1108,7 +1471,7 @@ begin
         FMonitor.Leave;
       end;
       for I := 0 to N - 1 do
-        SendResponse(LIds[I], KAFKA_API_KEY_FETCH, LVersions[I], LAnswers[I]);
+        SendResponse(LConns[I], LIds[I], KAFKA_API_KEY_FETCH, LVersions[I], LAnswers[I]);
     end;
   except
     // A test broker never takes the test runner down.
@@ -1274,7 +1637,8 @@ begin
     ABody := nil;
 end;
 
-procedure TKafkaFakeBroker.HandleListOffsets(ACorrelationId: Int32; AVersion: Int16;
+procedure TKafkaFakeBroker.HandleListOffsets(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
+  AVersion: Int16;
   const ARequest: TKafkaListOffsetsRequest);
 var
   R: TKafkaListOffsetsResponse;
@@ -1319,7 +1683,7 @@ begin
   finally
     FMonitor.Leave;
   end;
-  SendResponse(ACorrelationId, KAFKA_API_KEY_LIST_OFFSETS, AVersion, R.ToBytes(AVersion));
+  SendResponse(AConn, ACorrelationId, KAFKA_API_KEY_LIST_OFFSETS, AVersion, R.ToBytes(AVersion));
 end;
 
 function TKafkaFakeBroker.FetchCount: Integer;
@@ -1461,11 +1825,12 @@ begin
     FMonitor.Leave;
   end;
   for I := 0 to High(LHeld) do
-    HandleProduce(LHeld[I].CorrelationId, LHeld[I].Version, LHeld[I].Request);
+    HandleProduce(LHeld[I].Connection, LHeld[I].CorrelationId, LHeld[I].Version,
+      LHeld[I].Request);
 end;
 
-procedure TKafkaFakeBroker.SendResponse(ACorrelationId: Int32; AApiKey, AVersion: Int16;
-  const ABody: TBytes);
+procedure TKafkaFakeBroker.SendResponse(AConn: TKafkaFakeConnection; ACorrelationId: Int32;
+  AApiKey, AVersion: Int16; const ABody: TBytes);
 var
   LHeader: TKafkaResponseHeader;
   LFlexible: Boolean;
@@ -1473,24 +1838,14 @@ begin
   LHeader := Default(TKafkaResponseHeader);
   LHeader.CorrelationId := ACorrelationId;
   LFlexible := (AVersion >= 0) and KafkaApiIsFlexible(AApiKey, AVersion);
-  SendRaw(KafkaEncodeResponseFrame(LHeader, KafkaResponseHeaderVersion(AApiKey, LFlexible), ABody));
-end;
-
-procedure TKafkaFakeBroker.SendRaw(const AFrame: TBytes);
-begin
-  FWriteLock.Enter;
-  try
-    if FClient <> nil then
-      KafkaWriteExactly(FClient, AFrame[0], Length(AFrame), 'fake broker');
-  finally
-    FWriteLock.Leave;
-  end;
+  AConn.SendRaw(KafkaEncodeResponseFrame(LHeader, KafkaResponseHeaderVersion(AApiKey, LFlexible),
+    ABody));
 end;
 
 function TKafkaFakeBroker.ApiVersionsBody(AVersion: Int16): TBytes;
 var
   R: TKafkaApiVersionsResponse;
-  N: Integer;
+  N, G: Integer;
 begin
   R.Init;
   N := 1;
@@ -1498,9 +1853,39 @@ begin
     N := 2;
   if OfferRecords then
     Inc(N, 3);
+  G := 0;
+  if OfferGroups then
+  begin
+    G := 3;
+    if OfferConsumerGroupHeartbeat then
+      G := 4;
+  end;
   // SaslHandshake and SaslAuthenticate: a broker lists them on every
   // listener, SASL or not.
-  SetLength(R.ApiKeys, N + 2);
+  SetLength(R.ApiKeys, N + G + 2);
+  // The group APIs after the SASL pair.
+  if OfferGroups then
+  begin
+    R.ApiKeys[N + 2].Init;
+    R.ApiKeys[N + 2].ApiKey := KAFKA_API_KEY_FIND_COORDINATOR;
+    R.ApiKeys[N + 2].MinVersion := 0;
+    R.ApiKeys[N + 2].MaxVersion := FindCoordinatorMax;
+    R.ApiKeys[N + 3].Init;
+    R.ApiKeys[N + 3].ApiKey := KAFKA_API_KEY_OFFSET_COMMIT;
+    R.ApiKeys[N + 3].MinVersion := 2;
+    R.ApiKeys[N + 3].MaxVersion := 10;
+    R.ApiKeys[N + 4].Init;
+    R.ApiKeys[N + 4].ApiKey := KAFKA_API_KEY_OFFSET_FETCH;
+    R.ApiKeys[N + 4].MinVersion := 8;
+    R.ApiKeys[N + 4].MaxVersion := 10;
+    if OfferConsumerGroupHeartbeat then
+    begin
+      R.ApiKeys[N + 5].Init;
+      R.ApiKeys[N + 5].ApiKey := KAFKA_API_KEY_CONSUMER_GROUP_HEARTBEAT;
+      R.ApiKeys[N + 5].MinVersion := 0;
+      R.ApiKeys[N + 5].MaxVersion := 1;
+    end;
+  end;
   R.ApiKeys[N].Init;
   R.ApiKeys[N].ApiKey := KAFKA_API_KEY_SASL_HANDSHAKE;
   R.ApiKeys[N].MinVersion := 0;
@@ -1645,18 +2030,21 @@ begin
     FMonitor.Leave;
   end;
   for I := High(LHeld) downto 0 do
-    SendResponse(LHeld[I].CorrelationId, KAFKA_API_KEY_METADATA, LHeld[I].Version,
+    SendResponse(LHeld[I].Connection, LHeld[I].CorrelationId, KAFKA_API_KEY_METADATA,
+      LHeld[I].Version,
       MetadataBody(LHeld[I].Version, LHeld[I].Topic));
 end;
 
 procedure TKafkaFakeBroker.DropClient;
+var
+  I: Integer;
 begin
-  FWriteLock.Enter;
+  FMonitor.Enter;
   try
-    if FClient <> nil then
-      FClient.CloseAbort;
+    for I := 0 to FConnections.Count - 1 do
+      FConnections[I].Abort;
   finally
-    FWriteLock.Leave;
+    FMonitor.Leave;
   end;
 end;
 

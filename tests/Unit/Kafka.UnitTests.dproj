@@ -95,10 +95,14 @@
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
         <DCCReference Include="..\..\src\Kafka.Consumer.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Coordinator.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Consumer.pas"/>
         <DCCReference Include="Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.TestCaptures.pas"/>
         <DCCReference Include="Kafka.TestFakeBroker.pas"/>
+        <DCCReference Include="Kafka.TestFakeGroup.pas"/>
         <DCCReference Include="Kafka.TestMessages.pas"/>
         <DCCReference Include="Kafka.TestPartitions.pas"/>
         <DCCReference Include="Kafka.PrimitivesTests.pas"/>
@@ -106,6 +110,7 @@
         <DCCReference Include="Kafka.EnvelopeTests.pas"/>
         <DCCReference Include="Kafka.MessagesTests.pas"/>
         <DCCReference Include="Kafka.GroupMessagesTests.pas"/>
+        <DCCReference Include="Kafka.GroupTests.pas"/>
         <DCCReference Include="Kafka.ProduceFetchTests.pas"/>
         <DCCReference Include="Kafka.RecordBatchTests.pas"/>
         <DCCReference Include="Kafka.PartitionerTests.pas"/>

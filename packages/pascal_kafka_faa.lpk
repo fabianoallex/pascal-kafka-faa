@@ -129,6 +129,18 @@
         <Filename Value="..\src\Kafka.Consumer.pas"/>
         <UnitName Value="Kafka.Consumer"/>
       </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Group.pas"/>
+        <UnitName Value="Kafka.Group"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Group.Coordinator.pas"/>
+        <UnitName Value="Kafka.Group.Coordinator"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Group.Consumer.pas"/>
+        <UnitName Value="Kafka.Group.Consumer"/>
+      </Item>
     </Files>
     <RequiredPkgs>
       <!-- By name only, with no DefaultFilename: the application provides the

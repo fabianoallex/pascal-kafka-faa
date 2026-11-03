@@ -698,6 +698,117 @@ had the same flaw: a later run could find the topic an earlier one had created.
 (Docker): the same, and both suites 5 times in three containers at once with `--cpus=1` (30
 runs; 28 before the markers' fix). Delphi 12 Win32 and Win64: 226 and 32, 0 leaks.
 
+### The fake broker's connections, the coordinator, the membership (2026-11-02)
+
+Steps 2 to 4 of the plan above. The consumer's side (step 5) and the two-consumer integration
+(step 6) are the next session's.
+
+**Done:**
+
+- **The fake broker serves any number of connections at once**: the accept loop hands each to a
+  thread of its own, with its own socket, write lock and SASL state; the log, the counters, the
+  held and parked requests stay the broker's, under its monitor, and a held or parked request
+  remembers its connection. Every test that ran on the one-at-a-time fake passed unchanged.
+- **`Kafka.Group`**: decision 4's seam, `IKafkaGroupMembership` (Subscribe, Poll with an event
+  handler, Assignment, Commit, Committed, Leave, Close), its events (revoked, assigned, lost),
+  `TKafkaCommittedOffset`, and `TKafkaWaitHub`: one monitor that is also the `IKafkaSignal` the
+  group's requests are sent with, so a thread waits for an answer, a state change or Close on
+  one object. `KafkaBackoffMs` is Java's exponential backoff (factor 2, jitter 0.2).
+- **`Kafka.Group.Coordinator`**: FindCoordinator to any broker (`TKafkaCluster.AnyBroker`), the
+  list form from v4 (KIP-699) and the single-key form below; the coordinator's connection is a
+  separate one (`TKafkaCluster.Coordinator`), so a heartbeat never waits behind a Fetch the
+  broker holds for its MaxWaitMs (a broker answers one connection's requests in order; Java
+  keeps the coordinator as node `MAX_VALUE - id` for the same reason). Forgotten on
+  NOT_COORDINATOR, COORDINATOR_NOT_AVAILABLE or a failed connection; lookups at least
+  `RetryBackoffMs` apart, doubling per failure up to `RetryBackoffMaxMs` (1 s), one at a time.
+- **`Kafka.Group.Consumer`** (`TKafkaConsumerProtocol`), after Java 4.4.0's
+  `AbstractMembershipManager`, `ConsumerMembershipManager` and `ConsumerHeartbeatRequestManager`
+  (read for this step): a member id made by the client (KIP-1082, a version 4 UUID, never one
+  that starts with `-`); a heartbeat thread that joins at once, then heartbeats at the
+  coordinator's interval, and at once again to acknowledge; Java's `HeartbeatState` (the
+  subscription, rebalance timeout, server assignor and owned partitions sent when joining and
+  when they changed; everything again after a failure); Java's local epoch on assignments, so a
+  new target with the same partitions is still acknowledged; reconciliation by topic id, named
+  through the metadata (the part that has names reconciled meanwhile); revoked partitions
+  handed to the consumer, and only after it handled them the acknowledgement; FENCED_MEMBER_EPOCH
+  and UNKNOWN_MEMBER_ID lose the partitions and join again with epoch 0 and the same id;
+  NOT_COORDINATOR and COORDINATOR_NOT_AVAILABLE look the coordinator up again at once,
+  COORDINATOR_LOAD_IN_PROGRESS backs off, TOPIC_AUTHORIZATION_FAILED is raised from Poll with
+  the member kept, the rest is fatal (the partitions lost, the error raised from Poll once); a
+  broker without ConsumerGroupHeartbeat is fatal with EKafkaUnsupportedVersion. `Leave`
+  revokes, stops the thread and sends epoch -1 once to the known coordinator. `Commit` and
+  `Committed` (OffsetCommit, OffsetFetch v8+ with `require_stable`) with the member's id and
+  epoch, retried as Java's `CommitRequestManager` retries.
+- **The fake broker as coordinator** (`Kafka.TestFakeGroup`): FindCoordinator (both forms,
+  injected errors); heartbeats with Java's epoch rules (0 joins, -1 leaves, the current or the
+  previous epoch, FENCED_MEMBER_EPOCH or UNKNOWN_MEMBER_ID otherwise); a round-robin assignor
+  that gives a member its target minus what another member still holds or was given, so a
+  partition moves only after its owner's heartbeat let it go; passive members for a
+  deterministic rebalance; OffsetCommit and OffsetFetch with the member's epoch checked.
+- `TKafkaTopicPartition` moved to `Kafka.Types` (the group units need it, and the consumer will
+  use them).
+- Tests: `Kafka.GroupTests`, 24 unit tests (the list above, each against the fake);
+  `Kafka.GroupIntegrationTests`, 2 against Kafka 4.4.0: one member joins a new topic's group,
+  commits, reads the commits back and leaves, and another membership of the group reads them
+  without joining; two members split the topic's three partitions (the first revokes, then the
+  second is given what it let go) and, when the second leaves, the first gets them all back.
+
+**Checked against the broker:** the membership worked against 4.4.0 as written: the join, the
+acknowledgement of the first assignment, the revoke-then-assign of a rebalance (the uniform
+assignor split three partitions two and one), commits with the member epoch (v10, by topic id),
+OffsetFetch v10 with the member's epoch, a simple consumer's read with no member, and the leave.
+A rebalance takes up to two heartbeat intervals of the broker (5 s each): the first member hears
+of it at its next heartbeat, the second gets the partitions at its own.
+
+**Measured:** FPC 3.2.2 Windows x64: 250 unit and 34 integration tests, the
+interoperability test and the sample, 0 leaks; the group fixture 15 times in a row. Linux
+(Docker): the same, and both suites 5 times in three containers at once with `--cpus=1` (30
+runs). Delphi 12 Win32 and Win64: 250 and 34, 0 leaks. Two mutations (acknowledging an assignment
+before the consumer handled the revoke; every field in every heartbeat) each make one test fail
+(`TwoMembers_PartitionsMoveOnlyAfterTheRevoke`, `Heartbeat_SendsOnlyWhatChanged`).
+
+**Decided while writing:**
+
+- **Revoked and Assigned are queued together** and handed out in that order in one Poll, where
+  Java hands out the revoke, waits for it, then the assignment: the same order seen from the
+  consumer, without a second round trip between threads. Assigned is always queued, even with no
+  new partition (Java calls `onPartitionsAssigned` with an empty set too: the consumer applies
+  the assignment there); Revoked and Lost only when they name a partition.
+- **A handler that raises** ends that Poll with its exception, and the event still counts as
+  handled: the reconciliation goes on and is acknowledged. Java leaves the member unacknowledged
+  after a failed callback and runs it again in the next reconciliation; for a revoke the result
+  is the same (the partitions are gone either way), for an assignment the partitions are kept
+  instead of left unfetched.
+- **The partitions a Lost event names are the consumer's at the moment it takes the event**, not
+  when the member was fenced: a revoke being handled meanwhile isn't counted twice.
+- **COORDINATOR_LOAD_IN_PROGRESS waits the backoff even while joining.** Java's
+  `shouldHeartbeatNow` sends a joining member's heartbeat at once whatever the backoff, so
+  against a loading coordinator it retries as fast as the round trip.
+- **The subscription's metadata is asked for before joining** (Java asks for it when
+  subscribing): without it the first assignment arrived before the topic ids could be named, and
+  was reconciled as an empty one first, then again (seen in the first run of the unit tests).
+- **One wait hub per membership**, shared with its coordinator: the heartbeat thread, the
+  consumer's commits and the coordinator's lookup wait on one monitor, and Close stops them all
+  at once. The heartbeat request is built under its lock and written outside it (the
+  connection's reader needs the lock to signal answers).
+- **The coordinator's lookups are spaced even when they work**, as Java's `RequestState`: a broker
+  that just started answers FindCoordinator with itself and heartbeats with NOT_COORDINATOR,
+  and without the spacing the two would alternate as fast as the network allows.
+- **OffsetFetch v8 or later only** (the groups form): every broker with ConsumerGroupHeartbeat has
+  v9. **Topic ids in commits (v10) only when the metadata has all of them**, v9 by name
+  otherwise (Java's `canUseTopicIds`).
+- **The membership doesn't own the cluster**: the consumer's cluster serves both, and the
+  membership is closed first.
+
+**Not done yet:** leaving and rejoining when Poll isn't called within the rebalance timeout
+(Java's `max.poll.interval.ms` check: the member goes stale), static membership
+(`group.instance.id`), regex subscriptions (v1's `SubscribedTopicRegex`), naming a topic id the
+subscription doesn't hold (Java asks the metadata by id); the consumer's use of all this (the
+next step).
+
+**Found on the way:** a `{$MODE DELPHI}` written inside a `{ }` comment ended the comment at its
+`}`, and FPC reported "INTERFACE expected" on the unit's header (CLAUDE.md, gotcha 18).
+
 ## 8. Open questions
 
 1. **First real user:** which broker (Apache 4.x? Confluent Cloud? MSK? Redpanda?). It decides

@@ -95,10 +95,14 @@
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
         <DCCReference Include="..\..\src\Kafka.Consumer.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Coordinator.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Consumer.pas"/>
         <DCCReference Include="..\Unit\Kafka.DUnitXCompat.pas"/>
         <DCCReference Include="..\Unit\Kafka.TestHelpers.pas"/>
         <DCCReference Include="Kafka.IntegrationTests.pas"/>
         <DCCReference Include="Kafka.SaslIntegrationTests.pas"/>
+        <DCCReference Include="Kafka.GroupIntegrationTests.pas"/>
         <DCCReference Include="Kafka.CloudIntegrationTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

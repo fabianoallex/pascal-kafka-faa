@@ -2,8 +2,9 @@
 
 {$I kafka.inc}
 
-{ The library's exceptions, its version, and the minimum pascal-common-faa it
-  compiles against.
+{ The library's exceptions, its version, the minimum pascal-common-faa it
+  compiles against, and the few types several units share
+  (TKafkaTopicPartition).
 
   Exceptions. No exception of pascal-common-faa's transport (EPcTransport*)
   leaves the library: Kafka.Transport turns each into one of these, with the
@@ -111,7 +112,23 @@ type
   /// again on another thread (a request's response future).
   EKafkaClass = class of EKafka;
 
+  /// A partition of a topic, by name: the consumer's assignment and the
+  /// group's events (Kafka.Consumer, Kafka.Group).
+  TKafkaTopicPartition = record
+    Topic: string;
+    Partition: Int32;
+  end;
+  TKafkaTopicPartitionArray = array of TKafkaTopicPartition;
+
+function KafkaTopicPartition(const ATopic: string; APartition: Int32): TKafkaTopicPartition;
+
 implementation
+
+function KafkaTopicPartition(const ATopic: string; APartition: Int32): TKafkaTopicPartition;
+begin
+  Result.Topic := ATopic;
+  Result.Partition := APartition;
+end;
 
 constructor EKafkaAuthentication.CreateCode(AErrorCode: Int16; const AMessage: string);
 begin

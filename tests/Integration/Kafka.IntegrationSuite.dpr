@@ -42,10 +42,14 @@ uses
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
+  Kafka.Group in '..\..\src\Kafka.Group.pas',
+  Kafka.Group.Coordinator in '..\..\src\Kafka.Group.Coordinator.pas',
+  Kafka.Group.Consumer in '..\..\src\Kafka.Group.Consumer.pas',
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
   Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas',
+  Kafka.GroupIntegrationTests in 'Kafka.GroupIntegrationTests.pas',
   Kafka.CloudIntegrationTests in 'Kafka.CloudIntegrationTests.pas';
 
 var
