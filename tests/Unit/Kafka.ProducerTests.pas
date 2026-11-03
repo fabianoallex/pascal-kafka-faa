@@ -19,7 +19,8 @@
     that never appears fails after MaxBlockMs.
   - acks=0, gzip, headers, a tombstone, an explicit timestamp; snappy and
     lz4, small records batched and a 100 000-byte one (several xerial
-    chunks, several lz4 blocks).
+    chunks, several lz4 blocks); zstd refused at Create (read, not
+    written).
   - Flush and Close: callbacks have run when Flush returns, Close delivers
     what was sent, Close with a timeout fails what is left, a callback can't
     call Flush, and Send before Open or after Close raises.
@@ -98,6 +99,7 @@ type
     [Test] procedure Callback_CannotFlush;
     [Test] procedure Send_BeforeOpenAndAfterClose_Raises;
     [Test] procedure Params_DeliveryTimeoutTooShort_IsRefused;
+    [Test] procedure Params_Zstd_IsRefused;
   end;
 
 implementation
@@ -716,6 +718,21 @@ begin
   CreateWithParams;
   FParams.Retries := -1;
   TAssert.AssertException(EArgumentException, CreateWithParams);
+end;
+
+procedure TKafkaProducerTests.Params_Zstd_IsRefused;
+begin
+  FParams.Cluster.BootstrapServers := '127.0.0.1:1';
+  FParams.Compression := kcZstd;
+  try
+    CreateWithParams;
+    TAssert.Fail('a zstd producer was created');
+  except
+    on E: EArgumentException do
+      TAssert.AssertTrue(E.Message, Pos('zstd can''t be written yet', E.Message) > 0);
+  end;
+  FParams.Compression := kcLz4;
+  CreateWithParams;
 end;
 
 initialization

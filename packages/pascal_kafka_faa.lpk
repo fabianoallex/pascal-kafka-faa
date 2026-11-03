@@ -30,6 +30,10 @@
         <UnitName Value="Kafka.Protocol.Crc32c"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Compression.Zstd.pas"/>
+        <UnitName Value="Kafka.Compression.Zstd"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Protocol.Primitives.pas"/>
         <UnitName Value="Kafka.Protocol.Primitives"/>
       </Item>

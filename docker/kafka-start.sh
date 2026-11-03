@@ -22,6 +22,13 @@
 # Users (test credentials, no security value):
 #   PLAIN          alice / alice-secret   (JAAS, in docker-compose.yml)
 #   SCRAM-SHA-256  bob   / bob-secret     (here, 8192 iterations)
+#
+# Topics: once the broker answers, pascal-kafka-faa-it-zstd is created (one
+# partition, compression.type=zstd), so that the broker compresses what it
+# is given with Java's zstd: the integration suite reads zstd batches from
+# it, which this library doesn't write. The image's start then runs in the
+# background, and this shell, PID 1, passes SIGTERM on to it (docker stop).
+# The healthcheck waits for the topic.
 set -e
 mkdir -p /tmp/tls
 cat /pki/srv_key.pem /pki/srv_cert.pem > /tmp/tls/server.pem
@@ -39,4 +46,16 @@ EOF
     --config /tmp/format.properties \
     --add-scram 'SCRAM-SHA-256=[name=bob,password=bob-secret,iterations=8192]'
 fi
-exec /etc/kafka/docker/run
+/etc/kafka/docker/run &
+BROKER=$!
+trap 'kill -TERM "$BROKER" 2>/dev/null' TERM INT
+(
+  until /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
+      --if-not-exists --topic pascal-kafka-faa-it-zstd --partitions 1 \
+      --config compression.type=zstd > /dev/null 2>&1; do
+    sleep 1
+  done
+) &
+# The first wait ends at a signal (the trap has passed it on), the second
+# when the broker has stopped.
+wait "$BROKER" || wait "$BROKER"

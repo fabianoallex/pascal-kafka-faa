@@ -1,7 +1,8 @@
 # pascal-kafka-faa — design
 
 Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3's steps 1 to 3 done (the idempotent producer, snappy and lz4)**
+met against Kafka 4.4.0; K3's steps 1 to 4 done (the idempotent producer, snappy and lz4,
+zstd read)**
 (2026-11-03:
 "K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
@@ -151,7 +152,7 @@ matched by `correlation_id` (like AMQP's channels, unlike Redis's strict order).
 ```
 Kafka.Protocol.*        primitives, envelope, record batch v2, CRC32C (hand-written)
 Kafka.Messages.*        generated requests/responses (decision 3)
-Kafka.Compression       none, gzip, snappy, lz4 (Pascal); zstd in K3's step 4
+Kafka.Compression       none, gzip, snappy, lz4 (Pascal); zstd read (Kafka.Compression.Zstd)
 Kafka.Sasl              PLAIN, SCRAM-SHA-256/512, OAUTHBEARER (token supplied)
 Kafka.Connection        one broker: common's endpoint, reader thread, correlation, ApiVersions, SASL
 Kafka.Cluster           bootstrap, metadata, leaders, connections per broker, refresh
@@ -221,7 +222,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | Auto-commit and manual commit (sync and async) | K2 | |
 | Idempotent producer (InitProducerId, sequences) | K3 | done; the default, as Java's since 3.0 |
 | snappy and lz4 (pure Pascal) | K3 | done, both directions; a consumer must read whatever any producer sent |
-| zstd | K3 | large decoder: opt-in libzstd, loaded dynamically like OpenSSL |
+| zstd | K3 | read: a decoder in Pascal (open question 2, option C); writing waits for a user who asks |
 | SCRAM-SHA-512 | K3 | needs SHA-512 in common (a new item there) |
 | OAUTHBEARER (token supplied by the application) | K3 | no OIDC flow |
 | Spans and metrics | K3 | traceparent in headers, OpenTelemetry `messaging.*` conventions |
@@ -983,7 +984,8 @@ Win64, 0 leaks; the interoperability test and the samples):
 4. **zstd.** Open question 2 (libzstd loaded on demand, or a decoder in Pascal) is put to the
    user with a recommendation at this step, not decided before. Then the same tests as step 3.
    This step and step 3 meet the criterion's first half. *Decided 2026-11-03:* option C, a
-   decoder in Pascal; writing zstd waits for a user who asks.
+   decoder in Pascal; writing zstd waits for a user who asks. *Done the same day* ("zstd,
+   read", below).
 5. **SCRAM-SHA-512.** SHA-512, HMAC-SHA-512 and PBKDF2-HMAC-SHA-512 go to pascal-common-faa
    first (a release there, with its own tests and vectors); the submodule, the `Kafka.Types`
    check and the `.lpk`'s `MinVersion` move to it together. `Kafka.Sasl` takes the hash as a
@@ -1244,6 +1246,106 @@ Win64) and both samples with the Delphi programs too.
 built by hand (CLAUDE.md, gotcha 21). Gotcha 17 struck once more: a backslash-n in a Python
 heredoc became a line break.
 
+### zstd, read (2026-11-03)
+
+Step 4 of the plan, option C of open question 2: the decoder in Pascal, no encoder. Read first:
+Java 4.4.0's `ZstdCompression` (clients/.../common/compress, tag 4.4.0); zstd-jni 1.5.7-17's
+`ZstdInputStreamNoFinalizer`, `ZstdOutputStreamNoFinalizer` and their JNI side (the version
+4.4.0 ships: its `gradle/dependencies.gradle`, and the jar the console producer loaded); libzstd
+1.5.7's `zstd_decompress.c` and `zstd_decompress_block.c`, the libzstd inside that zstd-jni, for
+the points RFC 8878 leaves open. What they do is marked "Java" and "libzstd" below.
+
+**Done:**
+
+- **`Kafka.Compression.Zstd`**, the decoder (RFC 8878): frames one after the other and
+  skippable frames; raw, RLE and compressed blocks; literals raw, RLE or Huffman (1 or 4
+  streams, the weights written directly or with FSE, the previous block's tree reused);
+  sequences with predefined, RLE, FSE or repeated tables and the three repeat offsets; the
+  content size and the content checksum checked (`KafkaXxHash64`, XXH64).
+  `KafkaZstdDecompress`. `Kafka.Compression` calls it for `kcZstd`, so the consumer and the fake
+  broker read zstd with no change of their own.
+- **Read, not written.** `KafkaDecompressionSupported` (every codec) next to
+  `KafkaCompressionSupported`, which now means writing and is False for zstd, as open question
+  2 said it would need to; `KafkaCompress(kcZstd)` and a producer with `Compression := kcZstd`
+  raise, saying zstd is read but not written.
+- **What Java's decoder refuses, refused** (zstd-jni over `ZSTD_decompressStream`, default
+  parameters): a window above 128 MiB (`ZSTD_WINDOWLOG_LIMIT_DEFAULT`, 27); a dictionary id
+  (Java sets no dictionary: "dictionary wrong"); zstd 0.x's legacy frames (zstd-jni builds
+  libzstd without `ZSTD_LEGACY_SUPPORT`). Like Java: every frame read, skippable frames
+  skipped, the checksum checked. Java's producer writes level 3 with no checksum, through a
+  16 KiB buffered stream.
+- **Captures** (`docs/codec-captures.md`): the Java console producer's zstd batch, the snappy
+  and lz4 records and a fifth of 96 KB of text (276 frames). Java's frame: no content size, no
+  checksum, a window descriptor of 2 MiB, two compressed blocks (4 Huffman streams, FSE tables)
+  and an empty raw block marked last, the stream's end.
+- **`docker/kafka-start.sh` creates `pascal-kafka-faa-it-zstd`** (one partition,
+  `compression.type=zstd`) once the broker answers, and the healthcheck waits for it: the
+  broker compresses every batch given to that topic again with Java's zstd, which is how the
+  integration suite gets zstd from a library that writes none. The start script now keeps the
+  image's start in the background and passes SIGTERM on (`docker stop` takes 2 s, as before).
+- **Tests**: `Kafka.ZstdTests`, 10 (its header): XXH64's vectors; 18 frames written by python
+  zstandard over libzstd 1.5.7 (`tools/codec_vectors.py zstd`), chosen so that between them they
+  use every part of the format a compressor writes (checked with a script that lists the parts a
+  frame's headers say it uses); 11 frames built by hand for what no compressor wrote (RLE
+  literals, a 3-byte sequence count, an 8-byte content size, a dictionary id of 0...), each
+  decoded by libzstd to the same bytes; several frames with skippable ones between; what Java
+  refuses; 48 corrupt frames and blocks, each refused with its reason in the message and each
+  refused by libzstd too; the limit; corrupt input. `Kafka.ProduceFetchTests`: the Java batch's
+  five records and its framing; `Kafka.ConsumerTests`: the consumer polls it from the fake;
+  `Kafka.ProducerTests`: zstd refused at `Create`; integration: 2 tests on the zstd topic (a
+  gzip batch fetched back as the zstd batch the broker wrote; lz4 records produced and polled
+  over TLS); `tools/interop.py` runs Java to library with zstd too, `kafka-dump-log.sh` saying
+  every batch is zstd.
+
+**Checked:** while writing, 2 080 frames from libzstd (levels -7 to 22, with and without
+checksum and content size; streamed as Java writes; flushed into a block per few KB, so that
+blocks reuse the tables before them; two frames with a skippable one between; a 4 MiB window),
+over 40 inputs from empty to 2.8 MB, each decoded to the bytes given; Java's own frame to the
+same 176 306 bytes as libzstd. A fuzz of 400 000 corrupt inputs (100 frames, five kinds of
+change) against a copy of the unit built with range and overflow checks on (XXH64 excepted,
+which wraps on purpose): every one decoded or raised `EKafkaCompression`, nothing outside its
+data (a lighter version of it is a unit test). Eight mutations each fail at least one test:
+the second repeat offset not swapped (5 tests), no shift of the repeat offsets after a sequence
+with no literals (7), the states updated in the wrong order (7), the last Huffman weight taken
+from the wrong state (2), a match reaching into the frame before (1), 4 Huffman streams split
+by rounding down (4), the repeat offsets reset per block (3), and the literal and match
+lengths' extra bits read in the wrong order (1); that last one failed none at first, since no
+vector had a sequence where both lengths take extra bits, and one was added. Speed: about 300
+MB/s of output (FPC `-O2`, Windows x64, a 2.8 MB frame of text, random bytes and words).
+
+**Measured:** FPC 3.2.2 Windows x64: 321 unit and 44 integration tests, the interoperability
+test (gzip, snappy and lz4 in both directions, zstd from Java to the library, the group) and
+both samples, 0 leaks. Linux (Docker): the same, the interoperability test and both samples
+too, and both suites 5 times in three containers at once with `--cpus=1` (30 runs). Delphi 12
+Win32 and Win64: 321 and 44, 0 leaks; the interoperability test (zstd from Java too) and both
+samples with the Delphi programs.
+
+**Decided while writing:**
+
+- **A unit of its own**, where step 3 kept snappy and lz4 in `Kafka.Compression`: the decoder
+  (1 270 lines) would nearly double that unit and shares nothing with the other codecs but the
+  idea of a bounded output. It is listed in the packages and every project file.
+- **Bytes after the last frame are refused.** Java refuses them too unless they are the start
+  of a magic number, which it ignores (libzstd checks the prefix of a header it hasn't had
+  whole, and the stream ends where Java's `frameFinished` says); no producer writes either.
+  The same choice as snappy's and lz4's trailing bytes in step 3.
+- **The 128 MiB window is refused although this decoder doesn't need it**: it keeps the whole
+  output (one batch, bounded by `AMaxSize`) and uses the window only for the block maximum,
+  the window or 128 KiB, as libzstd. Refusing it keeps this consumer from reading what a Java
+  consumer can't.
+- **A match's offset is checked against the frame's output, not the window**, as libzstd's
+  single-pass decoder (librdkafka's): a frame can't reach into the one before it.
+- **Huffman codes of up to 12 bits**, as libzstd's `HUF_TABLELOG_MAX` (the RFC says 11), and
+  libzstd's own check that the symbols of weight 1 are an even number, at least two.
+- **The limit before the allocation**: a frame that says its content size is refused from its
+  header when that is above `AMaxSize`; one that doesn't grows its output block by block, each
+  reserved against the limit first.
+
+**Found on the way:** python zstandard's `decompressobj` stops at the end of the first frame
+and keeps the rest as unused data: it "accepted" bytes after a frame, and would read only one of
+several. What Java does was read in libzstd's source instead (CLAUDE.md, gotcha 23). Gotcha 17
+three more times: a backslash-n and shell line continuations in heredoc edits.
+
 ## 8. Open questions
 
 1. **First real user:** which broker (Apache 4.x? Confluent Cloud? MSK? Redpanda?). It decides
@@ -1275,7 +1377,9 @@ heredoc became a line break.
      dependency (the criterion), and the cost is the decoder alone.
 
    K3's step 4 is C: the zstd decoder in Pascal; the producer keeps refusing zstd (so
-   `KafkaCompressionSupported` will need to tell reading from writing).
+   `KafkaCompressionSupported` will need to tell reading from writing). *Done 2026-11-03*
+   (`Kafka.Compression.Zstd`; `KafkaDecompressionSupported` for reading). Writing, when a user
+   asks: A or B's encoder, as above.
 3. **Version of the JSON definitions** for the generator: the latest stable 4.x on the day K1
    starts. *Answered 2026-11-02: 4.4.0* (the user chose it; 4.3.2 was the other candidate). The
    broker in `docker/` runs the same tag.

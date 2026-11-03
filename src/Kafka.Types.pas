@@ -16,9 +16,9 @@
         EKafkaTls                handshake, certificate, TLS library missing
       EKafkaTimeout              a request got no response in time
       EKafkaProtocol             bytes that don't follow the protocol
-      EKafkaCompression          a codec the library doesn't have (zstd
-                                 until K3's step 4), or compressed data
-                                 that doesn't decompress
+      EKafkaCompression          a codec the library doesn't write (zstd,
+                                 which it reads), or compressed data that
+                                 doesn't decompress
       EKafkaUnsupportedVersion   no version both sides know, or a field that
                                  a version can't carry
       EKafkaWakeup               a consumer's Poll ended by Wakeup

@@ -37,6 +37,7 @@ uses
   PascalCommon.Threading,
   Kafka.Types,
   Kafka.Protocol.Primitives,
+  Kafka.Compression.Zstd,
   Kafka.Compression,
   Kafka.Sasl,
   Kafka.Connection,

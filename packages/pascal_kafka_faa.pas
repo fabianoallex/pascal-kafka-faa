@@ -8,7 +8,7 @@ unit pascal_kafka_faa;
 interface
 
 uses
-  Kafka.Types, Kafka.Protocol.Crc32c, Kafka.Protocol.Primitives, Kafka.Protocol.Envelope, Kafka.Compression, Kafka.Protocol.RecordBatch, Kafka.Errors, Kafka.Messages.Apis, Kafka.Messages.ApiVersions, Kafka.Messages.Metadata, Kafka.Messages.Produce, Kafka.Messages.Fetch, Kafka.Messages.ListOffsets, Kafka.Messages.SaslHandshake, Kafka.Messages.SaslAuthenticate, Kafka.Messages.FindCoordinator, Kafka.Messages.ConsumerGroupHeartbeat, Kafka.Messages.OffsetCommit, Kafka.Messages.OffsetFetch, Kafka.Messages.ConsumerGroupDescribe, Kafka.Messages.InitProducerId, Kafka.Transport, Kafka.Sasl, Kafka.Connection, Kafka.Partitioner, Kafka.Cluster, Kafka.Producer, Kafka.Consumer, Kafka.Group, Kafka.Group.Coordinator, Kafka.Group.Consumer;
+  Kafka.Types, Kafka.Protocol.Crc32c, Kafka.Compression.Zstd, Kafka.Protocol.Primitives, Kafka.Protocol.Envelope, Kafka.Compression, Kafka.Protocol.RecordBatch, Kafka.Errors, Kafka.Messages.Apis, Kafka.Messages.ApiVersions, Kafka.Messages.Metadata, Kafka.Messages.Produce, Kafka.Messages.Fetch, Kafka.Messages.ListOffsets, Kafka.Messages.SaslHandshake, Kafka.Messages.SaslAuthenticate, Kafka.Messages.FindCoordinator, Kafka.Messages.ConsumerGroupHeartbeat, Kafka.Messages.OffsetCommit, Kafka.Messages.OffsetFetch, Kafka.Messages.ConsumerGroupDescribe, Kafka.Messages.InitProducerId, Kafka.Transport, Kafka.Sasl, Kafka.Connection, Kafka.Partitioner, Kafka.Cluster, Kafka.Producer, Kafka.Consumer, Kafka.Group, Kafka.Group.Coordinator, Kafka.Group.Consumer;
 
 implementation
 

@@ -11,9 +11,9 @@
   drives both; each side checks what it can see.
 
     KafkaInterop consume <bootstrap> <topic> <fixture>
-      Java produced the fixture (the console producer, with gzip, snappy or
-      lz4: the script checks the codec in the broker's log); this reads
-      every partition from the start and checks each record against its
+      Java produced the fixture (the console producer, with gzip, snappy,
+      lz4 or zstd: the script checks the codec in the broker's log); this
+      reads every partition from the start and checks each record against its
       line: key (null or bytes), value, headers in order (a null value too),
       a CreateTime timestamp, the partition Java's partitioner chose for a
       keyed record (KafkaPartitionForKey: the same murmur2), and the

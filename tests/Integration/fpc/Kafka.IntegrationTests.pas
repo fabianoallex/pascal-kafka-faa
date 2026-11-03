@@ -22,7 +22,11 @@
   produced to partition 0 and fetched back from the offset the broker gave
   it, in plaintext (uncompressed and snappy) and over TLS (gzip and lz4);
   the broker decompresses a batch to check it before it writes it, so a
-  compressed batch it took is one Java's codecs read. ListOffsets sees the
+  compressed batch it took is one Java's codecs read. zstd, which this
+  library reads but doesn't write, comes from the broker: on a topic with
+  compression.type=zstd (pascal-kafka-faa-it-zstd, created by
+  docker/kafka-start.sh) it compresses every batch again with Java's zstd
+  (zstd-jni), and the test fetches that batch back. ListOffsets sees the
   partition's end move. With acks=0 the broker sends no answer: the test
   asks for the partition's end first, then a Fetch from there with a
   MaxWaitMs, which the broker holds until the record arrives (no Sleep). Each
@@ -43,7 +47,8 @@
 
   The consumer (Kafka.Consumer): every partition assigned and sought to
   its end, then records from the producer (keyed; gzip, snappy, and lz4
-  over TLS; and uncompressed over TLS)
+  over TLS; and uncompressed over TLS; and on the zstd topic, over TLS,
+  as the broker compressed them)
   polled back: each where the producer's report said, in order, with key,
   value and headers; a record produced from another thread while the
   consumer polls.
@@ -101,14 +106,17 @@ type
     function Open(const AParams: TKafkaConnectionParams): TKafkaConnection;
     procedure OpenFConnection;
     function ReadTopic(AConnection: TKafkaConnection): TKafkaMetadataResponse;
+    function ReadTopicNamed(AConnection: TKafkaConnection; const ATopic: string;
+      AAutoCreate: Boolean; const AHint: string): TKafkaMetadataResponse;
     procedure CheckTopic(const R: TKafkaMetadataResponse; AExpectedPort: Integer);
     function OpenSslMissing(const AParams: TKafkaConnectionParams): Boolean;
     procedure ProduceAndFetchBack(ACodec: TKafkaCompression);
     function NewCluster(const ABootstrap: string; ATls: Boolean): TKafkaCluster;
     function NewProducer(ATls: Boolean; AAcks: TKafkaAcks;
       ACodec: TKafkaCompression): TKafkaProducer;
-    function NewConsumer(ATls: Boolean): TKafkaConsumer;
-    procedure ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression);
+    function NewConsumer(ATls: Boolean; const ATopic: string; APartitions: Integer): TKafkaConsumer;
+    procedure ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression;
+      const ATopic: string; APartitions: Integer);
     function FetchRecordAt(APartition: Int32; AOffset: Int64; out ACodec: TKafkaCompression): TKafkaRecord;
   protected
     procedure TearDown; override;
@@ -125,6 +133,7 @@ type
     procedure Tls_ProducesAndFetchesBackGzip;
     procedure Plaintext_ProducesAndFetchesBackSnappy;
     procedure Tls_ProducesAndFetchesBackLz4;
+    procedure Plaintext_FetchesTheBatchTheBrokerCompressedWithZstd;
     procedure Plaintext_AcksZero_TheFetchWaitsForTheRecord;
     procedure Cluster_BootstrapsPastABadAddress_LeadersOnOneConnection;
     procedure Cluster_Tls_LeaderConnectionsUseTls;
@@ -137,6 +146,7 @@ type
     procedure Consumer_PollsWhatTheProducerSent_Snappy;
     procedure Consumer_Tls_PollsWhatTheProducerSent_Lz4;
     procedure Consumer_Tls_PollsWhatTheProducerSent;
+    procedure Consumer_Tls_PollsWhatTheBrokerCompressedWithZstd;
     procedure Consumer_RecordProducedFromAnotherThread_IsPolled;
   end;
 
@@ -144,6 +154,10 @@ implementation
 
 const
   TOPIC = 'pascal-kafka-faa-it';
+  // compression.type=zstd, one partition: docker/kafka-start.sh creates it.
+  ZSTD_TOPIC = 'pascal-kafka-faa-it-zstd';
+  ZSTD_TOPIC_HINT = ' (docker/kafka-start.sh creates it when the broker starts: recreate ' +
+    'the container, docker compose -f docker/docker-compose.yml up -d --force-recreate)';
 
 type
   /// Sends one record with value AMarker, from its own thread.
@@ -404,6 +418,12 @@ begin
 end;
 
 function TKafkaIntegrationTests.ReadTopic(AConnection: TKafkaConnection): TKafkaMetadataResponse;
+begin
+  Result := ReadTopicNamed(AConnection, TOPIC, True, '');
+end;
+
+function TKafkaIntegrationTests.ReadTopicNamed(AConnection: TKafkaConnection;
+  const ATopic: string; AAutoCreate: Boolean; const AHint: string): TKafkaMetadataResponse;
 var
   Deadline: TDateTime;
   Pause: TEvent;
@@ -412,7 +432,7 @@ begin
   Pause := TEvent.Create(nil, True, False, '');
   try
     repeat
-      Result := AConnection.Metadata(TopicRequest(TOPIC, True));
+      Result := AConnection.Metadata(TopicRequest(ATopic, AAutoCreate));
       if (Length(Result.Topics) = 1) and (Result.Topics[0].ErrorCode = 0) and
          (Length(Result.Topics[0].Partitions) > 0) and
          (Result.Topics[0].Partitions[0].LeaderId >= 0) then
@@ -422,8 +442,8 @@ begin
   finally
     Pause.Free;
   end;
-  TAssert.Fail(Format('Topic %s not ready in 30 s (error %s)',
-    [TOPIC, KafkaErrorText(Result.Topics[0].ErrorCode)]));
+  TAssert.Fail(Format('Topic %s not ready in 30 s (error %s)%s',
+    [ATopic, KafkaErrorText(Result.Topics[0].ErrorCode), AHint]));
 end;
 
 procedure TKafkaIntegrationTests.CheckTopic(const R: TKafkaMetadataResponse; AExpectedPort: Integer);
@@ -616,6 +636,28 @@ procedure TKafkaIntegrationTests.Tls_ProducesAndFetchesBackLz4;
 begin
   Open(Tls(tbDefault, 'ca_cert.pem'));
   ProduceAndFetchBack(kcLz4);
+end;
+
+procedure TKafkaIntegrationTests.Plaintext_FetchesTheBatchTheBrokerCompressedWithZstd;
+var
+  TopicId: TKafkaUuid;
+  M: string;
+  Rsp: TKafkaProduceResponse;
+  P: TKafkaProduceResponsePartitionProduceResponse;
+  Batch: TKafkaRecordBatch;
+begin
+  Open(Plain);
+  TopicId := ReadTopicNamed(FConnection, ZSTD_TOPIC, False, ZSTD_TOPIC_HINT).Topics[0].TopicId;
+  M := Marker;
+  // gzip in: the topic's compression.type has the broker write it again
+  // with zstd, through Java's zstd-jni.
+  Rsp := FConnection.Produce(ProduceRequest(TopicId, MarkedBatch(M, kcGzip), -1));
+  P := Rsp.Responses[0].PartitionResponses[0];
+  TAssert.AssertEquals('Produce error', 0, Integer(P.ErrorCode));
+  Batch := FetchedBatch(FConnection, TopicId, P.BaseOffset, 0);
+  TAssert.AssertEquals('the broker wrote zstd' + ZSTD_TOPIC_HINT, Ord(kcZstd),
+    Ord(Batch.Compression));
+  CheckMarkedBatch(M, Batch);
 end;
 
 procedure TKafkaIntegrationTests.Plaintext_AcksZero_TheFetchWaitsForTheRecord;
@@ -902,12 +944,13 @@ begin
   F := nil;
 end;
 
-function TKafkaIntegrationTests.NewConsumer(ATls: Boolean): TKafkaConsumer;
+function TKafkaIntegrationTests.NewConsumer(ATls: Boolean; const ATopic: string;
+  APartitions: Integer): TKafkaConsumer;
 var
   P: TKafkaConsumerParams;
   Ends: TKafkaInt64Array;
   I: Integer;
-  All: array[0..2] of TKafkaTopicPartition;
+  All: TKafkaTopicPartitionArray;
 begin
   if ATls then
   begin
@@ -924,17 +967,20 @@ begin
   FreeAndNil(FConsumer);
   FConsumer := TKafkaConsumer.Create(P);
   FConsumer.Open;
-  for I := 0 to 2 do
-    All[I] := KafkaTopicPartition(TOPIC, I);
+  All := nil;
+  SetLength(All, APartitions);
+  for I := 0 to APartitions - 1 do
+    All[I] := KafkaTopicPartition(ATopic, I);
   FConsumer.Assign(All);
   // From the end: only what this test produces, whatever earlier runs left.
   Ends := FConsumer.EndOffsets(All);
-  for I := 0 to 2 do
-    FConsumer.Seek(TOPIC, I, Ends[I]);
+  for I := 0 to APartitions - 1 do
+    FConsumer.Seek(ATopic, I, Ends[I]);
   Result := FConsumer;
 end;
 
-procedure TKafkaIntegrationTests.ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression);
+procedure TKafkaIntegrationTests.ProduceAndConsume(ATls: Boolean; ACodec: TKafkaCompression;
+  const ATopic: string; APartitions: Integer);
 const
   N = 40;
 var
@@ -944,17 +990,17 @@ var
   Rec: TKafkaProducerRecord;
   Got: TKafkaConsumerRecordArray;
   Mine: array of TKafkaConsumerRecord;
-  Last: array[0..2] of Int64;
+  Last: array of Int64;
   I, K, Count: Integer;
   Deadline: UInt64;
   Found: Boolean;
 begin
-  NewConsumer(ATls);
+  NewConsumer(ATls, ATopic, APartitions);
   NewProducer(ATls, kaAll, ACodec);
   M := Marker;
   for I := 0 to N - 1 do
   begin
-    Rec := KafkaProducerRecord(TOPIC, PcStringToUtf8Bytes(M + '-key-' + IntToStr(I mod 5)),
+    Rec := KafkaProducerRecord(ATopic, PcStringToUtf8Bytes(M + '-key-' + IntToStr(I mod 5)),
       PcStringToUtf8Bytes(M + ' ' + IntToStr(I)));
     SetLength(Rec.Headers, 1);
     Rec.Headers[0].Key := 'n';
@@ -981,7 +1027,9 @@ begin
       end;
   end;
   TAssert.AssertEquals('all polled', N, Count);
-  for I := 0 to 2 do
+  Last := nil;
+  SetLength(Last, APartitions);
+  for I := 0 to APartitions - 1 do
     Last[I] := -1;
   for K := 0 to Count - 1 do
   begin
@@ -1007,22 +1055,31 @@ end;
 
 procedure TKafkaIntegrationTests.Consumer_PollsWhatTheProducerSent_Gzip;
 begin
-  ProduceAndConsume(False, kcGzip);
+  ProduceAndConsume(False, kcGzip, TOPIC, 3);
 end;
 
 procedure TKafkaIntegrationTests.Consumer_PollsWhatTheProducerSent_Snappy;
 begin
-  ProduceAndConsume(False, kcSnappy);
+  ProduceAndConsume(False, kcSnappy, TOPIC, 3);
 end;
 
 procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheProducerSent_Lz4;
 begin
-  ProduceAndConsume(True, kcLz4);
+  ProduceAndConsume(True, kcLz4, TOPIC, 3);
 end;
 
 procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheProducerSent;
 begin
-  ProduceAndConsume(True, kcNone);
+  ProduceAndConsume(True, kcNone, TOPIC, 3);
+end;
+
+procedure TKafkaIntegrationTests.Consumer_Tls_PollsWhatTheBrokerCompressedWithZstd;
+begin
+  // The producer sends lz4; the topic's compression.type has the broker
+  // write zstd, which the consumer reads.
+  Open(Plain);
+  ReadTopicNamed(FConnection, ZSTD_TOPIC, False, ZSTD_TOPIC_HINT);
+  ProduceAndConsume(True, kcLz4, ZSTD_TOPIC, 1);
 end;
 
 procedure TKafkaIntegrationTests.Consumer_RecordProducedFromAnotherThread_IsPolled;
@@ -1034,7 +1091,7 @@ var
   Seen: Boolean;
   I: Integer;
 begin
-  NewConsumer(False);
+  NewConsumer(False, TOPIC, 3);
   NewProducer(False, kaAll, kcNone);
   M := Marker;
   Producer := TProducerOnFetch.Create(FProducer, TOPIC, M);

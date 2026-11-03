@@ -70,6 +70,7 @@
         </DelphiCompile>
         <DCCReference Include="..\..\src\Kafka.Types.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Crc32c.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Compression.Zstd.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Primitives.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Envelope.pas"/>
         <DCCReference Include="..\..\src\Kafka.Compression.pas"/>
@@ -118,6 +119,7 @@
         <DCCReference Include="Kafka.ProduceFetchTests.pas"/>
         <DCCReference Include="Kafka.RecordBatchTests.pas"/>
         <DCCReference Include="Kafka.CompressionTests.pas"/>
+        <DCCReference Include="Kafka.ZstdTests.pas"/>
         <DCCReference Include="Kafka.PartitionerTests.pas"/>
         <DCCReference Include="Kafka.ClusterTests.pas"/>
         <DCCReference Include="Kafka.ProducerTests.pas"/>

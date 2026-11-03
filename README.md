@@ -6,7 +6,7 @@ time.
 
 **Status: early, not released.** Phases K1, K2 and the start of K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, snappy and lz4 (in Pascal, both
-directions), murmur2 partitioning compatible
+directions) and zstd (read, in Pascal; not written yet), murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer (idempotent by default), and the consumer with partitions
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
@@ -188,7 +188,8 @@ empty value) read by this library field by field, each keyed record in the parti
 murmur2 implementations agree on; and records this library sends read back by the Java console
 consumer with the same timestamp, partition, offset, headers, key and value, every batch of the
 codec sent with a valid CRC according to `kafka-dump-log.sh`. Both directions run with gzip,
-snappy and lz4; zstd isn't there yet. It also puts the Java console consumer
+snappy and lz4; zstd runs from Java to this library, which reads zstd and doesn't write it. It
+also puts the Java console consumer
 (`group.protocol=consumer`) and this library's consumer in one group: they split the topic's
 partitions, hand them over through their commits, and read every record once.
 

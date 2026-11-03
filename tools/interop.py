@@ -25,7 +25,8 @@ fpc/KafkaInteropFpc.lpr), given here as a command (--pascal).
                     sees it.
 
   Both directions run once per codec: gzip, snappy (Java's xerial framing)
-  and lz4 (the KIP-57 frame).
+  and lz4 (the KIP-57 frame). zstd runs Java -> library only: the library
+  reads zstd and doesn't write it (docs/design.md, open question 2).
 
   one group         the Java console consumer (group.protocol=consumer, the
                     KIP-848 protocol) joins a group on a topic of 6
@@ -39,9 +40,9 @@ fpc/KafkaInteropFpc.lpr), given here as a command (--pascal).
                     program's only from its partitions, and nothing of its
                     partitions read again by Java after it left.
 
-Seven new topics per run (interop-java-<codec>-<n>, interop-pascal-<codec>-<n>
-for each codec, interop-group-<n>), deleted when the run passes and kept for
-a look when it fails.
+Eight new topics per run (interop-java-<codec>-<n> for each codec,
+interop-pascal-<codec>-<n> for those the library writes, interop-group-<n>),
+deleted when the run passes and kept for a look when it fails.
 
     python -I tools/interop.py --pascal tests/Interop/fpc/KafkaInteropFpc.exe
     python -I tools/interop.py --pascal "docker exec interop-runner /t/interop" \\
@@ -102,6 +103,8 @@ def fixture_records():
 
 
 CODECS = ("gzip", "snappy", "lz4")
+# Read by the library, not written: Java -> library only.
+READ_ONLY_CODECS = ("zstd",)
 
 
 def check_log(args, topic, codec, count):
@@ -314,6 +317,7 @@ def main():
     rows = fixture_records()
     stamp = f"{int(time.time() * 1000)}"
     topics = ([f"interop-{side}-{codec}-{stamp}" for codec in CODECS for side in ("java", "pascal")]
+              + [f"interop-java-{codec}-{stamp}" for codec in READ_ONLY_CODECS]
               + [f"interop-group-{stamp}"])
     try:
         for t in topics:
@@ -326,6 +330,8 @@ def main():
         for i, codec in enumerate(CODECS):
             java_to_pascal(args, pascal, topics[2 * i], codec, rows)
             pascal_to_java(args, pascal, topics[2 * i + 1], codec, rows)
+        for i, codec in enumerate(READ_ONLY_CODECS):
+            java_to_pascal(args, pascal, topics[2 * len(CODECS) + i], codec, rows)
         group_interop(args, pascal, topics[-1])
     except Failure as e:
         print(f"FAIL {e}\n(topics kept: {', '.join(topics)})")
@@ -333,7 +339,8 @@ def main():
     for t in topics:
         broker(args.container, BIN + "kafka-topics.sh", "--bootstrap-server", args.bootstrap,
                "--delete", "--topic", t)
-    print(f"interop: both directions with {', '.join(CODECS)}, and the shared group OK")
+    print(f"interop: both directions with {', '.join(CODECS)}, Java -> library with "
+          f"{', '.join(READ_ONLY_CODECS)}, and the shared group OK")
     return 0
 
 

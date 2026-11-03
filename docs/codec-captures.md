@@ -313,6 +313,48 @@ the two topics: one batch of 4 records each, `compresscodec: snappy` (4 028 byte
 and three chunks; the lz4 one a frame with FLG 60, BD 40, header checksum 82 and two blocks, no
 checksums.
 
+## zstd: the Java producer's batch (2026-11-03, same file)
+
+Through the capture listener, as the snappy and lz4 batches above, with their four records and
+a fifth, `size:text` / `k5` / `record %d of a batch, key=k%d; ` for 0 to 2999 (96 KB of text),
+so that Java writes Huffman literals, FSE tables and more than one zstd block (128 KiB each).
+The script that ran was a file (gotcha 17), `.ci/zstd/capture_zstd.sh`:
+
+```sh
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.capture.yml up -d --wait
+python -c "
+long = 'the long value: ' + 'abcdefghij' * 8000
+text = ''.join('record %d of a batch, key=k%d; ' % (i, i % 17) for i in range(3000))
+with open('.ci/zstd/records.txt', 'w', encoding='utf-8', newline='\n') as f:
+    f.write('trace:00-abc-01,lang:pt\tk1\tolá mundo\n')
+    f.write('trace:00-def-01\tk2\tsecond value\n')
+    f.write('empty:NULL\tNULL\tnull key, null header value\n')
+    f.write('size:long\tk4\t' + long + '\n')
+    f.write('size:text\tk5\t' + text + '\n')
+"
+docker exec pascal-kafka-faa-broker /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --topic captured-java-zstd --partitions 1
+python -I tools/capture_proxy.py --listen 19092 --target localhost:9095 --out .ci/cap-zstd.jsonl &
+docker exec -i pascal-kafka-faa-broker /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server host.docker.internal:19092 --topic captured-java-zstd --compression-codec zstd \
+  --reader-property parse.key=true --reader-property parse.headers=true \
+  --reader-property null.marker=NULL --producer-property linger.ms=200 \
+  --producer-property batch.size=262144 < .ci/zstd/records.txt
+kill %1
+python -I tools/captures_from_proxy.py --in .ci/cap-zstd.jsonl --conn 2 --apis produce \
+  --prefix java-producer-zstd --source "java kafka-console-producer.sh 4.4.0, --compression-codec zstd" \
+  --out tests/data/captures-4.4.0.jsonl
+python tools/gen_test_captures.py
+docker compose -f docker/docker-compose.yml up -d --wait
+```
+
+276 frames. The console producer loaded zstd-jni 1.5.7-17 (its JNI warning names the jar);
+`kafka-dump-log.sh`: one batch of 5 records, `compresscodec: zstd`, 4 790 bytes, `isvalid:
+true`. The frame, 4 729 bytes: descriptor 00 (no single segment, no content size, no checksum,
+no dictionary), window descriptor 58 (2 MiB), two compressed blocks (4 Huffman streams, FSE
+tables) and an empty raw block marked last, which the stream's end writes; 176 306 bytes once
+decoded, the same by libzstd (python zstandard) and by this library.
+
 ## Partitions: the Java producer's choice for each key (2026-11-02)
 
 `tests/data/partitions-java-4.4.0.tsv`: 70 keys and the partition the Java console producer
@@ -371,7 +413,9 @@ struct.
 `Kafka.ProduceFetchTests` also decodes the Java snappy and lz4 batches to the four records
 sent, checks their framing (xerial's header and 32 KiB chunks; the lz4 frame's descriptor and
 blocks) and compresses them again with this library; `Kafka.ConsumerTests` polls them from the
-fake broker as Java wrote them (`AppendRawBatch`).
+fake broker as Java wrote them (`AppendRawBatch`). The same for the zstd batch and its five
+records (its frame header and blocks), but for compressing it again: the library doesn't write
+zstd.
 
 `Kafka.ProducerIdMessagesTests`: the hand-built InitProducerId requests and idempotent Produce
 requests (their batches with `TKafkaRecordBatch`) rebuilt from the generated records encode to

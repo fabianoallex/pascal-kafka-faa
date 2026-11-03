@@ -72,6 +72,7 @@
         <DCCReference Include="..\..\src\Kafka.Protocol.Crc32c.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Primitives.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.Envelope.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Compression.Zstd.pas"/>
         <DCCReference Include="..\..\src\Kafka.Compression.pas"/>
         <DCCReference Include="..\..\src\Kafka.Protocol.RecordBatch.pas"/>
         <DCCReference Include="..\..\src\Kafka.Errors.pas"/>

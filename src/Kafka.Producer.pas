@@ -819,7 +819,9 @@ begin
       'plus the request timeout (%d)', [FParams.DeliveryTimeoutMs, FParams.LingerMs,
       FRequestTimeoutMs]);
   if not KafkaCompressionSupported(FParams.Compression) then
-    raise EArgumentException.Create('This compression codec isn''t supported yet');
+    raise EArgumentException.CreateFmt('Compression %s can''t be written yet (this ' +
+      'library reads it; none, gzip, snappy and lz4 are written)',
+      [KafkaCompressionName(FParams.Compression)]);
   // Java's ProducerConfig.postProcessAndValidateIdempotenceConfigs.
   case FParams.Idempotence of
     kidOff:

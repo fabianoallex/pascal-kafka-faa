@@ -126,15 +126,20 @@ first).
   (`LoseProduceAnswers` writes a batch and loses its answer; `StoredBatches`):
   `Kafka.IdempotentProducerTests`. `ReleaseHeldProduce` answers in arrival order, the ones
   that came meanwhile too (a broker answers a connection in order).
-- **The codecs' vectors** (`Kafka.CompressionTests`): hex constants written by
-  `tools/codec_vectors.py` with the reference libraries (cramjam, lz4, xxhash for Python, in a
-  venv of their own: the build never needs them). The Java producer's own snappy and lz4
-  batches are captures (`docs/codec-captures.md`).
+- **The codecs' vectors** (`Kafka.CompressionTests`; `Kafka.ZstdTests`, from
+  `tools/codec_vectors.py zstd`): hex constants written by `tools/codec_vectors.py` with the
+  reference libraries (cramjam, lz4, xxhash and zstandard for Python, in a venv of their own:
+  the build never needs them). The Java producer's own snappy, lz4 and zstd batches are
+  captures (`docs/codec-captures.md`). zstd is read, not written (`KafkaCompressionSupported`
+  is writing, `KafkaDecompressionSupported` reading).
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
   SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
   bob-secret): `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
-  file needs the container recreated (`up -d` does it).
+  file needs the container recreated (`up -d` does it; a change to `docker/kafka-start.sh`
+  alone needs `up -d --force-recreate`). `kafka-start.sh` creates the topic
+  `pascal-kafka-faa-it-zstd` (`compression.type=zstd`) and the healthcheck waits for it: the
+  broker writes zstd there with Java's codec, which is where the integration suite gets zstd.
 - **`Kafka.TestProxy`** (integration): relays a real broker's connections, rewrites
   Metadata's brokers to itself (gotcha 9), loses Produce answers on request, counts the Produce
   requests in flight; `Kafka.IdempotenceIntegrationTests` (K3's criterion) runs through it.
@@ -257,3 +262,13 @@ first).
 22. **librdkafka writes raw snappy**, with no xerial framing (`rd_kafka_snappy_compress_slice`);
     Java writes xerial's. A reader must take both, told apart by xerial's magic (16 bytes or
     more starting with `82 53 4E 41 50 50 59 00`).
+23. **python zstandard's `decompressobj` stops at the end of the first frame** and keeps the
+    rest as unused data: it reads one frame of several and "accepts" bytes after it. Java's
+    stream (zstd-jni over `ZSTD_decompressStream`) reads every frame and refuses bytes after
+    the last one unless they start a magic number. `ZstdDecompressor().decompress` reads one
+    frame too. Check Java's behaviour in libzstd's source, not with python zstandard.
+24. **Java's zstd frames have no content size**: its producer writes through a stream of
+    unknown size, so the frame has a window descriptor (2 MiB at level 3), no
+    Frame_Content_Size and no checksum, and ends with an empty raw block. librdkafka and Python
+    write the content size. A decoder bounded by the content size alone would allocate
+    nothing up front for Java's batches: the limit has to hold block by block too.

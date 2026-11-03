@@ -317,14 +317,14 @@ end;
 
 procedure TKafkaMessagesTests.Captures_AreThere;
 begin
-  // A request and a response each: 23 Java exchanges (5 of them SASL, 6
-  // of a consumer group, 3 of the idempotent producer, a snappy and an lz4
-  // Produce), and by hand 6
+  // A request and a response each: 24 Java exchanges (5 of them SASL, 6
+  // of a consumer group, 3 of the idempotent producer, a snappy, an lz4 and
+  // a zstd Produce), and by hand 6
   // ApiVersions, 14 Metadata, 11 Produce, 11 ListOffsets, 16 Fetch, 9 SASL,
   // 7 FindCoordinator, 9 OffsetCommit, 10 OffsetFetch, 4
   // ConsumerGroupHeartbeat, 2 ConsumerGroupDescribe, 7 InitProducerId and 8
   // idempotent Produce.
-  TAssert.AssertEquals(274, KAFKA_CAPTURE_COUNT);
+  TAssert.AssertEquals(276, KAFKA_CAPTURE_COUNT);
   TAssert.AssertEquals('4.4.0', KAFKA_CAPTURES[0].KafkaTag);
 end;
 

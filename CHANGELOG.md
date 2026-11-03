@@ -184,9 +184,26 @@ the sample against Confluent Cloud, has been run.
   libraries' vectors), the Java batches, the producer and consumer against the fake, the fake's
   `AppendRawBatch` (307 unit tests in all); 4 integration tests (42); `tools/interop.py` runs
   both directions with gzip, snappy and lz4, and checks the codec in the broker's log for both.
+- zstd, read (phase K3, step 4; `docs/design.md`, open question 2, option C):
+  `Kafka.Compression.Zstd`, a decoder in Pascal (RFC 8878: frames, skippable frames, raw, RLE
+  and compressed blocks, Huffman literals, FSE sequences, repeat offsets, the XXH64 checksum),
+  `KafkaZstdDecompress` and `KafkaXxHash64`. It refuses what Java 4.4.0's decoder (zstd-jni
+  1.5.7-17) refuses: a dictionary, a window above 128 MiB, zstd 0.x's legacy frames. Output
+  bounded as the other codecs'. `KafkaDecompress(kcZstd)` reads it, so the consumer reads zstd
+  batches with no change of its own. `KafkaDecompressionSupported` (every codec);
+  `KafkaCompressionSupported` now means writing, and is False for zstd. Captures: the Java
+  console producer's zstd batch (276 frames). Tests: `Kafka.ZstdTests` (10, against the
+  reference library's frames from `tools/codec_vectors.py zstd`, frames built by hand, what is
+  refused), the Java batch, the consumer against the fake (321 unit tests in all); 2
+  integration tests (44) on a topic with `compression.type=zstd`, which `docker/kafka-start.sh`
+  creates, so the broker compresses with Java's zstd; `tools/interop.py` runs Java to library
+  with zstd.
 
 ### Changed
 
+- **`Compression := kcZstd` raises `EArgumentException`** in `TKafkaProducer.Create` with a
+  message that says zstd is read but not written (it said "isn't supported yet"), and
+  `KafkaCompress(kcZstd)` raises `EKafkaCompression` saying the same.
 - **The producer is idempotent by default** (`Idempotence = kidAuto`, Java's default since
   3.0): with `Acks = kaAll` and `Retries > 0` it asks the broker for a producer id and keeps up
   to five batches of a partition in flight. A broker that refuses InitProducerId (an ACL

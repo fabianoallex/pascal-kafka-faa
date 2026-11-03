@@ -8,8 +8,8 @@
   - gzip: CRC-32 vectors, round trips of several sizes, members written by
     Python's gzip module with and without the optional header fields
     (FEXTRA, FNAME, FCOMMENT, FHCRC), and what is refused: a second member, a
-    wrong trailer, a cut, zlib data, output over the limit. zstd still
-    raises (K3's step 4).
+    wrong trailer, a cut, zlib data, output over the limit. zstd is read
+    but not written (its decoder's tests are Kafka.ZstdTests).
   - The batch: encode then decode gives the records back (null against
     empty, headers, timestamps out of order, gzip); decode then encode gives
     the broker's bytes back; the attribute bits; a corrupt byte, an old magic,
@@ -52,7 +52,7 @@ type
     [Test] procedure Gzip_CutShort_IsRefused;
     [Test] procedure Gzip_ZlibData_IsRefused;
     [Test] procedure Gzip_LargerThanTheLimit_IsRefused;
-    [Test] procedure Compression_Zstd_RaisesUntilK3Step4;
+    [Test] procedure Compression_Zstd_IsReadButNotWritten;
     [Test] procedure RecordBatch_EncodeThenDecode_GivesTheRecordsBack;
     [Test] procedure RecordBatch_Gzip_EncodeThenDecode;
     [Test] procedure RecordBatch_DecodeThenEncode_GivesTheBrokersBytesBack;
@@ -315,16 +315,20 @@ begin
   GunzipData;
 end;
 
-procedure TKafkaRecordBatchTests.Compression_Zstd_RaisesUntilK3Step4;
+procedure TKafkaRecordBatchTests.Compression_Zstd_IsReadButNotWritten;
 var
   Codec: TKafkaCompression;
 begin
   FData := Utf8('x');
   FCodec := kcZstd;
   TAssert.AssertFalse(KafkaCompressionName(FCodec), KafkaCompressionSupported(FCodec));
+  TAssert.AssertTrue(KafkaCompressionName(FCodec), KafkaDecompressionSupported(FCodec));
   TAssert.AssertException(EKafkaCompression, CompressData);
   for Codec := kcNone to kcLz4 do
+  begin
     TAssert.AssertTrue(KafkaCompressionName(Codec), KafkaCompressionSupported(Codec));
+    TAssert.AssertTrue(KafkaCompressionName(Codec), KafkaDecompressionSupported(Codec));
+  end;
   TAssert.AssertEquals('zstd', KafkaCompressionName(kcZstd));
   TAssert.AssertEquals(Ord(kcLz4), Ord(KafkaCompressionFromAttributes($0013)));
   TAssert.AssertException(EKafkaCompression, CodecFromBits5);

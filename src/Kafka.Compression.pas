@@ -2,9 +2,12 @@
 
 {$I kafka.inc}
 
-{ The record batch codecs: none, gzip, snappy and lz4, all in Pascal but
-  for the deflate underneath gzip; zstd raises EKafkaCompression until K3's
-  step 4 (docs/design.md, "K3 progress").
+{ The record batch codecs: none, gzip, snappy, lz4 and zstd, all in Pascal
+  but for the deflate underneath gzip. zstd is read only: its decoder is
+  Kafka.Compression.Zstd, and writing it raises EKafkaCompression until a
+  user asks for it (docs/design.md, open question 2, option C), so
+  KafkaCompressionSupported (writing) and KafkaDecompressionSupported
+  (reading) differ for it.
 
   The codec is the low three bits of a record batch's attributes
   (TKafkaCompression's ordinals are those values). What gets compressed is
@@ -63,13 +66,15 @@
   last 5 bytes are literals, no match starts in the last 12).
 
   Bytes after the end of what a reader expects (a second gzip member, bytes
-  after an lz4 frame's end mark, 1 to 3 bytes after the last snappy chunk)
-  are refused. Java ignores some of them; no producer writes them, and a
-  batch that has them is more likely corrupt than meant.
+  after an lz4 frame's end mark, 1 to 3 bytes after the last snappy chunk,
+  bytes after the last zstd frame) are refused. Java ignores some of them;
+  no producer writes them, and a batch that has them is more likely corrupt
+  than meant.
 
   Decompression stops at AMaxSize, checked before each piece of output is
   allocated, so a small payload that would inflate to gigabytes fails
-  without allocating them (the same care as Pipes.Compression). A snappy
+  without allocating them (the same care as Pipes.Compression; zstd's
+  decoder does the same). A snappy
   block declares its length first: a length above the limit, or above what
   the block's bytes could hold (no element gives more than 64 bytes for 3),
   fails before anything is allocated.
@@ -99,15 +104,19 @@ function KafkaCompressionName(ACodec: TKafkaCompression): string;
 /// The codec for attribute bits 0-2; EKafkaCompression for 5 to 7, which
 /// no Kafka version defines.
 function KafkaCompressionFromAttributes(AAttributes: Int16): TKafkaCompression;
-/// Whether this build can compress and decompress with ACodec.
+/// Whether this build can compress with ACodec (write batches with it):
+/// every codec but zstd.
 function KafkaCompressionSupported(ACodec: TKafkaCompression): Boolean;
+/// Whether this build can decompress ACodec (read batches with it): every
+/// codec.
+function KafkaDecompressionSupported(ACodec: TKafkaCompression): Boolean;
 
 /// AData compressed with ACodec; kcNone gives AData back.
-/// EKafkaCompression for a codec this build doesn't have.
+/// EKafkaCompression for a codec this build doesn't write (zstd).
 function KafkaCompress(ACodec: TKafkaCompression; const AData: TBytes): TBytes;
 /// AData decompressed with ACodec; kcNone gives AData back.
-/// EKafkaCompression for a codec this build doesn't have, for data that
-/// doesn't decompress, and for output larger than AMaxSize bytes.
+/// EKafkaCompression for data that doesn't decompress and for output
+/// larger than AMaxSize bytes.
 function KafkaDecompress(ACodec: TKafkaCompression; const AData: TBytes;
   AMaxSize: Integer): TBytes;
 
@@ -147,6 +156,7 @@ implementation
 
 uses
   Classes,
+  Kafka.Compression.Zstd,
   {$IFDEF FPC}
   ZStream
   {$ELSE}
@@ -447,10 +457,16 @@ begin
   Result := ACodec in [kcNone, kcGzip, kcSnappy, kcLz4];
 end;
 
+function KafkaDecompressionSupported(ACodec: TKafkaCompression): Boolean;
+begin
+  Result := ACodec in [kcNone, kcGzip, kcSnappy, kcLz4, kcZstd];
+end;
+
 procedure RaiseUnsupported(ACodec: TKafkaCompression);
 begin
-  raise EKafkaCompression.CreateFmt('Compression %s is not supported yet ' +
-    '(none, gzip, snappy and lz4 are)', [KafkaCompressionName(ACodec)]);
+  raise EKafkaCompression.CreateFmt('Compression %s can''t be written yet: this ' +
+    'library reads it but writes none, gzip, snappy and lz4',
+    [KafkaCompressionName(ACodec)]);
 end;
 
 function KafkaCompress(ACodec: TKafkaCompression; const AData: TBytes): TBytes;
@@ -475,8 +491,7 @@ begin
     kcSnappy: Result := KafkaSnappyDecompress(AData, AMaxSize);
     kcLz4: Result := KafkaLz4Decompress(AData, AMaxSize);
   else
-    Result := nil;
-    RaiseUnsupported(ACodec);
+    Result := KafkaZstdDecompress(AData, AMaxSize);
   end;
 end;
 

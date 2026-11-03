@@ -35,6 +35,7 @@ uses
   Kafka.ProduceFetchTests,
   Kafka.RecordBatchTests,
   Kafka.CompressionTests,
+  Kafka.ZstdTests,
   Kafka.PartitionerTests,
   Kafka.ClusterTests,
   Kafka.ProducerTests,

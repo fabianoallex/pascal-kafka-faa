@@ -17,6 +17,7 @@ uses
   DUnitX.TestFramework,
   Kafka.Types in '..\..\src\Kafka.Types.pas',
   Kafka.Protocol.Crc32c in '..\..\src\Kafka.Protocol.Crc32c.pas',
+  Kafka.Compression.Zstd in '..\..\src\Kafka.Compression.Zstd.pas',
   Kafka.Protocol.Primitives in '..\..\src\Kafka.Protocol.Primitives.pas',
   Kafka.Protocol.Envelope in '..\..\src\Kafka.Protocol.Envelope.pas',
   Kafka.Compression in '..\..\src\Kafka.Compression.pas',

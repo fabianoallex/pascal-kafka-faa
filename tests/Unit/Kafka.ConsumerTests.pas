@@ -10,6 +10,7 @@
     keeping the position of a partition it keeps.
   - Poll: the batches the Java producer compressed with snappy and lz4
     (captured), as Java wrote them, and this library's, in one partition;
+    Java's zstd batch (this library reads zstd, doesn't write it);
     records of two partitions on two brokers, each in order;
     MaxPollRecords; a control batch skipped; the long poll answered as soon
     as a record arrives; a timeout with nothing; Wakeup from another thread;
@@ -66,6 +67,7 @@ type
     [Test] procedure ResetNone_RaisesUntilSeek;
     [Test] procedure Seek_IntoACompressedBatch_StartsThere;
     [Test] procedure Poll_ReadsJavasSnappyAndLz4Batches_AndThisLibrarys;
+    [Test] procedure Poll_ReadsJavasZstdBatch;
     [Test] procedure SeekToBeginningAndEnd;
     [Test] procedure OutOfRange_ResetsToEarliest;
     [Test] procedure MaxPollRecords_SplitsAcrossPolls;
@@ -392,6 +394,35 @@ begin
     'olá mundo|second value|null key, null header value|[long]s0|s1|l0|l1|l2|', Got);
   TAssert.AssertTrue(R[2].KeyIsNull);
   TAssert.AssertEquals('lang', R[4].Headers[1].Key);
+end;
+
+procedure TKafkaConsumerTests.Poll_ReadsJavasZstdBatch;
+var
+  R: TKafkaConsumerRecordArray;
+begin
+  StartBrokers(1, [1]);
+  // The console producer's zstd batch (Kafka.ProduceFetchTests): five
+  // records, the last two 80 016 and 96 KB long; then one of this
+  // library's, gzip.
+  TAssert.AssertEquals(Int64(0), Broker(1).AppendRawBatch(TOPIC, 0,
+    ProduceRecords('java-producer-zstd-produce-v13')));
+  Broker(1).AppendBatch(TOPIC, 0, Batch(['g0', 'g1'], kcGzip));
+  FParams.AutoOffsetReset := korEarliest;
+  OpenConsumer;
+  FConsumer.Assign([KafkaTopicPartition(TOPIC, 0)]);
+  R := PollFor(7);
+  TAssert.AssertEquals(7, Length(R));
+  TAssert.AssertEquals('olá mundo', FromUtf8(R[0].Value));
+  TAssert.AssertEquals('second value', FromUtf8(R[1].Value));
+  TAssert.AssertTrue(R[2].KeyIsNull);
+  TAssert.AssertEquals('k4', FromUtf8(R[3].Key));
+  TAssert.AssertEquals(80016, Length(R[3].Value));
+  TAssert.AssertEquals('k5', FromUtf8(R[4].Key));
+  TAssert.AssertEquals('record 0 of a batch, key=k0; record 1',
+    Copy(FromUtf8(R[4].Value), 1, 37));
+  TAssert.AssertEquals('text', FromUtf8(R[4].Headers[0].Value));
+  TAssert.AssertEquals('g0', FromUtf8(R[5].Value));
+  TAssert.AssertEquals(Int64(6), R[6].Offset);
 end;
 
 procedure TKafkaConsumerTests.SeekToBeginningAndEnd;
