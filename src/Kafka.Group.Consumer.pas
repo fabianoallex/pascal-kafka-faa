@@ -74,14 +74,28 @@
   else raises EKafkaBrokerError at once: UNKNOWN_MEMBER_ID (the member is
   out of the group), the authorization errors, OFFSET_METADATA_TOO_LARGE.
 
+  CommitAsync queues the offsets for the heartbeat thread, which sends them
+  in order, one request at a time, each once (Java's commitAsync isn't
+  retried either: a retriable error fails the future with its code, and a
+  coordinator error has the coordinator looked up again for what follows).
+  A commit queued while the coordinator isn't known waits for the lookup.
+  Close fails what is still queued.
+
+  The poll timer (Java's max.poll.interval.ms, sent as the rebalance
+  timeout). Each Poll restarts it. A member in the group whose Poll wasn't
+  called within the rebalance timeout leaves: one heartbeat with epoch -1,
+  then it is stale, its partitions lost (a Lost event, not a revoke: the
+  coordinator may have given them away already, Java's transitionToStale).
+  The next Poll hands the event out and joins again with epoch 0. The
+  answer to the leave changes nothing.
+
   Threads. The heartbeat thread owns the protocol state, under the wait
   hub's lock (Kafka.Group); the consumer's thread takes the events, commits
   and leaves. Neither calls the other's code: the heartbeat thread only
   queues events and fires the Notify signal (TKafkaConsumerProtocolParams),
   which must be quick and not raise (an event's set, as the consumer's).
-  Not done yet: leaving and joining again when Poll isn't called within
-  the rebalance timeout (Java's max.poll.interval.ms check), static
-  membership (group.instance.id), regex subscriptions. }
+  The thread starts with Subscribe or the first CommitAsync. Not done yet:
+  static membership (group.instance.id), regex subscriptions. }
 
 interface
 
@@ -150,7 +164,14 @@ type
       constructor Create(AOwner: TKafkaConsumerProtocol);
     end;
 
-    TStep = (stWait, stExit, stAnswer, stTimedOut, stSend, stRefreshMetadata);
+    TStep = (stWait, stExit, stAnswer, stTimedOut, stSend, stRefreshMetadata,
+      stCommitSend, stCommitAnswer, stCommitTimedOut);
+
+    TQueuedCommit = record
+      Future: TKafkaCommitFuture;
+      Ref: IKafkaCommitFuture;
+    end;
+    TQueuedCommitArray = array of TQueuedCommit;
   private
     FCluster: TKafkaCluster;
     FParams: TKafkaConsumerProtocolParams;
@@ -190,6 +211,21 @@ type
     FInFlightBroker: IKafkaBrokerConnection;
     FInFlightVersion: Int16;
     FInFlightDeadline: UInt64;
+    FInFlightIsLeave: Boolean;
+    // The answer NextStep handed out was to a leave.
+    FAnswerIsLeave: Boolean;
+    // The poll timer.
+    FLastPollAt: UInt64;
+    FPollTimerExpired: Boolean;
+    // Asynchronous commits: queued (the first one may be in flight).
+    FCommits: TQueuedCommitArray;
+    FCommitInFlight: IKafkaResponseFuture;
+    FCommitBroker: IKafkaBrokerConnection;
+    FCommitVersion: Int16;
+    FCommitDeadline: UInt64;
+    FCommitNextAt: UInt64;
+    // The queued commit FCommitInFlight carries (identity only).
+    FCommitSent: TKafkaCommitFuture;
     // Reconciliation.
     FTarget: TAssignment;
     FCurrent: TAssignment;
@@ -218,7 +254,18 @@ type
       const ABroker: IKafkaBrokerConnection; AVersion: Int16);
     procedure HeartbeatFailed(const AReason: string);
     procedure RefreshMetadata;
+    procedure SendCommit;
+    procedure HandleCommitAnswer(const AFuture: IKafkaResponseFuture;
+      const ABroker: IKafkaBrokerConnection; AVersion: Int16; ATimedOut: Boolean);
+    function BuildCommit(const AOffsets: TKafkaCommittedOffsetArray;
+      const ABroker: IKafkaBrokerConnection; out AVersion: Int16): TBytes;
+    function CommitAnswerError(const ABody: TBytes; AVersion: Int16;
+      const ABroker: IKafkaBrokerConnection; out AMessage: string): Int16;
+    procedure StartThread;
     // Under the lock:
+    procedure FinishFirstCommit(AClass: EKafkaClass; ACode: Int16; const AMessage: string);
+    procedure FailCommits(const AMessage: string);
+    procedure ExpirePollTimer;
     procedure ResetSentFields;
     procedure Backoff;
     procedure SetError(AClass: EKafkaClass; ACode: Int16; const AMessage: string; AFatal: Boolean);
@@ -255,6 +302,8 @@ type
     function Poll(AHandler: TKafkaGroupEventHandler): Integer;
     function Assignment: TKafkaTopicPartitionArray;
     procedure Commit(const AOffsets: TKafkaCommittedOffsetArray; ATimeoutMs: Cardinal);
+    function CommitAsync(const AOffsets: TKafkaCommittedOffsetArray): IKafkaCommitFuture;
+    function PendingCommits: Integer;
     function Committed(const APartitions: array of TKafkaTopicPartition;
       ATimeoutMs: Cardinal): TKafkaCommittedOffsetArray;
     procedure Leave(AHandler: TKafkaGroupEventHandler; ATimeoutMs: Cardinal);
@@ -491,6 +540,9 @@ begin
   FNames.Free;
   FInFlight := nil;
   FInFlightBroker := nil;
+  FCommitInFlight := nil;
+  FCommitBroker := nil;
+  FCommits := nil;
   FHubRef := nil;
   inherited;
 end;
@@ -654,11 +706,50 @@ begin
   FEpoch := JOIN_EPOCH;
   ResetSentFields;
   FNextHeartbeatAt := 0;
+  FPollTimerExpired := False;
+  FLastPollAt := PcTickMs;
+end;
+
+procedure TKafkaConsumerProtocol.ExpirePollTimer;
+begin
+  // Java's transitionToSendingLeaveGroup(true): through PREPARE_LEAVING
+  // without revoking anything (the member is stale), the assignment
+  // dropped, then the leave heartbeat at once.
+  FPollTimerExpired := True;
+  FState := kmsLeaving;
+  FEpoch := LEAVE_EPOCH;
+  FCurrent := NoAssignment;
+  FTarget := NoAssignment;
+  DropQueuedEvents;
+  FReconciling := False;
+  FBackoffUntil := 0;
+  FNextHeartbeatAt := 0;
+end;
+
+procedure TKafkaConsumerProtocol.FinishFirstCommit(AClass: EKafkaClass; ACode: Int16;
+  const AMessage: string);
+var
+  LFirst: TQueuedCommit;
+begin
+  if Length(FCommits) = 0 then
+    Exit;
+  LFirst := FCommits[0];
+  FCommits := Copy(FCommits, 1, Length(FCommits) - 1);
+  LFirst.Future.FinishLocked(AClass, ACode, AMessage);
+  if FParams.Notify <> nil then
+    FParams.Notify.Signal;
+end;
+
+procedure TKafkaConsumerProtocol.FailCommits(const AMessage: string);
+begin
+  FCommitSent := nil;
+  while Length(FCommits) > 0 do
+    FinishFirstCommit(EKafkaConnection, 0, AMessage);
 end;
 
 procedure TKafkaConsumerProtocol.TransitionToFenced;
 begin
-  if FState in [kmsUnsubscribed, kmsFatal, kmsPrepareLeaving, kmsLeaving] then
+  if FState in [kmsUnsubscribed, kmsFatal, kmsPrepareLeaving, kmsLeaving, kmsStale] then
     Exit;
   FState := kmsFenced;
   FEpoch := JOIN_EPOCH;
@@ -770,13 +861,45 @@ begin
       AFuture := FInFlight;
       ABroker := FInFlightBroker;
       AVersion := FInFlightVersion;
+      FAnswerIsLeave := FInFlightIsLeave;
       FInFlight := nil;
       FInFlightBroker := nil;
+      FInFlightIsLeave := False;
       if AFuture.IsDone then
         Exit(stAnswer);
       Exit(stTimedOut);
     end;
     WakeAt(FInFlightDeadline);
+  end;
+  // Asynchronous commits: one in flight, the rest wait their turn.
+  if FCommitInFlight <> nil then
+  begin
+    if FCommitInFlight.IsDone or (LNow >= FCommitDeadline) then
+    begin
+      AFuture := FCommitInFlight;
+      ABroker := FCommitBroker;
+      AVersion := FCommitVersion;
+      FCommitInFlight := nil;
+      FCommitBroker := nil;
+      if AFuture.IsDone then
+        Exit(stCommitAnswer);
+      Exit(stCommitTimedOut);
+    end;
+    WakeAt(FCommitDeadline);
+  end
+  else if Length(FCommits) > 0 then
+  begin
+    if LNow >= FCommitNextAt then
+      Exit(stCommitSend);
+    WakeAt(FCommitNextAt);
+  end;
+  // Java's poll timer.
+  if FState in [kmsJoining, kmsReconciling, kmsAcknowledging, kmsStable] then
+  begin
+    if LNow >= FLastPollAt + UInt64(FRebalanceTimeoutMs) then
+      ExpirePollTimer
+    else
+      WakeAt(FLastPollAt + UInt64(FRebalanceTimeoutMs));
   end;
   AfterEvents;
   if (FState = kmsReconciling) and not FReconciling and EventsIdle then
@@ -800,11 +923,12 @@ begin
     FNextMetadataAt := LNow + FRetryBackoffMs;
     Exit(stRefreshMetadata);
   end;
-  if (FInFlight = nil) and (FState in [kmsJoining, kmsReconciling, kmsAcknowledging, kmsStable]) then
+  if (FInFlight = nil) and ((FState in [kmsJoining, kmsReconciling, kmsAcknowledging, kmsStable]) or
+    ((FState = kmsLeaving) and FPollTimerExpired)) then
   begin
-    // Java's shouldHeartbeatNow: joining and acknowledging don't wait for
-    // the interval (they do wait out a backoff here).
-    LUrgent := FState in [kmsJoining, kmsAcknowledging];
+    // Java's shouldHeartbeatNow: joining, acknowledging and leaving don't
+    // wait for the interval (they do wait out a backoff here).
+    LUrgent := FState in [kmsJoining, kmsAcknowledging, kmsLeaving];
     if LUrgent and (LNow >= FBackoffUntil) then
       Exit(stSend);
     if LNow >= FNextHeartbeatAt then
@@ -854,6 +978,12 @@ begin
           SendHeartbeat;
         stRefreshMetadata:
           RefreshMetadata;
+        stCommitSend:
+          SendCommit;
+        stCommitAnswer:
+          HandleCommitAnswer(LFuture, LBroker, LVersion, False);
+        stCommitTimedOut:
+          HandleCommitAnswer(LFuture, LBroker, LVersion, True);
       end;
       LFuture := nil;
       LBroker := nil;
@@ -865,6 +995,7 @@ begin
       try
         if not FHub.StopRequested then
           SetError(EKafka, 0, 'The group''s heartbeat thread failed: ' + E.Message, True);
+        FailCommits('The group''s heartbeat thread failed: ' + E.Message);
       finally
         FHub.Leave;
       end;
@@ -909,7 +1040,7 @@ var
   LWait: Cardinal;
   LVersion: Int16;
   R: TKafkaConsumerGroupHeartbeatRequest;
-  LAll: Boolean;
+  LAll, LLeave: Boolean;
   LFuture: IKafkaResponseFuture;
   LBody: TBytes;
   I, N: Integer;
@@ -968,8 +1099,9 @@ begin
   end;
   FHub.Enter;
   try
-    if (FInFlight <> nil) or not (FState in [kmsJoining, kmsReconciling, kmsAcknowledging,
-      kmsStable]) then
+    LLeave := (FState = kmsLeaving) and FPollTimerExpired;
+    if (FInFlight <> nil) or not ((FState in [kmsJoining, kmsReconciling, kmsAcknowledging,
+      kmsStable]) or LLeave) then
       Exit;
     // Java's HeartbeatState.buildRequestData.
     R.Init;
@@ -977,67 +1109,91 @@ begin
     R.MemberId := FMemberId;
     R.MemberEpoch := FEpoch;
     LAll := FState = kmsJoining;
-    if LAll or (FSentRebalanceTimeoutMs <> FRebalanceTimeoutMs) then
+    if LLeave then
     begin
-      R.RebalanceTimeoutMs := FRebalanceTimeoutMs;
-      FSentRebalanceTimeoutMs := FRebalanceTimeoutMs;
-    end;
-    if LAll or not FSentSubscription or (FSentSubscriptionKey <> FSubscriptionKey) then
-    begin
-      R.SubscribedTopicNames := Copy(FSubscription, 0, Length(FSubscription));
-      R.SubscribedTopicNamesIsNull := False;
-      FSentSubscription := True;
-      FSentSubscriptionKey := FSubscriptionKey;
-    end;
-    if (FParams.ServerAssignor <> '') and (LAll or not FSentServerAssignor) then
-    begin
-      R.ServerAssignor := FParams.ServerAssignor;
-      R.ServerAssignorIsNull := False;
-      FSentServerAssignor := True;
-    end;
-    if LAll or not FSentAssignment or (FSentAssignmentKey <> AssignmentKey(FCurrent)) then
-    begin
-      N := Length(FCurrent.Topics);
-      SetLength(R.TopicPartitions, N);
-      for I := 0 to N - 1 do
-      begin
-        R.TopicPartitions[I].Init;
-        R.TopicPartitions[I].TopicId := FCurrent.Topics[I].TopicId;
-        R.TopicPartitions[I].Partitions := Copy(FCurrent.Topics[I].Partitions, 0,
-          Length(FCurrent.Topics[I].Partitions));
+      // The poll timer ran out: epoch -1 and nothing else, then stale
+      // (Java's onHeartbeatRequestGenerated, transitionToStale). The
+      // partitions are lost: the coordinator may give them away now.
+      R.MemberEpoch := LEAVE_EPOCH;
+      FState := kmsStale;
+      if (Length(FOwned) > 0) or FDelivering then
+        Queue(kgeLost, nil);
+      try
+        LBody := R.ToBytes(LVersion);
+      except
+        on E: EKafkaUnsupportedVersion do
+        begin
+          SetError(EKafkaUnsupportedVersion, 0, E.Message, True);
+          Exit;
+        end;
       end;
-      R.TopicPartitionsIsNull := False;
-      FSentAssignment := True;
-      FSentAssignmentKey := AssignmentKey(FCurrent);
-    end;
-    if LAll and (FParams.RackId <> '') then
+      FLastSentAt := PcTickMs;
+      Inc(FHeartbeatCount);
+    end
+    else
     begin
-      R.RackId := FParams.RackId;
-      R.RackIdIsNull := False;
-    end;
-    // Java's onHeartbeatRequestGenerated.
-    if FState = kmsAcknowledging then
-    begin
-      if SameAssignment(FCurrent, FTarget) then
-        FState := kmsStable
-      else
-        FState := kmsReconciling;
-    end;
-    try
-      LBody := R.ToBytes(LVersion);
-    except
-      on E: EKafkaUnsupportedVersion do
+      if LAll or (FSentRebalanceTimeoutMs <> FRebalanceTimeoutMs) then
       begin
-        SetError(EKafkaUnsupportedVersion, 0, E.Message, True);
-        Exit;
+        R.RebalanceTimeoutMs := FRebalanceTimeoutMs;
+        FSentRebalanceTimeoutMs := FRebalanceTimeoutMs;
       end;
+      if LAll or not FSentSubscription or (FSentSubscriptionKey <> FSubscriptionKey) then
+      begin
+        R.SubscribedTopicNames := Copy(FSubscription, 0, Length(FSubscription));
+        R.SubscribedTopicNamesIsNull := False;
+        FSentSubscription := True;
+        FSentSubscriptionKey := FSubscriptionKey;
+      end;
+      if (FParams.ServerAssignor <> '') and (LAll or not FSentServerAssignor) then
+      begin
+        R.ServerAssignor := FParams.ServerAssignor;
+        R.ServerAssignorIsNull := False;
+        FSentServerAssignor := True;
+      end;
+      if LAll or not FSentAssignment or (FSentAssignmentKey <> AssignmentKey(FCurrent)) then
+      begin
+        N := Length(FCurrent.Topics);
+        SetLength(R.TopicPartitions, N);
+        for I := 0 to N - 1 do
+        begin
+          R.TopicPartitions[I].Init;
+          R.TopicPartitions[I].TopicId := FCurrent.Topics[I].TopicId;
+          R.TopicPartitions[I].Partitions := Copy(FCurrent.Topics[I].Partitions, 0,
+            Length(FCurrent.Topics[I].Partitions));
+        end;
+        R.TopicPartitionsIsNull := False;
+        FSentAssignment := True;
+        FSentAssignmentKey := AssignmentKey(FCurrent);
+      end;
+      if LAll and (FParams.RackId <> '') then
+      begin
+        R.RackId := FParams.RackId;
+        R.RackIdIsNull := False;
+      end;
+      // Java's onHeartbeatRequestGenerated.
+      if FState = kmsAcknowledging then
+      begin
+        if SameAssignment(FCurrent, FTarget) then
+          FState := kmsStable
+        else
+          FState := kmsReconciling;
+      end;
+      try
+        LBody := R.ToBytes(LVersion);
+      except
+        on E: EKafkaUnsupportedVersion do
+        begin
+          SetError(EKafkaUnsupportedVersion, 0, E.Message, True);
+          Exit;
+        end;
+      end;
+      // This thread is the only one that sends heartbeats: the bookkeeping
+      // can be done before the write, which goes outside the lock (the
+      // connection's reader needs it to signal answers).
+      FLastSentAt := PcTickMs;
+      FNextHeartbeatAt := FLastSentAt + FHeartbeatIntervalMs;
+      Inc(FHeartbeatCount);
     end;
-    // This thread is the only one that sends heartbeats: the bookkeeping
-    // can be done before the write, which goes outside the lock (the
-    // connection's reader needs it to signal answers).
-    FLastSentAt := PcTickMs;
-    FNextHeartbeatAt := FLastSentAt + FHeartbeatIntervalMs;
-    Inc(FHeartbeatCount);
   finally
     FHub.Leave;
   end;
@@ -1047,7 +1203,9 @@ begin
   except
     on E: EKafka do
     begin
-      // The connection broke: a failed heartbeat.
+      // The connection broke: a failed heartbeat (a leave isn't sent
+      // again: the member is stale already, and the coordinator expires
+      // it).
       HeartbeatFailed(E.Message);
       Exit;
     end;
@@ -1057,6 +1215,7 @@ begin
     FInFlight := LFuture;
     FInFlightBroker := LBroker;
     FInFlightVersion := LVersion;
+    FInFlightIsLeave := LLeave;
     FInFlightDeadline := PcTickMs + FRequestTimeoutMs;
   finally
     FHub.Leave;
@@ -1093,6 +1252,14 @@ begin
   LMarkUnknown := False;
   FHub.Enter;
   try
+    if FAnswerIsLeave then
+    begin
+      // The answer to the leave of a stale member: whatever it says, the
+      // member is out (Java ignores it too). Not an error to act on: the
+      // member may have joined again meanwhile.
+      FAnswerIsLeave := False;
+      Exit;
+    end;
     if R.ErrorCode = 0 then
     begin
       FFailures := 0;
@@ -1101,7 +1268,8 @@ begin
         FHeartbeatIntervalMs := Cardinal(R.HeartbeatIntervalMs);
       FNextHeartbeatAt := FLastSentAt + FHeartbeatIntervalMs;
       // Java's onHeartbeatSuccess.
-      if FState in [kmsUnsubscribed, kmsFenced, kmsFatal, kmsPrepareLeaving, kmsLeaving] then
+      if FState in [kmsUnsubscribed, kmsFenced, kmsFatal, kmsPrepareLeaving, kmsLeaving,
+        kmsStale] then
         Exit;
       if R.MemberEpoch < 0 then
         Exit;
@@ -1232,6 +1400,7 @@ begin
         FEpoch := JOIN_EPOCH;
         ResetSentFields;
         FNextHeartbeatAt := 0;
+        FLastPollAt := PcTickMs;
       end;
       FHub.PulseAll;
     finally
@@ -1240,11 +1409,7 @@ begin
   finally
     L.Free;
   end;
-  if FThread = nil then
-  begin
-    FThread := THeartbeatThread.Create(Self);
-    FThread.Start;
-  end;
+  StartThread;
 end;
 
 function TKafkaConsumerProtocol.Poll(AHandler: TKafkaGroupEventHandler): Integer;
@@ -1256,6 +1421,14 @@ var
   LMessage: string;
 begin
   Result := 0;
+  FHub.Enter;
+  try
+    // Java's resetPollTimer.
+    FLastPollAt := PcTickMs;
+    FHub.PulseAll;
+  finally
+    FHub.Leave;
+  end;
   while True do
   begin
     FHub.Enter;
@@ -1303,6 +1476,12 @@ begin
   end;
   FHub.Enter;
   try
+    // Java's maybeRejoinStaleMember: once the Lost event was handled.
+    if (FState = kmsStale) and EventsIdle and not FHub.StopRequested then
+    begin
+      Rejoin;
+      FHub.PulseAll;
+    end;
     if not FHasError then
       Exit;
     FHasError := False;
@@ -1349,7 +1528,7 @@ begin
   FLeft := True;
   FHub.Enter;
   try
-    LInGroup := (FThread <> nil) and not (FState in [kmsUnsubscribed, kmsFatal]);
+    LInGroup := (FThread <> nil) and not (FState in [kmsUnsubscribed, kmsFatal, kmsStale]);
     LEpoch := FEpoch;
     if LInGroup then
       FState := kmsPrepareLeaving;
@@ -1415,7 +1594,10 @@ begin
   try
     FInFlight := nil;
     FInFlightBroker := nil;
+    FCommitInFlight := nil;
+    FCommitBroker := nil;
     DropQueuedEvents;
+    FailCommits('The group membership is closed');
   finally
     FHub.Leave;
   end;
@@ -1482,27 +1664,16 @@ begin
     Result := Cardinal(ADeadline - LNow);
 end;
 
-function TKafkaConsumerProtocol.TryCommitOnce(const AOffsets: TKafkaCommittedOffsetArray;
-  ADeadline: UInt64; out AReason: string): Boolean;
+function TKafkaConsumerProtocol.BuildCommit(const AOffsets: TKafkaCommittedOffsetArray;
+  const ABroker: IKafkaBrokerConnection; out AVersion: Int16): TBytes;
 var
-  LBroker: IKafkaBrokerConnection;
-  LVersion: Int16;
   LMember: string;
   LEpoch: Int32;
   R: TKafkaOffsetCommitRequest;
-  LAnswer: TKafkaOffsetCommitResponse;
-  LFuture: IKafkaResponseFuture;
-  LBody: TBytes;
-  LWait: UInt64;
   LAllIds: Boolean;
-  I, T, P, N: Integer;
-  LCode: Int16;
-  LMessage: string;
+  I, T, N: Integer;
 begin
-  Result := False;
-  AReason := '';
-  LBroker := FCoordinator.Connection(RemainingMs(ADeadline));
-  LVersion := LBroker.Connection.NegotiatedVersion(KAFKA_API_KEY_OFFSET_COMMIT);
+  AVersion := ABroker.Connection.NegotiatedVersion(KAFKA_API_KEY_OFFSET_COMMIT);
   CurrentMember(LMember, LEpoch);
   R.Init;
   R.GroupId := FParams.GroupId;
@@ -1537,13 +1708,55 @@ begin
     R.Topics[T].Partitions[N].CommittedMetadataIsNull := False;
   end;
   // v10 names topics by id only (Java's canUseTopicIds).
-  if (LVersion >= 10) and not LAllIds then
-    LVersion := 9;
+  if (AVersion >= 10) and not LAllIds then
+    AVersion := 9;
+  Result := R.ToBytes(AVersion);
+end;
+
+function TKafkaConsumerProtocol.CommitAnswerError(const ABody: TBytes; AVersion: Int16;
+  const ABroker: IKafkaBrokerConnection; out AMessage: string): Int16;
+var
+  LAnswer: TKafkaOffsetCommitResponse;
+  T, P: Integer;
+  LCode: Int16;
+begin
+  AMessage := '';
+  LAnswer.FromBytes(ABody, AVersion);
+  for T := 0 to High(LAnswer.Topics) do
+    for P := 0 to High(LAnswer.Topics[T].Partitions) do
+    begin
+      LCode := LAnswer.Topics[T].Partitions[P].ErrorCode;
+      if LCode = 0 then
+        Continue;
+      AMessage := Format('OffsetCommit for group ''%s'' to %s: %s', [FParams.GroupId,
+        ABroker.Connection.Address, KafkaErrorText(LCode)]);
+      case LCode of
+        KAFKA_ERROR_COORDINATOR_NOT_AVAILABLE, KAFKA_ERROR_NOT_COORDINATOR,
+        KAFKA_ERROR_REQUEST_TIMED_OUT:
+          FCoordinator.MarkUnknown(AMessage);
+      end;
+      Exit(LCode);
+    end;
+  Result := KAFKA_ERROR_NONE;
+end;
+
+function TKafkaConsumerProtocol.TryCommitOnce(const AOffsets: TKafkaCommittedOffsetArray;
+  ADeadline: UInt64; out AReason: string): Boolean;
+var
+  LBroker: IKafkaBrokerConnection;
+  LVersion: Int16;
+  LFuture: IKafkaResponseFuture;
+  LBody: TBytes;
+  LCode: Int16;
+  LMessage: string;
+begin
+  Result := False;
+  AReason := '';
+  LBroker := FCoordinator.Connection(RemainingMs(ADeadline));
+  LBody := BuildCommit(AOffsets, LBroker, LVersion);
   try
-    LFuture := LBroker.Connection.Send(KAFKA_API_KEY_OFFSET_COMMIT, LVersion, R.ToBytes(LVersion),
-      FHubRef);
-    LWait := PcTickMs + FRequestTimeoutMs;
-    if not FHub.WaitFuture(LFuture, LWait) then
+    LFuture := LBroker.Connection.Send(KAFKA_API_KEY_OFFSET_COMMIT, LVersion, LBody, FHubRef);
+    if not FHub.WaitFuture(LFuture, PcTickMs + FRequestTimeoutMs) then
     begin
       LBroker.Connection.Abandon(LFuture);
       raise EKafkaTimeout.CreateFmt('OffsetCommit to %s got no answer in %d ms',
@@ -1566,34 +1779,189 @@ begin
       Exit;
     end;
   end;
-  LAnswer.FromBytes(LBody, LVersion);
-  for T := 0 to High(LAnswer.Topics) do
-    for P := 0 to High(LAnswer.Topics[T].Partitions) do
+  LCode := CommitAnswerError(LBody, LVersion, LBroker, LMessage);
+  if LCode = KAFKA_ERROR_NONE then
+    Exit(True);
+  AReason := LMessage;
+  case LCode of
+    KAFKA_ERROR_COORDINATOR_NOT_AVAILABLE, KAFKA_ERROR_NOT_COORDINATOR,
+    KAFKA_ERROR_REQUEST_TIMED_OUT, KAFKA_ERROR_COORDINATOR_LOAD_IN_PROGRESS,
+    KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION, KAFKA_ERROR_UNKNOWN_TOPIC_ID:
+      Exit;
+    KAFKA_ERROR_STALE_MEMBER_EPOCH:
+      // Retried with the newer epoch while the member is in the group.
+      if MemberEpoch > 0 then
+        Exit;
+  end;
+  raise EKafkaBrokerError.Create(LCode, LMessage);
+end;
+
+{ Asynchronous commits }
+
+procedure TKafkaConsumerProtocol.StartThread;
+begin
+  if FThread = nil then
+  begin
+    FThread := THeartbeatThread.Create(Self);
+    FThread.Start;
+  end;
+end;
+
+function TKafkaConsumerProtocol.CommitAsync(
+  const AOffsets: TKafkaCommittedOffsetArray): IKafkaCommitFuture;
+var
+  F: TKafkaCommitFuture;
+  N: Integer;
+begin
+  F := TKafkaCommitFuture.Create(FHub, AOffsets);
+  Result := F;
+  if Length(AOffsets) = 0 then
+  begin
+    F.Finish(nil, 0, '');
+    Exit;
+  end;
+  if FClosed or FLeft then
+  begin
+    F.Finish(EKafkaConnection, 0, 'The group membership is closed');
+    Exit;
+  end;
+  FHub.Enter;
+  try
+    N := Length(FCommits);
+    SetLength(FCommits, N + 1);
+    FCommits[N].Future := F;
+    FCommits[N].Ref := Result;
+    FHub.PulseAll;
+  finally
+    FHub.Leave;
+  end;
+  StartThread;
+end;
+
+function TKafkaConsumerProtocol.PendingCommits: Integer;
+begin
+  FHub.Enter;
+  try
+    Result := Length(FCommits);
+  finally
+    FHub.Leave;
+  end;
+end;
+
+procedure TKafkaConsumerProtocol.SendCommit;
+var
+  LFirst: TQueuedCommit;
+  LBroker: IKafkaBrokerConnection;
+  LWait: Cardinal;
+  LVersion: Int16;
+  LBody: TBytes;
+  LFuture: IKafkaResponseFuture;
+  LClass: EKafkaClass;
+  LCode: Int16;
+  LMessage: string;
+begin
+  FHub.Enter;
+  try
+    if (Length(FCommits) = 0) or (FCommitInFlight <> nil) then
+      Exit;
+    LFirst := FCommits[0];
+  finally
+    FHub.Leave;
+  end;
+  LClass := nil;
+  LCode := 0;
+  LMessage := '';
+  LFuture := nil;
+  try
+    if not FCoordinator.TryConnection(LBroker, LWait) then
     begin
-      LCode := LAnswer.Topics[T].Partitions[P].ErrorCode;
-      if LCode = 0 then
-        Continue;
-      LMessage := Format('OffsetCommit for group ''%s'' to %s: %s', [FParams.GroupId,
-        LBroker.Connection.Address, KafkaErrorText(LCode)]);
-      AReason := LMessage;
-      case LCode of
-        KAFKA_ERROR_COORDINATOR_NOT_AVAILABLE, KAFKA_ERROR_NOT_COORDINATOR,
-        KAFKA_ERROR_REQUEST_TIMED_OUT:
-          begin
-            FCoordinator.MarkUnknown(LMessage);
-            Exit;
-          end;
-        KAFKA_ERROR_COORDINATOR_LOAD_IN_PROGRESS, KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION,
-        KAFKA_ERROR_UNKNOWN_TOPIC_ID:
-          Exit;
-        KAFKA_ERROR_STALE_MEMBER_EPOCH:
-          // Retried with the newer epoch while the member is in the group.
-          if MemberEpoch > 0 then
-            Exit;
+      FHub.Enter;
+      try
+        FCommitNextAt := PcTickMs + LWait;
+      finally
+        FHub.Leave;
       end;
-      raise EKafkaBrokerError.Create(LCode, LMessage);
+      Exit;
     end;
-  Result := True;
+    LBody := BuildCommit(LFirst.Future.Offsets, LBroker, LVersion);
+    try
+      LFuture := LBroker.Connection.Send(KAFKA_API_KEY_OFFSET_COMMIT, LVersion, LBody, FHubRef);
+    except
+      on E: EKafkaConnection do
+      begin
+        FCoordinator.MarkUnknown(E.Message);
+        raise;
+      end;
+    end;
+  except
+    on E: EKafka do
+    begin
+      LClass := EKafkaClass(E.ClassType);
+      LMessage := E.Message;
+      if E is EKafkaBrokerError then
+        LCode := EKafkaBrokerError(E).ErrorCode;
+    end;
+  end;
+  FHub.Enter;
+  try
+    // Close may have failed it meanwhile.
+    if (Length(FCommits) = 0) or (FCommits[0].Future <> LFirst.Future) then
+      Exit;
+    if LFuture = nil then
+    begin
+      FinishFirstCommit(LClass, LCode, LMessage);
+      Exit;
+    end;
+    FCommitInFlight := LFuture;
+    FCommitBroker := LBroker;
+    FCommitVersion := LVersion;
+    FCommitDeadline := PcTickMs + FRequestTimeoutMs;
+    FCommitSent := LFirst.Future;
+  finally
+    FHub.Leave;
+  end;
+end;
+
+procedure TKafkaConsumerProtocol.HandleCommitAnswer(const AFuture: IKafkaResponseFuture;
+  const ABroker: IKafkaBrokerConnection; AVersion: Int16; ATimedOut: Boolean);
+var
+  LClass: EKafkaClass;
+  LCode: Int16;
+  LMessage: string;
+begin
+  LClass := nil;
+  LCode := 0;
+  LMessage := '';
+  if ATimedOut then
+  begin
+    ABroker.Connection.Abandon(AFuture);
+    LClass := EKafkaTimeout;
+    LMessage := Format('OffsetCommit to %s got no answer in %d ms',
+      [ABroker.Connection.Address, FRequestTimeoutMs]);
+    FCoordinator.MarkUnknown(LMessage);
+  end
+  else
+    try
+      LCode := CommitAnswerError(AFuture.Body, AVersion, ABroker, LMessage);
+      if LCode <> KAFKA_ERROR_NONE then
+        LClass := EKafkaBrokerError;
+    except
+      on E: EKafka do
+      begin
+        LClass := EKafkaClass(E.ClassType);
+        LMessage := E.Message;
+        if (E is EKafkaConnection) or (E is EKafkaTimeout) then
+          FCoordinator.MarkUnknown(E.Message);
+      end;
+    end;
+  FHub.Enter;
+  try
+    if (FCommitSent <> nil) and (Length(FCommits) > 0) and (FCommits[0].Future = FCommitSent) then
+      FinishFirstCommit(LClass, LCode, LMessage);
+    FCommitSent := nil;
+  finally
+    FHub.Leave;
+  end;
 end;
 
 function TKafkaConsumerProtocol.Committed(const APartitions: array of TKafkaTopicPartition;

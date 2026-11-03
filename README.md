@@ -4,13 +4,13 @@ A native Apache Kafka client for **Delphi** and **Free Pascal/Lazarus** from one
 with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, chosen at run
 time.
 
-**Status: early, not released.** Phase K1 is under way: the protocol, the codecs generated from
-Kafka 4.4.0's message definitions (ApiVersions, Metadata, Produce, Fetch, ListOffsets,
-SaslHandshake, SaslAuthenticate), record batch v2 with gzip, murmur2 partitioning compatible
+**Status: early, not released.** Phases K1 and K2: the protocol, the codecs generated from
+Kafka 4.4.0's message definitions, record batch v2 with gzip, murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN and SCRAM-SHA-256 over plaintext or TLS, the
-cluster layer (bootstrap, metadata, leaders), the producer and a consumer of manually assigned
-partitions, checked against the Java client in both directions. Consumer groups come in K2. The
-plan is [`docs/design.md`](docs/design.md).
+cluster layer (bootstrap, metadata, leaders), the producer, and the consumer with partitions
+assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
+events, synchronous, asynchronous and automatic commits), checked against the Java client in
+both directions and in one group with it. The plan is [`docs/design.md`](docs/design.md).
 
 ## What works today
 
@@ -61,7 +61,7 @@ never retried); a client without SASL on a SASL listener is hung up on by the br
 (`EKafkaConnection`). A broker with `connections.max.reauth.ms` (KIP-368) gets a new
 connection before each session ends.
 
-Reading partitions assigned by hand (consumer groups are phase K2):
+Reading partitions assigned by hand:
 
 ```pascal
 uses
@@ -89,6 +89,41 @@ begin
     end;
   finally
     Consumer.Free;
+  end;
+end;
+```
+
+In a consumer group (KIP-848: the broker assigns the partitions; Kafka 4.0 or later). The
+handlers are methods ("of object") and run inside `Poll`, on its thread:
+
+```pascal
+uses
+  Kafka.Types, Kafka.Group, Kafka.Consumer;
+
+procedure TWorker.Revoked(ASender: TKafkaConsumer; const APartitions: TKafkaTopicPartitionArray);
+begin
+  // The partitions go to another member after this returns. With
+  // EnableAutoCommit (the default) the positions are committed already.
+end;
+
+procedure TWorker.Run;
+var
+  Params: TKafkaConsumerParams;
+  Consumer: TKafkaConsumer;
+begin
+  Params := KafkaConsumerParams('localhost:9092');
+  Params.GroupId := 'billing';                      // Java's group.id
+  Params.AutoOffsetReset := korEarliest;            // where a partition with no commit starts
+  Consumer := TKafkaConsumer.Create(Params);
+  try
+    Consumer.OnPartitionsRevoked := Revoked;        // also OnPartitionsAssigned, OnPartitionsLost
+    Consumer.Open;
+    Consumer.Subscribe(['orders']);                 // the first Poll joins the group
+    while Running do
+      Process(Consumer.Poll(1000));                 // auto-commit inside Poll (every 5 s)
+    // Or EnableAutoCommit := False and Consumer.Commit / Consumer.CommitAsync(OnCommitted).
+  finally
+    Consumer.Free;                                  // Close: commits, leaves the group
   end;
 end;
 ```
@@ -134,6 +169,10 @@ KafkaSample --bootstrap pkc-xxxxx.region.provider.confluent.cloud:9092 --sasl pl
   --user <API key> --password-env CC_SECRET --ca "" --topic <an existing topic>
 ```
 
+[`samples/ConsumerGroup`](samples/ConsumerGroup/KafkaGroupSample.dpr): a consumer in a group,
+with its handlers and asynchronous and synchronous commits; the same options and `--group`. A
+second run starts where the first committed; two at once split the topic's partitions.
+
 ## Works with the Java client
 
 `tools/interop.py` checks both directions against the Java client 4.4.0: records the Java
@@ -141,7 +180,9 @@ console producer sends (gzip, keys with accents and CJK, null keys, headers with
 an empty value) read by this library field by field, each keyed record in the partition both
 murmur2 implementations agree on; and records this library sends read back by the Java console
 consumer with the same timestamp, partition, offset, headers, key and value, every batch gzip
-with a valid CRC according to `kafka-dump-log.sh`.
+with a valid CRC according to `kafka-dump-log.sh`. It also puts the Java console consumer
+(`group.protocol=consumer`) and this library's consumer in one group: they split the topic's
+partitions, hand them over through their commits, and read every record once.
 
 ## Requirements
 
@@ -149,7 +190,8 @@ with a valid CRC according to `kafka-dump-log.sh`.
 - [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa) **1.27.1 or later**,
   provided once by the application (one search path in Delphi; one registered
   `pascal_common_faa.lpk` in Lazarus). Lazarus: `packages/pascal_kafka_faa.lpk`.
-- A Kafka broker of 2.1 or later; developed and tested against Apache Kafka 4.4.0.
+- A Kafka broker of 2.1 or later; consumer groups need 4.0 or later (KIP-848; the classic
+  protocol of older brokers isn't there yet). Developed and tested against Apache Kafka 4.4.0.
 - SASL: PLAIN and SCRAM-SHA-256. User name and password are sent as their UTF-8 bytes, without
   SASLprep (as Java's client). SCRAM-SHA-512, OAUTHBEARER: phase K3. GSSAPI/Kerberos: no plan.
 - TLS certificates (the common library's rule): CA files are PEM on both backends; a client
@@ -159,7 +201,7 @@ with a valid CRC according to `kafka-dump-log.sh`.
 ## Tests
 
 See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Windows: the
-suites, the Java interoperability test and the sample), `sh tools/test_fpc_docker.sh` and
+suites, the Java interoperability test and the samples), `sh tools/test_fpc_docker.sh` and
 `sh tools/test_interop_docker.sh` (the same on Linux in Docker), `Kafka.groupproj` in the Delphi
 IDE. Everything but the unit suite needs `docker compose -f docker/docker-compose.yml up -d`
 (plaintext 9092, TLS 9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, and 9098 with 2-second SASL

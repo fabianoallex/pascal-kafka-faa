@@ -83,6 +83,10 @@
         <DCCReference Include="..\..\src\Kafka.Messages.ListOffsets.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.SaslHandshake.pas"/>
         <DCCReference Include="..\..\src\Kafka.Messages.SaslAuthenticate.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.FindCoordinator.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.ConsumerGroupHeartbeat.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.OffsetCommit.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Messages.OffsetFetch.pas"/>
         <DCCReference Include="..\..\src\Kafka.Transport.pas"/>
         <DCCReference Include="..\..\src\Kafka.Sasl.pas"/>
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
@@ -90,6 +94,9 @@
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
         <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
         <DCCReference Include="..\..\src\Kafka.Consumer.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Coordinator.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Group.Consumer.pas"/>
         <DCCReference Include="Kafka.Interop.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

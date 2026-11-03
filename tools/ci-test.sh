@@ -3,7 +3,7 @@
 # Docker: the generated-file checks, the unit suite on Linux FPC 3.2.2, and
 # the integration suite against the docker/ broker (Kafka 4.4.0, KRaft, one
 # node), which this script starts and waits for, the interoperability test
-# with the Java client and the K1 sample (tools/test_interop_docker.sh).
+# with the Java client and the samples (tools/test_interop_docker.sh).
 # Delphi Community Edition can't build headless, so the Delphi side is
 # validated in the IDE (see CLAUDE.md, "Tests").
 #

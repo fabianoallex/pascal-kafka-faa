@@ -103,6 +103,7 @@
         <DCCReference Include="Kafka.IntegrationTests.pas"/>
         <DCCReference Include="Kafka.SaslIntegrationTests.pas"/>
         <DCCReference Include="Kafka.GroupIntegrationTests.pas"/>
+        <DCCReference Include="Kafka.ConsumerGroupIntegrationTests.pas"/>
         <DCCReference Include="Kafka.CloudIntegrationTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

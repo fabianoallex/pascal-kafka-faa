@@ -108,8 +108,8 @@ the sample against Confluent Cloud, has been run.
   fields that changed; reconciliation by topic id, named through the metadata, revoked
   partitions handed to the consumer before the new assignment is acknowledged; fenced and
   unknown members lose their partitions and join again; `Leave` with epoch -1; `Commit` and
-  `Committed` over OffsetCommit and OffsetFetch with Java's retries). The consumer itself
-  doesn't use it yet (next step).
+  `Committed` over OffsetCommit and OffsetFetch with Java's retries); the consumer uses it from
+  the next entry on.
 - `TKafkaCluster.Coordinator` (a connection of its own for a group coordinator, as Java keeps)
   and `TKafkaCluster.AnyBroker`.
 - `KafkaBackoffMs`: Java's exponential backoff (factor 2, jitter 0.2), and
@@ -121,6 +121,39 @@ the sample against Confluent Cloud, has been run.
   `Kafka.GroupTests` (24 unit tests: 250 in all) and `Kafka.GroupIntegrationTests` (one member
   joins, commits, reads back and leaves; two members split a topic and one leaves; against
   Kafka 4.4.0: 34 integration tests in all).
+- The consumer in a consumer group (phase K2, steps 5 and 6): `TKafkaConsumerParams.GroupId`,
+  `GroupProtocol` (`kgpConsumer`; `kgpClassic` raises, decision 4), `EnableAutoCommit` (on in
+  `KafkaConsumerParams`), `AutoCommitIntervalMs`, `MaxPollIntervalMs`, `DefaultApiTimeoutMs`,
+  `RetryBackoffMaxMs`, `GroupRemoteAssignor`, `ClientRack`; `TKafkaConsumer.Subscribe` (the
+  join with the first `Poll`, as Java 4.x), `Unsubscribe`, `Subscription`, exclusive with
+  `Assign` (`Assign([])` unsubscribes); `OnPartitionsAssigned`, `OnPartitionsRevoked`,
+  `OnPartitionsLost` (`TKafkaPartitionsEvent`, "of object", inside `Poll` on its thread; the
+  consumer applies the assignment first: revoked and lost partitions stop being fetched and
+  their buffered records are dropped); positions from the group's committed offsets, then
+  `AutoOffsetReset`; `Commit`, `CommitOffsets` (synchronous, after the asynchronous commits
+  queued before), `CommitAsync`, `CommitOffsetsAsync` (a `TKafkaCommitEvent` callback run inside
+  a later `Poll`, `Commit` or `Close`, and an `IKafkaCommitFuture`), `Committed`; auto-commit on
+  its interval inside `Poll` (when the positions changed), before a revoke and at `Close`;
+  `Close(ATimeoutMs)` commits, leaves (the revoke handler) and closes the membership before the
+  connections; the `Group` property (member id, epoch, state). Handlers may call the consumer
+  back (`Commit`, `Seek`, `Position`...); `Poll`, `Close`, `Subscribe`, `Unsubscribe` and
+  `Assign` raise there.
+- `Kafka.Group`: `IKafkaGroupMembership.CommitAsync` and `PendingCommits`, `TKafkaCommitReport`,
+  `TKafkaCommitEvent`, `IKafkaCommitFuture` (`TKafkaCommitFuture`); `kmsStale`.
+  `TKafkaConsumerProtocol` sends asynchronous commits from its thread, in order, once each
+  (Java's commitAsync), and leaves the group when `Poll` isn't called within the rebalance
+  timeout (`max.poll.interval.ms`): epoch -1, stale, the partitions lost, joined again at the
+  next `Poll` (Java's `transitionToStale`).
+- `samples/ConsumerGroup`: K2's sample, a consumer in a group with its handlers, asynchronous
+  and synchronous commits; a second run starts where the first committed.
+- Tests: `Kafka.ConsumerGroupTests` (10 unit tests: 260 in all; two consumers rebalancing on
+  the fake with every record read once, the revoke's commit before the move, a manual commit in
+  the revoke handler, positions from the commits, auto-commit, asynchronous commits, Close, the
+  poll timer) and `Kafka.ConsumerGroupIntegrationTests` (2: K2's criterion against Kafka 4.4.0,
+  two consumers rebalancing with no record lost or read twice; a new consumer starting after a
+  closed one's commit: 36 integration tests in all). `tools/interop.py` has a third scenario: the
+  Java consumer 4.4.0 (`group.protocol=consumer`) and this one in the same group, sharing a
+  topic's partitions, every record read once.
 
 ### Changed
 
@@ -128,6 +161,12 @@ the sample against Confluent Cloud, has been run.
   `Kafka.Consumer` to `Kafka.Types` (the group units need them and the consumer will use the
   group units). A program that names them through `Kafka.Consumer` only needs `Kafka.Types` in
   its `uses`.
+- `TKafkaConsumer.Close` takes a timeout (default 30 s, Java's), for the group's commit and
+  leave; `Close` with no argument still compiles. `Poll` without `Assign` raises only when the
+  consumer isn't subscribed either.
+- A consumer with a `GroupId` starts an assigned partition from the group's committed offset
+  (Java's behaviour with `assign` and a `group.id`); without one, nothing changes.
+- `IKafkaGroupMembership.Poll` also restarts the member's poll timer.
 
 ### Fixed
 

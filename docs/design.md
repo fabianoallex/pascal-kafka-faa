@@ -1,7 +1,7 @@
 # pascal-kafka-faa — design
 
-Status: **K0 done; K1 done but for its Confluent Cloud run; K2 started** (2026-11-02: "K1
-progress" and "K2 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
+Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
+met against Kafka 4.4.0** (2026-11-03: "K1 progress" and "K2 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
 accepted (3 and 4, and the transport's T1–T8).
 
@@ -173,7 +173,9 @@ Kafka.Tracing           PascalCommon.Tracing spans; traceparent in record header
 - **Consumer:** `Poll(timeout)` runs on the caller's thread, as in Java. The group heartbeat
   runs on its own thread, so slow processing between two `Poll`s doesn't drop the member.
   Assign/revoke events are delivered **inside `Poll`**, on the user's thread, never on the
-  heartbeat thread (the same care as redis's pub/sub).
+  heartbeat thread (the same care as redis's pub/sub). Asynchronous commits are sent by the
+  heartbeat thread too; their callbacks run inside a later `Poll`, `Commit` or `Close`, on the
+  user's thread, as Java's.
 - Nothing queued on the shared `PcPool` (as redis and amqp). Shutdown: `Close` stops the threads
   in the right order (consumer: Leave, then the connections; producer: flush with a deadline,
   then the connections). The `using-faa-libraries` skill lists getting this wrong as the cause
@@ -808,6 +810,101 @@ next step).
 
 **Found on the way:** a `{$MODE DELPHI}` written inside a `{ }` comment ended the comment at its
 `}`, and FPC reported "INTERFACE expected" on the unit's header (CLAUDE.md, gotcha 18).
+
+### The consumer's side, the poll timer, the Java consumer in the group (2026-11-03)
+
+Steps 5 and 6 of the plan. Java 4.4.0's `AsyncKafkaConsumer`, `AbstractMembershipManager` and
+`CommitRequestManager` were read again for the points below marked "Java".
+
+**Done:**
+
+- **`Kafka.Consumer` over `IKafkaGroupMembership`**: `GroupId`, `Subscribe` (it only records the
+  topics; the first `Poll` joins, as Java 4.x), `Unsubscribe`, exclusive with `Assign` (Java's
+  "mutually exclusive"; `Assign([])` is `Unsubscribe`, as Java). The membership's events are
+  applied by the consumer inside `Poll` before the user's handlers see them: an assigned
+  partition is added and starts from the group's committed offset (OffsetFetch with the
+  member's epoch), then `AutoOffsetReset`; a revoked or lost one stops being fetched, and what
+  was buffered for it is dropped (an answer in flight for it finds no state and is discarded).
+  `OnPartitionsAssigned`, `OnPartitionsRevoked`, `OnPartitionsLost`, "of object", on the
+  polling thread; `OnPartitionsLost` falls back to `OnPartitionsRevoked` when unset (Java's
+  default `onPartitionsLost`). A partition assigned by hand with a `GroupId` also starts from
+  the commit (Java's).
+- **Commits**: `Commit`/`CommitOffsets` (synchronous, retried up to `DefaultApiTimeoutMs`, Java's
+  default.api.timeout.ms) and `CommitAsync`/`CommitOffsetsAsync` (a `TKafkaCommitReport` to an
+  "of object" callback and an `IKafkaCommitFuture`). A synchronous commit waits first for the
+  asynchronous ones queued before it and runs their callbacks (Java's
+  `awaitPendingAsyncCommitsAndExecuteCommitCallbacks`), so an older commit never lands after a
+  newer one. The membership sends asynchronous commits from its heartbeat thread, in order, one
+  at a time, once each: Java doesn't retry `commitAsync` either (a retriable error reaches the
+  callback as `RetriableCommitFailedException`; here, `EKafkaBrokerError` with its code), and
+  waits for an unknown coordinator first.
+- **Auto-commit** (`EnableAutoCommit`, on in `KafkaConsumerParams` as Java's): the consumed
+  positions asynchronously every `AutoCommitIntervalMs` at the start of `Poll`, not while the
+  previous one is in flight (Java's `maybeAutoCommitAsync`); synchronously before a revoke,
+  every consumed position, a failure not stopping the revoke (Java's
+  `maybeAutoCommitSyncBeforeRebalance`); and at `Close`. A position is consumed once `Poll`
+  returned the record before it, and commits happen at the start of a `Poll` or in `Close`,
+  after the caller processed the previous one's records: at-least-once.
+- **`Close(ATimeoutMs)`** (30 s by default, Java's): the auto-commit, the asynchronous commits
+  waited for, the leave (the revoke handler), the membership, then the fetches and the cluster;
+  each step's failure swallowed so the next still runs.
+- **`GroupProtocol`**: `kgpConsumer`, the one accepted; `kgpClassic` raises at `Create` saying it
+  doesn't exist yet (decision 4).
+- **The poll timer** (`max.poll.interval.ms`, `MaxPollIntervalMs`, the rebalance timeout the
+  member sends): each membership `Poll` restarts it; when it runs out, the heartbeat thread
+  sends one heartbeat with epoch -1 and the member is stale (`kmsStale`), its partitions lost
+  (Java's `transitionToSendingLeaveGroup(true)` then `transitionToStale`: `onPartitionsLost`,
+  not revoked); the next `Poll` hands out the Lost event and joins again with epoch 0 and the same
+  member id (Java's `maybeRejoinStaleMember`). The answer to that leave is ignored. A `Poll`
+  that waits long still wakes every half interval to restart the timer.
+- **Handlers may call the consumer back** on the polling thread (`Commit` in
+  `OnPartitionsRevoked`, `Seek` in `OnPartitionsAssigned`, `Position`, `Committed`); `Poll`,
+  `Close`, `Subscribe`, `Unsubscribe` and `Assign` raise there. Another thread is still refused.
+- **`samples/ConsumerGroup`** (`KafkaGroupSample`): a second sample rather than a change to K1's,
+  which shows `Assign`. It joins a group, prints its partitions, sends records, reads them with
+  an asynchronous commit per `Poll` and a synchronous one at the end, and closes; a second run
+  starts at the first one's commits. Run by `tools/test_fpc.sh` and
+  `tools/test_interop_docker.sh` with its defaults (SASL_SSL, SCRAM).
+- **Tests**: `Kafka.ConsumerGroupTests`, 10 unit tests against the fake (the list in its header,
+  among them two consumers rebalancing with every record read once, the revoke's commit before
+  the move, and the poll timer); `Kafka.ConsumerGroupIntegrationTests`, 2 against Kafka 4.4.0;
+  and a third scenario in `tools/interop.py`, the Java consumer and this one in one group.
+
+**K2's criterion** (section 7) **is met** against Kafka 4.4.0: two of these consumers share a
+three-partition topic while records keep coming; the second's join moves partitions (the first
+revokes, committing first), both read, the second closes and the first takes everything back;
+every record produced is read, none twice. With the revoke's commit there is no duplicate to
+allow; at-least-once would allow one after a failed commit. **The Java consumer 4.4.0**
+(`group.protocol=consumer`) and this one shared a six-partition topic in one group: the Java
+member read the first records alone, revoked three partitions when this one joined, this one
+read its three to the end and left, and the Java member took them back from its commits; 150
+records, none lost, none read by both.
+
+**Measured:** FPC 3.2.2 Windows x64: 260 unit and 36 integration tests, the
+interoperability test (three scenarios) and both samples, 0 leaks; the new fixture 8 times in a
+row. Two mutations (no auto-commit before a revoke; a stale member without its Lost event) each
+make one test fail. Linux (Docker): the same, the interoperability test and both samples too,
+and both suites 5 times in three containers at once with `--cpus=1` (30 runs). Delphi 12 Win32
+and Win64: 260 and 36, 0 leaks; the interoperability test (three scenarios) and both samples
+with the Delphi programs too.
+
+**Decided while writing:**
+
+- **Commits at the start of `Poll`**, positions as `Poll` returned them: the same moment as
+  Java's, with no background fetcher to make positions move between two calls.
+- **The auto-commit on its interval sends only positions that changed** since the last commit
+  (Java sends them again anyway, which keeps offsets alive under `offsets.retention.minutes`; a
+  KIP-848 group's offsets don't expire while it has members).
+- **The asynchronous commits are waited for before the leave in `Close`** (Java waits after it):
+  the member can still commit with its epoch.
+- **Reading the committed offsets blocks the `Poll` that needs them** (up to the request
+  timeout; retried after `RetryBackoffMs` on a timeout). Java reads them on its background
+  thread. A `Wakeup` meanwhile takes effect when that read returns.
+- **A commit's failure inside the revoke doesn't stop the revoke** (Java's), and `Close`
+  swallows each step's failure; a failed auto-commit is retried at the next interval.
+
+**Not done yet:** static membership (`group.instance.id`), regex subscriptions, pause/resume,
+the classic protocol (decision 4), metrics.
 
 ## 8. Open questions
 

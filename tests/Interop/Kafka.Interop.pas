@@ -24,6 +24,16 @@
       record, "R <n> <partition> <offset>", for the script to compare with
       what the Java console consumer and kafka-dump-log.sh read.
 
+    KafkaInterop group <bootstrap> <topic> <group> <from> <to> <partitions>
+      The KIP-848 consumer group shared with the Java consumer 4.4.0
+      (group.protocol=consumer), which already holds every partition: this
+      subscribes, waits until the broker gave it <partitions> of them (the
+      Java member revoked them first), produces the records <from> to
+      <to> - 1 (key and value "g <n>", the key the number), reads its
+      partitions up to their end, and closes (the auto-commit, the leave).
+      It prints "A <p>,<p>..." (its partitions) and "G <n> <partition>" per
+      record read, for the script to compare with what Java read.
+
   The fixture is the Java console producer's own input: "headers TAB key TAB
   value" per line, headers "name:value" separated by commas, NULL for a
   null key or header value. Header "n" numbers the records.
@@ -49,6 +59,7 @@ uses
   PascalCommon.Threading,
   Kafka.Types,
   Kafka.Compression,
+  Kafka.Protocol.Primitives,
   Kafka.Protocol.RecordBatch,
   Kafka.Partitioner,
   Kafka.Cluster,
@@ -307,18 +318,125 @@ begin
   end;
 end;
 
+function GroupNumber(const ARecord: TKafkaConsumerRecord): Integer;
+var
+  LText: string;
+begin
+  if not PcTryUtf8BytesToString(ARecord.Value, LText) or (Copy(LText, 1, 2) <> 'g ') or
+    not TryStrToInt(Copy(LText, 3, MaxInt), Result) then
+    raise EInteropFailure.CreateFmt('partition %d, offset %d: not a record of this test',
+      [ARecord.Partition, ARecord.Offset]);
+end;
+
+function PartitionList(const A: TKafkaTopicPartitionArray): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 0 to High(A) do
+  begin
+    if I > 0 then
+      Result := Result + ',';
+    Result := Result + IntToStr(A[I].Partition);
+  end;
+end;
+
+function RunGroup(const ABootstrap, ATopic, AGroup: string; AFrom, ATo,
+  AWant: Integer): string;
+var
+  P: TKafkaConsumerParams;
+  PP: TKafkaProducerParams;
+  C: TKafkaConsumer;
+  Pr: TKafkaProducer;
+  LGot: TKafkaConsumerRecordArray;
+  LHeld: TKafkaTopicPartitionArray;
+  LEnds: TKafkaInt64Array;
+  LDeadline: UInt64;
+  I, LCount: Integer;
+  LDone: Boolean;
+  LText: string;
+
+  procedure Take(const ARecords: TKafkaConsumerRecordArray);
+  var
+    K: Integer;
+  begin
+    for K := 0 to High(ARecords) do
+    begin
+      System.WriteLn(Format('G %d %d', [GroupNumber(ARecords[K]), ARecords[K].Partition]));
+      Inc(LCount);
+    end;
+  end;
+
+begin
+  LCount := 0;
+  P := KafkaConsumerParams(ABootstrap);
+  P.Cluster.Connection.ClientId := 'pascal-kafka-faa-interop-group';
+  P.GroupId := AGroup;
+  P.AutoOffsetReset := korEarliest;
+  P.FetchMaxWaitMs := 200;
+  PP := KafkaProducerParams(ABootstrap);
+  PP.Cluster.Connection.ClientId := 'pascal-kafka-faa-interop-group';
+  Pr := nil;
+  C := TKafkaConsumer.Create(P);
+  try
+    C.Open;
+    C.Subscribe([ATopic]);
+    // The broker's uniform assignor splits the partitions between the two
+    // members once the Java one has revoked them (two heartbeats of 5 s).
+    LDeadline := PcTickMs + 60000;
+    while (Length(C.Assignment) <> AWant) and (PcTickMs < LDeadline) do
+      Take(C.Poll(500));
+    Check(Length(C.Assignment) = AWant, 'given %d partitions in 60 s, not %d',
+      [Length(C.Assignment), AWant]);
+    LHeld := C.Assignment;
+    Pr := TKafkaProducer.Create(PP);
+    Pr.Open;
+    for I := AFrom to ATo - 1 do
+      Pr.Send(KafkaProducerRecord(ATopic, PcStringToUtf8Bytes(IntToStr(I)),
+        PcStringToUtf8Bytes('g ' + IntToStr(I))));
+    Check(Pr.Flush(60000), 'not flushed in 60 s', []);
+    // Its partitions up to their end.
+    LEnds := C.EndOffsets(LHeld);
+    LDeadline := PcTickMs + 60000;
+    repeat
+      Take(C.Poll(500));
+      Check(PartitionList(C.Assignment) = PartitionList(LHeld),
+        'the assignment changed while reading: %s, then %s',
+        [PartitionList(LHeld), PartitionList(C.Assignment)]);
+      LDone := True;
+      for I := 0 to High(LHeld) do
+        if C.Position(LHeld[I].Topic, LHeld[I].Partition) < LEnds[I] then
+          LDone := False;
+    until LDone or (PcTickMs >= LDeadline);
+    Check(LDone, 'its partitions were not read to their end in 60 s', []);
+    LText := PartitionList(LHeld);
+    C.Close; // the auto-commit, then the leave
+    System.WriteLn('A ' + LText);
+    Result := Format('OK pascal group: given partitions %s next to the Java member, read %d ' +
+      'records, committed and left', [LText, LCount]);
+  finally
+    Pr.Free;
+    C.Free;
+  end;
+end;
+
 function KafkaInteropMain: Integer;
 var
   LMode: string;
 begin
-  if ParamCount <> 4 then
+  LMode := ParamStr(1);
+  if not (((ParamCount = 4) and ((LMode = 'consume') or (LMode = 'produce'))) or
+    ((ParamCount = 7) and (LMode = 'group'))) then
   begin
     System.WriteLn('usage: KafkaInterop consume|produce <bootstrap> <topic> <fixture>');
+    System.WriteLn('       KafkaInterop group <bootstrap> <topic> <group> <from> <to> <partitions>');
     Exit(2);
   end;
-  LMode := ParamStr(1);
   try
-    if LMode = 'consume' then
+    if LMode = 'group' then
+      System.WriteLn(RunGroup(ParamStr(2), ParamStr(3), ParamStr(4), StrToInt(ParamStr(5)),
+        StrToInt(ParamStr(6)), StrToInt(ParamStr(7))))
+    else if LMode = 'consume' then
       System.WriteLn(RunConsume(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4))))
     else if LMode = 'produce' then
       System.WriteLn(RunProduce(ParamStr(2), ParamStr(3), LoadFixture(ParamStr(4))))

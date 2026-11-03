@@ -32,8 +32,14 @@
   sent it, and its late Signal must find a live object. Stop is for good:
   every wait on the hub ends at once from then on (Close).
 
-  Delphi x FPC: TKafkaGroupEventHandler is an "of object" method, not a
-  closure (FPC 3.2.2 has no anonymous methods). }
+  Asynchronous commits. CommitAsync returns an IKafkaCommitFuture, which
+  the membership completes from its own thread; it waits on the hub, so
+  closing the membership ends it too (failed, EKafkaConnection). The
+  outcome is a TKafkaCommitReport, the shape of the producer's delivery
+  report.
+
+  Delphi x FPC: TKafkaGroupEventHandler and TKafkaCommitEvent are "of
+  object" methods, not closures (FPC 3.2.2 has no anonymous methods). }
 
 interface
 
@@ -75,9 +81,39 @@ type
   end;
   TKafkaCommittedOffsetArray = array of TKafkaCommittedOffset;
 
-  /// Java's MemberState (KIP-848), for diagnostics and tests.
+  /// Java's MemberState (KIP-848), for diagnostics and tests. Stale: the
+  /// member left because Poll wasn't called within the rebalance timeout
+  /// (max.poll.interval.ms); the next Poll joins again.
   TKafkaMemberState = (kmsUnsubscribed, kmsJoining, kmsReconciling, kmsAcknowledging,
-    kmsStable, kmsFenced, kmsPrepareLeaving, kmsLeaving, kmsFatal);
+    kmsStable, kmsFenced, kmsPrepareLeaving, kmsLeaving, kmsFatal, kmsStale);
+
+  { An asynchronous commit's outcome. }
+  TKafkaCommitReport = record
+    Offsets: TKafkaCommittedOffsetArray;
+    /// nil when committed.
+    ErrorClass: EKafkaClass;
+    /// The Kafka error code of an EKafkaBrokerError; 0 otherwise.
+    ErrorCode: Int16;
+    ErrorMessage: string;
+    function Succeeded: Boolean;
+    /// Raises the failure (EKafkaBrokerError with its code), if any.
+    procedure RaiseIfFailed;
+  end;
+
+  TKafkaCommitEvent = procedure(const AReport: TKafkaCommitReport) of object;
+
+  IKafkaCommitFuture = interface
+    ['{C3A41F07-6D2E-4B98-8E15-7F0B2A9C4D61}']
+    /// True once the commit has its outcome; waits up to ATimeoutMs
+    /// (KAFKA_WAIT_INFINITE: for ever).
+    function Wait(ATimeoutMs: Cardinal): Boolean;
+    function IsDone: Boolean;
+    /// The outcome; EKafka when not done yet.
+    function Report: TKafkaCommitReport;
+    /// Wait, then raises the failure, or EKafkaTimeout when the wait ran
+    /// out first.
+    procedure Get(ATimeoutMs: Cardinal = KAFKA_WAIT_INFINITE);
+  end;
 
   { A consumer's membership in its group (the unit's header). The consumer
     calls every method from its own thread; the membership's own threads
@@ -97,7 +133,10 @@ type
     /// Hands the queued events to AHandler, in order, on the caller's
     /// thread (nil: they are taken without a call). Raises, once, an error
     /// that ended the membership (a GROUP_AUTHORIZATION_FAILED, a broker
-    /// without the protocol). Returns the events handled.
+    /// without the protocol). Returns the events handled. Each call also
+    /// tells the membership the consumer is alive (Java's poll timer: a
+    /// member not polled within its rebalance timeout leaves the group,
+    /// goes stale, and the next Poll joins it again).
     function Poll(AHandler: TKafkaGroupEventHandler): Integer;
     /// The partitions the handled events gave the consumer.
     function Assignment: TKafkaTopicPartitionArray;
@@ -105,6 +144,13 @@ type
     /// until ATimeoutMs runs out (EKafkaTimeout); EKafkaBrokerError for
     /// the rest.
     procedure Commit(const AOffsets: TKafkaCommittedOffsetArray; ATimeoutMs: Cardinal);
+    /// Queues AOffsets for a commit sent from the membership's thread, in
+    /// the order queued, once: not retried (Java's commitAsync); a
+    /// coordinator that isn't known yet is looked up first. The future
+    /// completes with the outcome, or fails when the membership closes.
+    function CommitAsync(const AOffsets: TKafkaCommittedOffsetArray): IKafkaCommitFuture;
+    /// Asynchronous commits not completed yet.
+    function PendingCommits: Integer;
     /// The group's committed offsets for APartitions, in their order.
     function Committed(const APartitions: array of TKafkaTopicPartition;
       ATimeoutMs: Cardinal): TKafkaCommittedOffsetArray;
@@ -149,6 +195,28 @@ type
     function Pause(ADeadline: UInt64): Boolean;
   end;
 
+  { IKafkaCommitFuture over a wait hub (the unit's header). }
+  TKafkaCommitFuture = class(TInterfacedObject, IKafkaCommitFuture)
+  private
+    FHub: TKafkaWaitHub;
+    FHubRef: IKafkaSignal;
+    FDone: Boolean;
+    FReport: TKafkaCommitReport;
+  public
+    constructor Create(AHub: TKafkaWaitHub; const AOffsets: TKafkaCommittedOffsetArray);
+    function Wait(ATimeoutMs: Cardinal): Boolean;
+    function IsDone: Boolean;
+    function Report: TKafkaCommitReport;
+    procedure Get(ATimeoutMs: Cardinal = KAFKA_WAIT_INFINITE);
+    /// The offsets it commits (fixed at creation: no lock needed).
+    function Offsets: TKafkaCommittedOffsetArray;
+    /// Holding the hub's lock: completes it (AClass nil: committed) and
+    /// wakes its waiters. A second call changes nothing.
+    procedure FinishLocked(AClass: EKafkaClass; ACode: Int16; const AMessage: string);
+    /// The same, taking the lock.
+    procedure Finish(AClass: EKafkaClass; ACode: Int16; const AMessage: string);
+  end;
+
 /// The wait after AFailures failures in a row: ABaseMs doubled per failure
 /// up to AMaxMs, then +-20% at random (Java's ExponentialBackoff, factor 2,
 /// jitter 0.2). 0 failures: ABaseMs, with the jitter.
@@ -182,6 +250,115 @@ begin
   LRandom := PcRandomBytes(1);
   LFactor := 0.8 + 0.4 * LRandom[0] / 255;
   Result := Cardinal(Round(LWait * LFactor));
+end;
+
+{ TKafkaCommitReport }
+
+function TKafkaCommitReport.Succeeded: Boolean;
+begin
+  Result := ErrorClass = nil;
+end;
+
+procedure TKafkaCommitReport.RaiseIfFailed;
+begin
+  if ErrorClass = nil then
+    Exit;
+  if ErrorClass = EKafkaBrokerError then
+    raise EKafkaBrokerError.Create(ErrorCode, ErrorMessage);
+  raise ErrorClass.Create(ErrorMessage);
+end;
+
+{ TKafkaCommitFuture }
+
+constructor TKafkaCommitFuture.Create(AHub: TKafkaWaitHub;
+  const AOffsets: TKafkaCommittedOffsetArray);
+begin
+  inherited Create;
+  FHub := AHub;
+  FHubRef := AHub;
+  FReport.Offsets := Copy(AOffsets, 0, Length(AOffsets));
+end;
+
+function TKafkaCommitFuture.Offsets: TKafkaCommittedOffsetArray;
+begin
+  Result := FReport.Offsets;
+end;
+
+function TKafkaCommitFuture.IsDone: Boolean;
+begin
+  FHub.Enter;
+  try
+    Result := FDone;
+  finally
+    FHub.Leave;
+  end;
+end;
+
+function TKafkaCommitFuture.Wait(ATimeoutMs: Cardinal): Boolean;
+var
+  LDeadline, LNow: UInt64;
+begin
+  if ATimeoutMs = KAFKA_WAIT_INFINITE then
+    LDeadline := High(UInt64)
+  else
+    LDeadline := PcTickMs + ATimeoutMs;
+  FHub.Enter;
+  try
+    while not FDone do
+    begin
+      LNow := PcTickMs;
+      if LNow >= LDeadline then
+        Break;
+      if LDeadline - LNow > 1000 then
+        FHub.Wait(1000)
+      else
+        FHub.Wait(Cardinal(LDeadline - LNow));
+    end;
+    Result := FDone;
+  finally
+    FHub.Leave;
+  end;
+end;
+
+function TKafkaCommitFuture.Report: TKafkaCommitReport;
+begin
+  FHub.Enter;
+  try
+    if not FDone then
+      raise EKafka.Create('The commit is not done yet');
+    Result := FReport;
+  finally
+    FHub.Leave;
+  end;
+end;
+
+procedure TKafkaCommitFuture.Get(ATimeoutMs: Cardinal);
+begin
+  if not Wait(ATimeoutMs) then
+    raise EKafkaTimeout.CreateFmt('The commit was not done in %d ms', [ATimeoutMs]);
+  Report.RaiseIfFailed;
+end;
+
+procedure TKafkaCommitFuture.FinishLocked(AClass: EKafkaClass; ACode: Int16;
+  const AMessage: string);
+begin
+  if FDone then
+    Exit;
+  FReport.ErrorClass := AClass;
+  FReport.ErrorCode := ACode;
+  FReport.ErrorMessage := AMessage;
+  FDone := True;
+  FHub.PulseAll;
+end;
+
+procedure TKafkaCommitFuture.Finish(AClass: EKafkaClass; ACode: Int16; const AMessage: string);
+begin
+  FHub.Enter;
+  try
+    FinishLocked(AClass, ACode, AMessage);
+  finally
+    FHub.Leave;
+  end;
 end;
 
 { TKafkaWaitHub }

@@ -1,4 +1,4 @@
-# pascal-kafka-faa — Guide for AI agents
+﻿# pascal-kafka-faa — Guide for AI agents
 
 A native **Apache Kafka client** for Delphi **and** Lazarus/FPC (dual-compiler), with no external
 dependency: no librdkafka. The protocol codecs are generated from Kafka's own message
@@ -116,7 +116,8 @@ first).
   errors), heartbeats with a round-robin assignor that moves a partition only after its owner
   let it go, fencing (`FenceNext`, `RemoveMember`), passive members (`AddMember`), OffsetCommit
   and OffsetFetch with the member's epoch checked; `WaitMemberOwns`, `WaitMemberHeartbeats`
-  and the like wait on its monitor. `Kafka.GroupTests` runs against it.
+  and the like wait on its monitor. `Kafka.GroupTests` (the membership) and
+  `Kafka.ConsumerGroupTests` (the consumer in a group, two of them on one fake) run against it.
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
   SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret, SCRAM bob /
@@ -127,25 +128,29 @@ first).
   `docker exec` in the broker's container, which a Linux test container can't do). Its records
   are `tests/data/interop-records.tsv`, the Java console producer's input format. The topics
   it creates have `retention.ms=-1` (its records' fixed 2026-01-01 timestamps would otherwise
-  be deleted at once by retention).
-- **The sample** `samples/ProduceConsume` (one `.dpr` for Delphi and Lazarus) runs with its
-  defaults against the SASL_SSL listener in the test scripts; it must print `done`.
+  be deleted at once by retention). Its third scenario puts the Java console consumer
+  (`group.protocol=consumer`, in the background) and the program's `group` mode in one group
+  (`interop-group-<n>`, 6 partitions) and checks every record is read once.
+- **The samples** `samples/ProduceConsume` (K1: `Assign`) and `samples/ConsumerGroup` (K2: a
+  group, `KafkaGroupSample`), one `.dpr` each for Delphi and Lazarus, run with their defaults
+  against the SASL_SSL listener in the test scripts; each must print `done`.
 - **Confluent Cloud** (`Kafka.CloudIntegrationTests`): opt-in, `KAFKA_CLOUD_BOOTSTRAP`,
   `KAFKA_CLOUD_API_KEY`, `KAFKA_CLOUD_API_SECRET`, `KAFKA_CLOUD_TOPIC` (an existing topic);
   without them a notice and a pass. Never put credentials in the repository.
   `KAFKA_CLOUD_CA_FILE` points it at a private CA, to try it on `localhost:9097` with alice.
 - **FPC on Windows:** `sh tools/test_fpc.sh` (both suites, then the interoperability test and
-  the sample; everything but the unit suite is skipped with a notice when the broker isn't
+  the samples; everything but the unit suite is skipped with a notice when the broker isn't
   running, `KAFKA_IT=require` makes that a failure). **Linux:** `sh tools/test_fpc_docker.sh`
   (FPC 3.2.2, Debian 12, OpenSSL 3; the integration container shares the broker's network
-  namespace) and `sh tools/test_interop_docker.sh` (interoperability and sample). **CI:**
+  namespace) and `sh tools/test_interop_docker.sh` (interoperability and samples). **CI:**
   `.github/workflows/ci.yml` only calls `sh tools/ci-test.sh`, which runs both.
 - **Delphi:** open `Kafka.groupproj`, run `tests/Unit/Kafka.UnitTests.dproj` and
   `tests/Integration/Kafka.IntegrationSuite.dproj` on Win32 and Win64; build
-  `tests/Interop/KafkaInterop.dproj` and `samples/ProduceConsume/KafkaSample.dproj` and run them
+  `tests/Interop/KafkaInterop.dproj`, `samples/ProduceConsume/KafkaSample.dproj` and
+  `samples/ConsumerGroup/KafkaGroupSample.dproj` and run them
   (`python -I tools/interop.py --pascal tests/Interop/Win64/Debug/KafkaInterop.exe`; the
-  sample with no arguments). A leak in those console programs shows FastMM's message box, which
-  blocks the script until closed. Delphi Community Edition
+  samples with no arguments). A leak in those console programs shows FastMM's message box,
+  which blocks the script until closed. Delphi Community Edition
   doesn't compile from the command line: `dcc32` prints "This version of the product does not
   support command line compiling." and **exits with code 0**. Don't read that as success.
 - **Acceptance criterion for every commit:** FPC Windows x64 + Linux (Docker) + Delphi 12

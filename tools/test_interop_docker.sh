@@ -1,7 +1,7 @@
 #!/bin/sh
 # The interoperability test with the Java client (tools/interop.py), then the
-# K1 sample (samples/ProduceConsume), with the library's side built by FPC
-# 3.2.2 on Linux, in a container that shares the broker's network namespace
+# K1 sample (samples/ProduceConsume) and the K2 one (samples/ConsumerGroup),
+# with the library's side built by FPC 3.2.2 on Linux, in a container that shares the broker's network namespace
 # (as tools/test_fpc_docker.sh's integration suite). The container stays up while tools/interop.py runs the program in
 # it through docker exec, and goes at the end.
 #
@@ -57,3 +57,19 @@ SAMPLE='
   grep -q "^done" /t/sample.log && grep -qE "^0 unfreed memory blocks" /t/sample-heap.txt'
 echo "== sample (samples/ProduceConsume, Linux)"
 MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c "$SAMPLE"
+
+# The K2 sample (a consumer group), with its defaults, on Linux.
+GROUP_SAMPLE='
+  set -e
+  mkdir -p /t/g
+  cp -r /src/samples/ConsumerGroup /t/samples/
+  C=/t/external/pascal-common-faa/src
+  cd /t/samples/ConsumerGroup
+  fpc -v0 -Mdelphi -Fu/t/src -Fi/t/src -Fu$C -Fi$C -FU/t/g -gh -gl -oKafkaGroupSample KafkaGroupSample.dpr > /t/group-sample-build.log 2>&1 \
+    || { grep -iE "error|fatal" /t/group-sample-build.log | head -30; exit 1; }
+  HEAPTRC="log=/t/group-sample-heap.txt" ./KafkaGroupSample > /t/group-sample.log 2>&1 || true
+  grep -E "^(localhost|assigned|done)|Error|failed" /t/group-sample.log
+  grep "unfreed" /t/group-sample-heap.txt
+  grep -q "^done" /t/group-sample.log && grep -qE "^0 unfreed memory blocks" /t/group-sample-heap.txt'
+echo "== sample (samples/ConsumerGroup, Linux)"
+MSYS_NO_PATHCONV=1 docker exec "$NAME" sh -c "$GROUP_SAMPLE"

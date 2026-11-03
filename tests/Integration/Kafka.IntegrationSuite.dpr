@@ -50,6 +50,7 @@ uses
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
   Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas',
   Kafka.GroupIntegrationTests in 'Kafka.GroupIntegrationTests.pas',
+  Kafka.ConsumerGroupIntegrationTests in 'Kafka.ConsumerGroupIntegrationTests.pas',
   Kafka.CloudIntegrationTests in 'Kafka.CloudIntegrationTests.pas';
 
 var

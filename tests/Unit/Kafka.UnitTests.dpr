@@ -61,6 +61,7 @@ uses
   Kafka.MessagesTests in 'Kafka.MessagesTests.pas',
   Kafka.GroupMessagesTests in 'Kafka.GroupMessagesTests.pas',
   Kafka.GroupTests in 'Kafka.GroupTests.pas',
+  Kafka.ConsumerGroupTests in 'Kafka.ConsumerGroupTests.pas',
   Kafka.ProduceFetchTests in 'Kafka.ProduceFetchTests.pas',
   Kafka.RecordBatchTests in 'Kafka.RecordBatchTests.pas',
   Kafka.PartitionerTests in 'Kafka.PartitionerTests.pas',

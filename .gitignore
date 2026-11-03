@@ -20,6 +20,7 @@ tests/Unit/fpc/KafkaUnitTestsFpc
 tests/Integration/fpc/KafkaIntegrationTestsFpc
 tests/Interop/fpc/KafkaInteropFpc
 samples/ProduceConsume/KafkaSample
+samples/ConsumerGroup/KafkaGroupSample
 
 # test script logs
 tests/*/fpc/build.log

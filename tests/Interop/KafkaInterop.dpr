@@ -25,6 +25,10 @@ uses
   Kafka.Messages.ListOffsets in '..\..\src\Kafka.Messages.ListOffsets.pas',
   Kafka.Messages.SaslHandshake in '..\..\src\Kafka.Messages.SaslHandshake.pas',
   Kafka.Messages.SaslAuthenticate in '..\..\src\Kafka.Messages.SaslAuthenticate.pas',
+  Kafka.Messages.FindCoordinator in '..\..\src\Kafka.Messages.FindCoordinator.pas',
+  Kafka.Messages.ConsumerGroupHeartbeat in '..\..\src\Kafka.Messages.ConsumerGroupHeartbeat.pas',
+  Kafka.Messages.OffsetCommit in '..\..\src\Kafka.Messages.OffsetCommit.pas',
+  Kafka.Messages.OffsetFetch in '..\..\src\Kafka.Messages.OffsetFetch.pas',
   Kafka.Transport in '..\..\src\Kafka.Transport.pas',
   Kafka.Sasl in '..\..\src\Kafka.Sasl.pas',
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
@@ -32,6 +36,9 @@ uses
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
+  Kafka.Group in '..\..\src\Kafka.Group.pas',
+  Kafka.Group.Coordinator in '..\..\src\Kafka.Group.Coordinator.pas',
+  Kafka.Group.Consumer in '..\..\src\Kafka.Group.Consumer.pas',
   Kafka.Interop in 'Kafka.Interop.pas';
 
 begin

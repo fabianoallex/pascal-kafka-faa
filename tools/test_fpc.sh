@@ -62,6 +62,15 @@ if docker inspect -f '{{.State.Running}}' pascal-kafka-faa-broker 2>/dev/null | 
   samples/ProduceConsume/KafkaSample.exe > samples/ProduceConsume/run.log 2>&1 || true
   grep -E "^(localhost|done)|Error|failed|unfreed" samples/ProduceConsume/run.log
   grep -q "^done" samples/ProduceConsume/run.log && grep -qE "^0 unfreed memory blocks" samples/ProduceConsume/run.log
+  # The K2 sample (a consumer group), with its defaults.
+  if ! "$LAZBUILD" -B samples/ConsumerGroup/KafkaGroupSample.lpi > samples/ConsumerGroup/build.log 2>&1; then
+    grep -E "Error|Fatal" samples/ConsumerGroup/build.log | head -30
+    exit 1
+  fi
+  echo "== sample (samples/ConsumerGroup, SASL_SSL + SCRAM)"
+  samples/ConsumerGroup/KafkaGroupSample.exe > samples/ConsumerGroup/run.log 2>&1 || true
+  grep -E "^(localhost|assigned|done)|Error|failed|unfreed" samples/ConsumerGroup/run.log
+  grep -q "^done" samples/ConsumerGroup/run.log && grep -qE "^0 unfreed memory blocks" samples/ConsumerGroup/run.log
 elif [ "${KAFKA_IT:-auto}" = require ]; then
   echo "== integration: the broker is not running (docker compose -f docker/docker-compose.yml up -d)"
   exit 1

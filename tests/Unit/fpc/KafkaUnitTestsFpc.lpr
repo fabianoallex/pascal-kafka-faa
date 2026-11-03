@@ -29,6 +29,7 @@ uses
   Kafka.MessagesTests,
   Kafka.GroupMessagesTests,
   Kafka.GroupTests,
+  Kafka.ConsumerGroupTests,
   Kafka.ProduceFetchTests,
   Kafka.RecordBatchTests,
   Kafka.PartitionerTests,

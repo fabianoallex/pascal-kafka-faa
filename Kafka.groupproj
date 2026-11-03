@@ -15,6 +15,9 @@
         <Projects Include="samples\ProduceConsume\KafkaSample.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\ConsumerGroup\KafkaGroupSample.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -41,6 +44,9 @@
     <Target Name="KafkaSample">
         <MSBuild Projects="samples\ProduceConsume\KafkaSample.dproj"/>
     </Target>
+    <Target Name="KafkaGroupSample">
+        <MSBuild Projects="samples\ConsumerGroup\KafkaGroupSample.dproj"/>
+    </Target>
     <Target Name="Kafka_IntegrationSuite:Clean">
         <MSBuild Projects="tests\Integration\Kafka.IntegrationSuite.dproj" Targets="Clean"/>
     </Target>
@@ -49,6 +55,9 @@
     </Target>
     <Target Name="KafkaSample:Clean">
         <MSBuild Projects="samples\ProduceConsume\KafkaSample.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="KafkaGroupSample:Clean">
+        <MSBuild Projects="samples\ConsumerGroup\KafkaGroupSample.dproj" Targets="Clean"/>
     </Target>
     <Target Name="Kafka_IntegrationSuite:Make">
         <MSBuild Projects="tests\Integration\Kafka.IntegrationSuite.dproj" Targets="Make"/>
@@ -59,14 +68,17 @@
     <Target Name="KafkaSample:Make">
         <MSBuild Projects="samples\ProduceConsume\KafkaSample.dproj" Targets="Make"/>
     </Target>
+    <Target Name="KafkaGroupSample:Make">
+        <MSBuild Projects="samples\ConsumerGroup\KafkaGroupSample.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="Kafka_UnitTests;Kafka_IntegrationSuite;KafkaInterop;KafkaSample"/>
+        <CallTarget Targets="Kafka_UnitTests;Kafka_IntegrationSuite;KafkaInterop;KafkaSample;KafkaGroupSample"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Kafka_UnitTests:Clean;Kafka_IntegrationSuite:Clean;KafkaInterop:Clean;KafkaSample:Clean"/>
+        <CallTarget Targets="Kafka_UnitTests:Clean;Kafka_IntegrationSuite:Clean;KafkaInterop:Clean;KafkaSample:Clean;KafkaGroupSample:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Kafka_UnitTests:Make;Kafka_IntegrationSuite:Make;KafkaInterop:Make;KafkaSample:Make"/>
+        <CallTarget Targets="Kafka_UnitTests:Make;Kafka_IntegrationSuite:Make;KafkaInterop:Make;KafkaSample:Make;KafkaGroupSample:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>
