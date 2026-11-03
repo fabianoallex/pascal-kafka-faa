@@ -203,6 +203,16 @@ the sample against Confluent Cloud, has been run.
   a user `carol` / `carol-secret`; the samples take `--sasl scram-sha-512`. Captures: the Java
   client's SCRAM-SHA-512 exchange (282 frames). Tests: draft-melnikov-scram-sha-512's example,
   Java's exchange, the fake (328 unit tests in all) and Kafka 4.4.0 (47 integration tests).
+- OAUTHBEARER with the token supplied (phase K3, step 6): `ksmOAuthBearer`,
+  `TKafkaConnectionParams.SaslOAuthBearerTokenProvider` (`TKafkaOAuthBearerTokenProvider`, a
+  `function: string of object` called at each new connection, KIP-368's replacement included)
+  and `SaslOAuthBearerExtensions` (`KafkaSaslExtension`); `TKafkaOAuthBearerClient` writes RFC
+  7628's initial response as Java does and answers a refusal with kvsep;
+  `KafkaIsOAuthBearerToken`. `EKafkaAuthentication.BrokerMessage`: the broker's message as it
+  came, with OAUTHBEARER its JSON. The fake broker speaks OAUTHBEARER; `docker/` adds the
+  `OAUTH` listener (9099, Kafka's unsecured JWS validator, test only); the K1 sample takes
+  `--sasl oauthbearer --token-env NAME` and `--extension`. Captures: the Java client's
+  OAUTHBEARER exchanges and hand-built ones (306 frames). Tests: 342 unit and 51 integration.
 
 ### Changed
 

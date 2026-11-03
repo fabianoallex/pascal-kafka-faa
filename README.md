@@ -7,7 +7,7 @@ time.
 **Status: early, not released.** Phases K1, K2 and the start of K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, snappy and lz4 (in Pascal, both
 directions) and zstd (read, in Pascal; not written yet), murmur2 partitioning compatible
-with Java, a connection per broker, SASL PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 over plaintext or TLS, the
+with Java, a connection per broker, SASL PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 and OAUTHBEARER over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer (idempotent by default), and the consumer with partitions
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
 events, synchronous, asynchronous and automatic commits), checked against the Java client in
@@ -61,6 +61,25 @@ listener without SASL raise `EKafkaAuthentication` (with the broker's error code
 never retried); a client without SASL on a SASL listener is hung up on by the broker
 (`EKafkaConnection`). A broker with `connections.max.reauth.ms` (KIP-368) gets a new
 connection before each session ends.
+
+OAUTHBEARER takes a token the application got from its issuer (the library runs no OIDC flow),
+through a method called at each new connection:
+
+```pascal
+function TMyTokens.Current: string;   // thread-safe: called from the library's threads
+begin
+  Result := FToken;                   // renewed by the application before it expires
+end;
+...
+  Params.Cluster.Connection.SaslMechanism := ksmOAuthBearer;
+  Params.Cluster.Connection.SaslOAuthBearerTokenProvider := Tokens.Current;
+  SetLength(Params.Cluster.Connection.SaslOAuthBearerExtensions, 1);   // if the broker asks
+  Params.Cluster.Connection.SaslOAuthBearerExtensions[0] := KafkaSaslExtension('logicalCluster', 'lkc-1');
+```
+
+The broker's session lasts until the token's `exp`; the connection that replaces one near its
+end asks for the token again. A refused token raises `EKafkaAuthentication` with the broker's
+JSON in `BrokerMessage` (`{"status":"invalid_token"}`).
 
 The producer is **idempotent by default**, as Java's since 3.0: a retry after a lost answer
 isn't written twice, and up to five batches of a partition are in flight with their order
@@ -203,7 +222,8 @@ partitions, hand them over through their commits, and read every record once.
   protocol of older brokers isn't there yet). Developed and tested against Apache Kafka 4.4.0.
 - SASL: PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 (`ksmScramSha512`, as Amazon MSK uses). User
   name and password are sent as their UTF-8 bytes, without SASLprep (as Java's client).
-  OAUTHBEARER: phase K3. GSSAPI/Kerberos: no plan.
+  OAUTHBEARER with a token the application supplies (no OIDC flow, no token endpoint).
+  GSSAPI/Kerberos: no plan.
 - TLS certificates (the common library's rule): CA files are PEM on both backends; a client
   certificate is a PEM pair on OpenSSL and a PFX on SChannel. A JKS keystore must be converted
   (`keytool -importkeystore ... -deststoretype PKCS12`, then `openssl pkcs12` for PEM).

@@ -445,3 +445,44 @@ the group ones came from two brokers: the container is recreated between session
 has new ids. The tests read an id from a capture (`CapturedTopicId` in
 `Kafka.GroupMessagesTests`) or name the one they need (`gIIkYqBfQzW_O9gEpXKFuQ`, the records'
 topic, in `Kafka.MessagesTests`).
+
+## OAUTHBEARER (2026-11-03, same file)
+
+The `OAUTH` listener of `docker/docker-compose.yml` (9099): SASL_PLAINTEXT with OAUTHBEARER
+alone, Kafka's unsecured JWS validator, scope `kafka` required.
+
+**The Java client.** Its unsecured login (`OAuthBearerUnsecuredLoginCallbackHandler`, the
+default without a token endpoint) writes the token from the JAAS options:
+
+```sh
+python -I tools/capture_proxy.py --listen 19094 --target localhost:9099 --out .ci/cap-oauth.jsonl &
+docker exec pascal-kafka-faa-broker sh -c '
+  printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=OAUTHBEARER\nsasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub=\"alice\" unsecuredLoginStringClaim_scope=\"kafka\" unsecuredLoginExtension_traceId=\"abc123\";\n" > /tmp/oauth.properties
+  printf "security.protocol=SASL_PLAINTEXT\nsasl.mechanism=OAUTHBEARER\nsasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub=\"alice\";\n" > /tmp/oauth-noscope.properties
+  for c in oauth oauth-noscope; do
+    /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server host.docker.internal:19094 \
+      --command-config /tmp/$c.properties
+  done'
+python -I tools/captures_from_proxy.py --in .ci/cap-oauth.jsonl --conn 1 \
+  --apis sasl-handshake,sasl-authenticate --prefix java-oauth \
+  --source "java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS, extension traceId)" \
+  --out tests/data/captures-4.4.0.jsonl
+python -I tools/captures_from_proxy.py --in .ci/cap-oauth.jsonl --conn 2 \
+  --apis sasl-handshake,sasl-authenticate --prefix java-oauth-scope \
+  --source "java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)" \
+  --out tests/data/captures-4.4.0.jsonl
+```
+
+The first exchange is one SaslAuthenticate: the initial response with the token (its `exp` and
+`iat` in Java's exponent notation, `1.79...E9`) and `traceId=abc123`, answered with no bytes and
+a session lifetime of 3 599 980 ms, the token's hour. The second is the refusal: error 0 with
+`{"status":"insufficient_scope", "scope":"[kafka]"}` as the challenge, Java's kvsep alone, and
+error 58 with the same JSON as the message.
+
+**By hand** (`capture_versions.py --apis sasl-oauth`): SaslAuthenticate v0, v1 and v2 with a
+token the script writes (alg none, sub alice, scope kafka, iat 2026-01-01, exp 2100-01-01:
+fixed, so the requests are the same at each run; v1 and v2's answers carry the time left to
+2100, which is not), v2 with `traceId=abc123`, a token that expired an hour after 2026-01-01
+(`{"status":"invalid_token"}`, then error 58 after the kvsep) and an initial response without
+`auth` (error 58, Java's generic message). The script checks each expected error code; all 7
+matched. 24 frames in all (306).

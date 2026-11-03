@@ -37,6 +37,16 @@ expected error code of each is checked. SCRAM's exchanges come from the
 Java client instead (docs/codec-captures.md): its proof needs the nonce,
 which a test can only replay from a recorded exchange.
 
+OAUTHBEARER (--apis sasl-oauth), on the listener of Kafka's unsecured JWS
+validator (--oauth-broker, 9099): SaslAuthenticate v0, v1 and v2 with a
+token the script writes (alg none, sub alice, scope kafka, iat
+2026-01-01T00:00:00Z and exp 2100-01-01T00:00:00Z: fixed, so the requests
+are the same at each run; v1 and v2 answer the session lifetime the token's
+exp gives, which is not), v2 with the extension traceId=abc123; a token that
+expired (exp 2026-01-01T01:00:00Z): the broker's JSON as the challenge with
+error 0, then the client's %x01 and error 58 with the JSON as the message
+(RFC 7628 section 3.2.3); and an initial response without auth (error 58).
+
 Consumer groups (--apis group), on --broker: FindCoordinator v0-v6 for group
 captured-group; OffsetCommit v2-v10, a simple commit (no member, no
 generation) of offset 100 + version on partition 0 of --records-topic, with
@@ -67,9 +77,11 @@ tests/data/captures-<tag>.jsonl (docs/codec-captures.md):
     python -I tools/capture_versions.py --broker localhost:9092 \\
         --apis produce,list-offsets,fetch --out FILE
     python -I tools/capture_versions.py --apis sasl --out FILE
+    python -I tools/capture_versions.py --apis sasl-oauth --out FILE
 """
 
 import argparse
+import base64
 import gzip
 import json
 import socket
@@ -78,7 +90,7 @@ import time
 
 CLIENT_ID = "pascal-kafka-faa-capture"
 ALL_APIS = ["api-versions", "metadata", "produce", "list-offsets", "fetch", "sasl", "group",
-            "producer-id"]
+            "producer-id", "sasl-oauth"]
 SASL_HANDSHAKE, SASL_AUTHENTICATE = 17, 36
 
 
@@ -418,6 +430,48 @@ def sasl_jobs(sasl, reauth):
                  sasl_handshake_body("GSSAPI"), 33)]),
         (sasl, [hs, ("sasl-authenticate-v2-failed", SASL_AUTHENTICATE, 2,
                      sasl_authenticate_body(2, plain_token("alice", "wrong")), 58)]),
+    ]
+
+
+def unsecured_jws(claims):
+    """A JWS with {"alg":"none"} and no signature (RFC 7515 and 7519), as
+    Kafka's unsecured validator reads it."""
+    def b64(obj):
+        raw = json.dumps(obj, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=")
+    return b64({"alg": "none"}) + b"." + b64(claims) + b"."
+
+
+def oauth_initial_response(token, extensions=()):
+    """RFC 7628's client initial response, as Java writes it:
+    n,,^Aauth=Bearer <token>^A<key>=<value>^A...^A"""
+    msg = b"n,,\x01auth=Bearer " + token
+    for k, v in extensions:
+        msg += b"\x01" + k.encode() + b"=" + v.encode()
+    return msg + b"\x01\x01"
+
+
+def oauth_jobs(oauth):
+    iat, exp = 1767225600, 4102444800  # 2026-01-01 and 2100-01-01, UTC
+    good = unsecured_jws({"exp": exp, "iat": iat, "scope": "kafka", "sub": "alice"})
+    expired = unsecured_jws({"exp": iat + 3600, "iat": iat, "scope": "kafka", "sub": "alice"})
+    hs = (None, SASL_HANDSHAKE, 1, sasl_handshake_body("OAUTHBEARER"), 0)
+    return [
+        (oauth, [hs, ("sasl-authenticate-v0-oauth", SASL_AUTHENTICATE, 0,
+                      sasl_authenticate_body(0, oauth_initial_response(good)), 0)]),
+        (oauth, [hs, ("sasl-authenticate-v1-oauth", SASL_AUTHENTICATE, 1,
+                      sasl_authenticate_body(1, oauth_initial_response(good)), 0)]),
+        (oauth, [hs, ("sasl-authenticate-v2-oauth", SASL_AUTHENTICATE, 2,
+                      sasl_authenticate_body(2, oauth_initial_response(good)), 0)]),
+        (oauth, [hs, ("sasl-authenticate-v2-oauth-extension", SASL_AUTHENTICATE, 2,
+                      sasl_authenticate_body(2, oauth_initial_response(good, [("traceId", "abc123")])),
+                      0)]),
+        (oauth, [hs, ("sasl-authenticate-v2-oauth-expired", SASL_AUTHENTICATE, 2,
+                      sasl_authenticate_body(2, oauth_initial_response(expired)), 0),
+                 ("sasl-authenticate-v2-oauth-after-error", SASL_AUTHENTICATE, 2,
+                  sasl_authenticate_body(2, b"\x01"), 58)]),
+        (oauth, [hs, ("sasl-authenticate-v2-oauth-malformed", SASL_AUTHENTICATE, 2,
+                      sasl_authenticate_body(2, b"n,,\x01\x01"), 58)]),
     ]
 
 
@@ -773,11 +827,15 @@ def main():
     ap.add_argument("--idempotent-topic", default="captured-idempotent",
                     help="the idempotent batches' topic (--apis producer-id)")
     ap.add_argument("--apis", default=",".join(a for a in ALL_APIS
-                                              if a not in ("sasl", "group", "producer-id")))
+                                              if a not in ("sasl", "group", "producer-id",
+                                                           "sasl-oauth")))
     ap.add_argument("--sasl-broker", default="localhost:9096",
                     help="a SASL_PLAINTEXT listener with PLAIN (--apis sasl)")
     ap.add_argument("--reauth-broker", default="localhost:9098",
                     help="the same with connections.max.reauth.ms set (--apis sasl)")
+    ap.add_argument("--oauth-broker", default="localhost:9099",
+                    help="a SASL_PLAINTEXT listener with OAUTHBEARER and Kafka's unsecured "
+                         "validator (--apis sasl-oauth)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     host, port = args.broker.rsplit(":", 1)
@@ -821,12 +879,15 @@ def main():
         jobs.append(("fetch-v18-cut", 1, 18, 12,
                      fetch_body(18, args.records_topic, topic_id, 300), fetch_error))
 
+    def addr(a):
+        h, p = a.rsplit(":", 1)
+        return h, int(p)
+
     with open(args.out, "a", encoding="ascii", newline="\n") as out:
         if "sasl" in apis:
-            def addr(a):
-                h, p = a.rsplit(":", 1)
-                return h, int(p)
             run_sasl(sasl_jobs(addr(args.sasl_broker), addr(args.reauth_broker)), out)
+        if "sasl-oauth" in apis:
+            run_sasl(oauth_jobs(addr(args.oauth_broker)), out)
         if "group" in apis:
             run_group(host, port, group_jobs(args.records_topic, topic_id), out)
         if "producer-id" in apis:

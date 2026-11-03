@@ -66,9 +66,21 @@
   password); the broker closes the connection after a failed exchange, and
   Open closes it on its side too.
 
-  Re-authentication (KIP-368). A broker with connections.max.reauth.ms
-  answers SaslAuthenticate (v1+) with a session lifetime, and closes the
-  connection when a request arrives after it ran out. Java's client
+  OAUTHBEARER takes its token from SaslOAuthBearerTokenProvider, called in
+  Open on the thread that opens the connection, once per connection: a
+  connection that replaces one near its session's end (below) asks it again,
+  so an application's provider that renews its token before the old one
+  expires is all KIP-368 needs. Its exception, an empty token and a token
+  that isn't an RFC 6750 b64token fail Open with EKafkaAuthentication
+  before SaslHandshake is sent; neither the token nor its claims appear in
+  a message. SaslOAuthBearerExtensions go with the token (Kafka.Sasl). A
+  broker that refuses the token answers with RFC 7628's JSON; the
+  exception carries it (BrokerMessage, and in its message).
+
+  Re-authentication (KIP-368). A broker with connections.max.reauth.ms, or
+  with OAUTHBEARER (the token's exp, capped by connections.max.reauth.ms when
+  that is set), answers SaslAuthenticate (v1+) with a session lifetime, and
+  closes the connection when a request arrives after it ran out. Java's client
   re-authenticates on the same socket at a random point between 85% and 95%
   of the lifetime. This connection doesn't: it notes that point
   (ReauthenticationDue), and Kafka.Cluster opens a new connection to that
@@ -152,6 +164,11 @@ type
     SaslMechanism: TKafkaSaslMechanism;
     SaslUsername: string;
     SaslPassword: string;
+    /// ksmOAuthBearer: the token for each authentication (the unit's header;
+    /// Kafka.Sasl's TKafkaOAuthBearerTokenProvider says what it must do).
+    SaslOAuthBearerTokenProvider: TKafkaOAuthBearerTokenProvider;
+    /// ksmOAuthBearer: SASL extensions sent with the token (KafkaSaslExtension).
+    SaslOAuthBearerExtensions: TKafkaSaslExtensionArray;
   end;
 
   { Fired by a response future once it is done (the unit's header). }
@@ -260,6 +277,8 @@ type
     function TakePending(ACorrelationId: Int32): TPending;
     procedure Negotiate;
     procedure BuildNegotiatedTable;
+    /// The mechanism's client; for OAUTHBEARER, with the provider's token.
+    function CreateSaslClient(const AContext: string): TKafkaSaslClient;
     procedure Authenticate;
     function RequestTimeoutMs: Cardinal;
     function MaxResponseBytes: Integer;
@@ -978,10 +997,38 @@ begin
   end;
 end;
 
+function TKafkaConnection.CreateSaslClient(const AContext: string): TKafkaSaslClient;
+var
+  LToken: string;
+begin
+  if FParams.SaslMechanism <> ksmOAuthBearer then
+  begin
+    Result := KafkaCreateSaslClient(FParams.SaslMechanism, FParams.SaslUsername,
+      FParams.SaslPassword);
+    Exit;
+  end;
+  if not Assigned(FParams.SaslOAuthBearerTokenProvider) then
+    raise EKafkaAuthentication.Create(AContext + ': no token provider ' +
+      '(TKafkaConnectionParams.SaslOAuthBearerTokenProvider)');
+  try
+    LToken := FParams.SaslOAuthBearerTokenProvider();
+  except
+    on E: Exception do
+      raise EKafkaAuthentication.CreateFmt('%s: the token provider failed: %s: %s',
+        [AContext, E.ClassName, E.Message]);
+  end;
+  try
+    Result := TKafkaOAuthBearerClient.Create(LToken, FParams.SaslOAuthBearerExtensions);
+  except
+    on E: EKafkaAuthentication do
+      raise EKafkaAuthentication.Create(AContext + ': ' + E.Message);
+  end;
+end;
+
 procedure TKafkaConnection.Authenticate;
 const
-  // PLAIN takes one, SCRAM two; a broker asking for more is not following
-  // the mechanism.
+  // PLAIN takes one, SCRAM two, a refused OAUTHBEARER token two; a broker
+  // asking for more is not following the mechanism.
   MAX_ROUNDS = 8;
 var
   LClient: TKafkaSaslClient;
@@ -994,17 +1041,18 @@ var
   LRounds, I: Integer;
   LSentAt: UInt64;
   LLifetime: Int64;
-  LContext, LDetail: string;
+  LContext, LDetail, LBrokerMessage: string;
 begin
-  LContext := Format('SASL %s to %s as "%s"', [KafkaSaslMechanismName(FParams.SaslMechanism),
-    FAddress, FParams.SaslUsername]);
+  LContext := Format('SASL %s to %s', [KafkaSaslMechanismName(FParams.SaslMechanism),
+    FAddress]);
+  if FParams.SaslMechanism <> ksmOAuthBearer then
+    LContext := LContext + Format(' as "%s"', [FParams.SaslUsername]);
   if not TryNegotiatedVersion(KAFKA_API_KEY_SASL_HANDSHAKE, LHandshakeVersion) or
     (LHandshakeVersion < 1) then
     raise EKafkaAuthentication.Create(LContext + ': the broker offers no SaslHandshake v1');
   if not TryNegotiatedVersion(KAFKA_API_KEY_SASL_AUTHENTICATE, LAuthVersion) then
     raise EKafkaAuthentication.Create(LContext + ': the broker offers no SaslAuthenticate');
-  LClient := KafkaCreateSaslClient(FParams.SaslMechanism, FParams.SaslUsername,
-    FParams.SaslPassword);
+  LClient := CreateSaslClient(LContext);
   try
     LHandshake.Init;
     LHandshake.Mechanism := LClient.Mechanism;
@@ -1050,17 +1098,30 @@ begin
         LAuth.ToBytes(LAuthVersion)), LAuthVersion);
       if LAnswer.ErrorCode <> 0 then
       begin
+        LBrokerMessage := '';
+        if not LAnswer.ErrorMessageIsNull then
+          LBrokerMessage := LAnswer.ErrorMessage;
+        // OAUTHBEARER: Kafka repeats the challenge's JSON in its message;
+        // for a broker that doesn't, the JSON from the challenge.
+        if (LBrokerMessage = '') and (LClient is TKafkaOAuthBearerClient) then
+          LBrokerMessage := TKafkaOAuthBearerClient(LClient).ServerError;
         LDetail := '';
-        if not LAnswer.ErrorMessageIsNull and (LAnswer.ErrorMessage <> '') then
-          LDetail := ': ' + LAnswer.ErrorMessage;
-        raise EKafkaAuthentication.CreateCode(LAnswer.ErrorCode, Format('%s: %s%s',
-          [LContext, KafkaErrorText(LAnswer.ErrorCode), LDetail]));
+        if LBrokerMessage <> '' then
+          LDetail := ': ' + LBrokerMessage;
+        raise EKafkaAuthentication.CreateBroker(LAnswer.ErrorCode, LBrokerMessage,
+          Format('%s: %s%s', [LContext, KafkaErrorText(LAnswer.ErrorCode), LDetail]));
       end;
       try
         LToken := LClient.Evaluate(LAnswer.AuthBytes);
       except
         on E: EKafkaAuthentication do
-          raise EKafkaAuthentication.Create(LContext + ': ' + E.Message);
+        begin
+          LBrokerMessage := '';
+          if LClient is TKafkaOAuthBearerClient then
+            LBrokerMessage := TKafkaOAuthBearerClient(LClient).ServerError;
+          raise EKafkaAuthentication.CreateBroker(E.ErrorCode, LBrokerMessage,
+            LContext + ': ' + E.Message);
+        end;
       end;
     until LClient.IsComplete;
   finally

@@ -1,7 +1,15 @@
 ﻿unit Kafka.TestHelpers;
 
 { Small helpers shared by the unit and integration tests: hex in and out,
-  byte literals, finding the pascal-common-faa test PKI, and unique ids.
+  byte literals, finding the pascal-common-faa test PKI, unique ids, and
+  unsecured JWS tokens for OAUTHBEARER.
+
+  KafkaTestUnsecuredJws writes what Kafka's unsecured validator takes
+  (OAuthBearerUnsecuredJws): a header whose "alg" is "none", the claims, an
+  empty signature, each part Base64url without padding. Test-only, as that validator is:
+  anyone can write such a token. iat and exp are seconds since the epoch
+  with three decimals (JWT's NumericDate may have a fraction; Java reads it
+  as a double), so a test can ask for a token that lasts a few seconds.
 
   KafkaTestUniqueId is what tells one run's records and topics from
   another's on the shared broker. Not Random: without Randomize, FPC's (and
@@ -37,14 +45,48 @@ function KafkaTestPkiDir: string;
 /// run or process has.
 function KafkaTestUniqueId: string;
 
+/// Milliseconds since the Unix epoch, UTC.
+function KafkaTestUnixMs: Int64;
+/// An unsecured JWS (alg none) with sub ASubject, iat and exp (in ms since
+/// the epoch, written as seconds), and scope AScope when it isn't ''.
+function KafkaTestUnsecuredJws(const ASubject, AScope: string;
+  AIssuedAtMs, AExpiresAtMs: Int64): string;
+
 implementation
 
 uses
-  PascalCommon.Random;
+  PascalCommon.Random,
+  PascalCommon.Crypto,
+  PascalCommon.Tracing,
+  PascalCommon.Utf8;
 
 function KafkaTestUniqueId: string;
 begin
   Result := BytesToHex(PcRandomBytes(8));
+end;
+
+function KafkaTestUnixMs: Int64;
+begin
+  Result := PcUnixNanoOfLocal(Now) div 1000000;
+end;
+
+function NumericDate(AMs: Int64): string;
+begin
+  Result := Format('%d.%.3d', [AMs div 1000, AMs mod 1000]);
+end;
+
+function KafkaTestUnsecuredJws(const ASubject, AScope: string;
+  AIssuedAtMs, AExpiresAtMs: Int64): string;
+var
+  LClaims: string;
+begin
+  LClaims := '{"sub":"' + ASubject + '","iat":' + NumericDate(AIssuedAtMs) + ',"exp":' +
+    NumericDate(AExpiresAtMs);
+  if AScope <> '' then
+    LClaims := LClaims + ',"scope":"' + AScope + '"';
+  LClaims := LClaims + '}';
+  Result := PcBase64UrlEncode(PcStringToUtf8Bytes('{"alg":"none"}')) + '.' +
+    PcBase64UrlEncode(PcStringToUtf8Bytes(LClaims)) + '.';
 end;
 
 function HexValue(C: Char): Integer;

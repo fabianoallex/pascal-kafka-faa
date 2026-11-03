@@ -20,9 +20,22 @@
   comes from an environment variable (--password-env), so it doesn't land in
   the shell's history; --password exists for the lab.
 
+  OAUTHBEARER: --sasl oauthbearer --token-env NAME. The token is whatever
+  the environment variable NAME holds when a connection authenticates:
+  TEnvTokenProvider.Token is the TKafkaOAuthBearerTokenProvider, called at
+  each new connection. An application's provider would hand out the token
+  it got from its issuer and fetch the next one before that one expires.
+  --extension name=value (repeatable) adds a SASL extension. Against the
+  OAUTH listener of docker/docker-compose.yml (9099, Kafka's unsecured
+  validator, test only), with a token as tests/Unit/Kafka.TestHelpers
+  writes them (KafkaTestUnsecuredJws: sub, scope kafka, exp):
+
+    KafkaSample --bootstrap localhost:9099 --no-tls --sasl oauthbearer
+      --token-env KAFKA_TOKEN
+
   The options, all optional: --bootstrap, --ca, --sasl plain|scram-sha-256|
-  scram-sha-512|none, --user, --password, --password-env, --topic, --count,
-  --no-tls. }
+  scram-sha-512|oauthbearer|none, --user, --password, --password-env,
+  --token-env, --extension, --topic, --count, --no-tls. }
 
 {$APPTYPE CONSOLE}
 
@@ -53,9 +66,38 @@ type
     Mechanism: TKafkaSaslMechanism;
     User: string;
     Password: string;
+    TokenEnv: string;
+    Extensions: TKafkaSaslExtensionArray;
     Topic: string;
     Count: Integer;
   end;
+
+  { OAUTHBEARER's token provider: the token is read from an environment
+    variable at each authentication. Thread-safe as it is: it keeps nothing. }
+  TEnvTokenProvider = class
+  private
+    FName: string;
+  public
+    constructor Create(const AName: string);
+    function Token: string;
+  end;
+
+constructor TEnvTokenProvider.Create(const AName: string);
+begin
+  inherited Create;
+  FName := AName;
+end;
+
+function TEnvTokenProvider.Token: string;
+begin
+  Result := GetEnvironmentVariable(FName);
+  if Result = '' then
+    raise Exception.CreateFmt('the environment variable %s holds no token', [FName]);
+end;
+
+var
+  Options: TOptions;
+  TokenProvider: TEnvTokenProvider;
 
 function DefaultCaFile: string;
 begin
@@ -83,6 +125,8 @@ begin
   Result.Mechanism := ksmScramSha256;
   Result.User := 'bob';
   Result.Password := 'bob-secret';
+  Result.TokenEnv := '';
+  Result.Extensions := nil;
   Result.Topic := 'pascal-kafka-faa-sample';
   Result.Count := 5;
   I := 1;
@@ -110,6 +154,8 @@ begin
         Result.Mechanism := ksmScramSha256
       else if SameText(Value, 'scram-sha-512') then
         Result.Mechanism := ksmScramSha512
+      else if SameText(Value, 'oauthbearer') then
+        Result.Mechanism := ksmOAuthBearer
       else if SameText(Value, 'none') then
         Result.Mechanism := ksmNone
       else
@@ -121,6 +167,16 @@ begin
       Result.Password := Value
     else if Name = '--password-env' then
       Result.Password := GetEnvironmentVariable(Value)
+    else if Name = '--token-env' then
+      Result.TokenEnv := Value
+    else if Name = '--extension' then
+    begin
+      if Pos('=', Value) < 2 then
+        raise Exception.CreateFmt('--extension "%s": name=value expected', [Value]);
+      SetLength(Result.Extensions, Length(Result.Extensions) + 1);
+      Result.Extensions[High(Result.Extensions)] := KafkaSaslExtension(
+        Copy(Value, 1, Pos('=', Value) - 1), Copy(Value, Pos('=', Value) + 1, MaxInt));
+    end
     else if Name = '--topic' then
       Result.Topic := Value
     else if Name = '--count' then
@@ -128,6 +184,12 @@ begin
     else
       raise Exception.CreateFmt('Unknown option "%s"', [Name]);
     Inc(I, 2);
+  end;
+  if Result.Mechanism = ksmOAuthBearer then
+  begin
+    if Result.TokenEnv = '' then
+      raise Exception.Create('--sasl oauthbearer needs --token-env');
+    Result.User := '(token from ' + Result.TokenEnv + ')';
   end;
 end;
 
@@ -142,6 +204,11 @@ begin
   Result.SaslMechanism := O.Mechanism;
   Result.SaslUsername := O.User;
   Result.SaslPassword := O.Password;
+  if O.Mechanism = ksmOAuthBearer then
+  begin
+    Result.SaslOAuthBearerTokenProvider := TokenProvider.Token;
+    Result.SaslOAuthBearerExtensions := O.Extensions;
+  end;
 end;
 
 function Text(const ABytes: TBytes): string;
@@ -238,7 +305,13 @@ begin
   ReportMemoryLeaksOnShutdown := True;
   {$ENDIF}
   try
-    Run(ParseOptions);
+    Options := ParseOptions;
+    TokenProvider := TEnvTokenProvider.Create(Options.TokenEnv);
+    try
+      Run(Options);
+    finally
+      FreeAndNil(TokenProvider);
+    end;
     System.WriteLn('done');
   except
     on E: EKafkaAuthentication do

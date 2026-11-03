@@ -29,8 +29,8 @@ type
   end;
 
 const
-  KAFKA_CAPTURE_COUNT = 282;
-  KAFKA_CAPTURES: array[0..281] of TKafkaCapture = (
+  KAFKA_CAPTURE_COUNT = 306;
+  KAFKA_CAPTURES: array[0..305] of TKafkaCapture = (
     (Name: 'java-admin-api-versions-v5'; Source: 'java kafka-broker-api-versions.sh 4.4.0 (admin client)'; KafkaTag: '4.4.0';
      IsRequest: True; ApiKey: 18; ApiVersion: 5;
      Hex: '0012000500000001000761646d696e2d3100126170616368652d6b61666b612d6a61766106342e342e3000ffffffff00'),
@@ -1314,7 +1314,87 @@ const
     (Name: 'java-scram512-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL SCRAM-SHA-512'; KafkaTag: '4.4.0';
      IsRequest: False; ApiKey: 36; ApiVersion: 2;
      Hex: '7ffffffb000000015b763d7767426e302b4d6c4369416b532b6a77536c4a644646345030664b324642456e746865547671704b6151434e41463365426a546771764763514b5a306a5247655545305537706c767a5975497332446d52377a5341513d3d00' +
-          '0000000000000000')
+          '0000000000000000'),
+    (Name: 'java-oauth-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS, extension traceId)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '001100017ffffff9ffff000b4f41555448424541524552'),
+    (Name: 'java-oauth-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS, extension traceId)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '7ffffff9000000000001000b4f41555448424541524552'),
+    (Name: 'java-oauth-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS, extension traceId)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffaffff009e016e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a45754e7a6b7a4e7a4d324d4459774e44677852546b73496d6c68644349364d5334334f544d334d7a49' +
+          '304e6a41304f4446464f53776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e01747261636549643d616263313233010100'),
+    (Name: 'java-oauth-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS, extension traceId)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffa0000000101000000000036ec6c00'),
+    (Name: 'java-oauth-scope-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 17; ApiVersion: 1;
+     Hex: '001100017ffffff9ffff000b4f41555448424541524552'),
+    (Name: 'java-oauth-scope-sasl-handshake-v1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 17; ApiVersion: 1;
+     Hex: '7ffffff9000000000001000b4f41555448424541524552'),
+    (Name: 'java-oauth-scope-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffaffff007a6e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a45754e7a6b7a4e7a4d324d44597a4d7a637952546b73496d6c68644349364d5334334f544d334d7a4930' +
+          '4e6a4d7a4e7a4e464f53776963335669496a6f69595778705932556966512e010100'),
+    (Name: 'java-oauth-scope-sasl-authenticate-v2-step1'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffa00000001337b22737461747573223a22696e73756666696369656e745f73636f7065222c202273636f7065223a225b6b61666b615d227d000000000000000000'),
+    (Name: 'java-oauth-scope-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '002400027ffffffbffff00020100'),
+    (Name: 'java-oauth-scope-sasl-authenticate-v2-step2'; Source: 'java kafka-broker-api-versions.sh 4.4.0, SASL OAUTHBEARER (unsecured JWS without the required scope)'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '7ffffffb00003a337b22737461747573223a22696e73756666696369656e745f73636f7065222c202273636f7065223a225b6b61666b615d227d01000000000000000000'),
+    (Name: 'sasl-authenticate-v0-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 0;
+     Hex: '00240000000007d2001870617363616c2d6b61666b612d6661612d636170747572650000007e6e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a51784d4449304e4451344d444173496d' +
+          '6c68644349364d5463324e7a49794e5459774d43776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e0101'),
+    (Name: 'sasl-authenticate-v0-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 0;
+     Hex: '000007d20000000000000000'),
+    (Name: 'sasl-authenticate-v1-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 1;
+     Hex: '00240001000007d4001870617363616c2d6b61666b612d6661612d636170747572650000007e6e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a51784d4449304e4451344d444173496d' +
+          '6c68644349364d5463324e7a49794e5459774d43776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e0101'),
+    (Name: 'sasl-authenticate-v1-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 1;
+     Hex: '000007d400000000000000000000021989f97fa4'),
+    (Name: 'sasl-authenticate-v2-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007d6001870617363616c2d6b61666b612d6661612d63617074757265007f6e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a51784d4449304e4451344d444173496d6c68' +
+          '644349364d5463324e7a49794e5459774d43776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e010100'),
+    (Name: 'sasl-authenticate-v2-oauth'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007d600000001010000021989f97f9400'),
+    (Name: 'sasl-authenticate-v2-oauth-extension'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007d8001870617363616c2d6b61666b612d6661612d63617074757265008e016e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a51784d4449304e4451344d444173496d6c' +
+          '68644349364d5463324e7a49794e5459774d43776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e01747261636549643d616263313233010100'),
+    (Name: 'sasl-authenticate-v2-oauth-extension'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007d800000001010000021989f97f8900'),
+    (Name: 'sasl-authenticate-v2-oauth-expired'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007da001870617363616c2d6b61666b612d6661612d63617074757265007f6e2c2c01617574683d4265617265722065794a68624763694f694a756232356c496e302e65794a6c654841694f6a45334e6a63794d6a6b794d444173496d6c68' +
+          '644349364d5463324e7a49794e5459774d43776963324e76634755694f694a7259575a7259534973496e4e3159694936496d467361574e6c496e302e010100'),
+    (Name: 'sasl-authenticate-v2-oauth-expired'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007da000000011b7b22737461747573223a22696e76616c69645f746f6b656e227d000000000000000000'),
+    (Name: 'sasl-authenticate-v2-oauth-after-error'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007db001870617363616c2d6b61666b612d6661612d6361707475726500020100'),
+    (Name: 'sasl-authenticate-v2-oauth-after-error'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007db00003a1b7b22737461747573223a22696e76616c69645f746f6b656e227d01000000000000000000'),
+    (Name: 'sasl-authenticate-v2-oauth-malformed'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: True; ApiKey: 36; ApiVersion: 2;
+     Hex: '00240002000007dd001870617363616c2d6b61666b612d6661612d6361707475726500066e2c2c010100'),
+    (Name: 'sasl-authenticate-v2-oauth-malformed'; Source: 'hand-built'; KafkaTag: '4.4.0';
+     IsRequest: False; ApiKey: 36; ApiVersion: 2;
+     Hex: '000007dd00003a6741757468656e7469636174696f6e206661696c656420647572696e672061757468656e7469636174696f6e2064756520746f20696e76616c69642063726564656e7469616c732077697468205341534c206d656368616e69736d204f' +
+          '4155544842454152455201000000000000000000')
   );
 
 /// The capture's bytes.

@@ -3,9 +3,10 @@
 {$I kafka.inc}
 
 { The client side of SASL PLAIN (RFC 4616), SCRAM-SHA-256 (RFC 5802 and
-  RFC 7677) and SCRAM-SHA-512 (the same exchange over SHA-512, as Kafka's
-  ScramMechanism and draft-melnikov-scram-sha-512): the bytes a connection
-  sends in SaslAuthenticate, and the checks on what the broker answers.
+  RFC 7677), SCRAM-SHA-512 (the same exchange over SHA-512, as Kafka's
+  ScramMechanism and draft-melnikov-scram-sha-512) and OAUTHBEARER (RFC
+  7628): the bytes a connection sends in SaslAuthenticate, and the checks on
+  what the broker answers.
 
   Only the mechanisms live here. The exchange itself (SaslHandshake v1, then
   SaslAuthenticate until the mechanism is complete) is Kafka.Connection's,
@@ -39,6 +40,33 @@
   check; this one keeps a hostile broker from asking for billions of PBKDF2
   rounds.
 
+  OAUTHBEARER sends an OAuth 2 bearer token the application obtained (no
+  OIDC flow here: no token endpoint, no client secret, no refresh of its
+  own). The initial response is Java's OAuthBearerClientInitialResponse
+  byte for byte: gs2 header "n,," (no authzid, as Java's client), then
+  kvsep (byte 1), "auth=Bearer <token>", each SASL extension as
+  "<name>=<value>", each followed by kvsep, and one more kvsep at the end.
+  The broker answers success with nothing. A refusal comes as a challenge:
+  the JSON object of RFC 7628 section 3.2.2 (its "status", invalid_token for
+  instance, with "scope" and "openid-configuration" when the validator
+  gives them); the client answers it with kvsep alone, and the broker
+  then fails the exchange (SASL_AUTHENTICATION_FAILED, the JSON as its
+  message), as Java's OAuthBearerSaslClient does. The JSON is kept (ServerError) for the
+  exception if the broker were to send no message of its own.
+  The token is checked against RFC 6750's b64token (what Java's broker
+  parses: letters, digits, - . _ ~ + / and trailing =); extension names are
+  letters only and not "auth", values printable ASCII, space, tab, CR or
+  LF, and names unique (Java's checks). A failed check names what is wrong,
+  never the token: it is a credential.
+
+  Where the token comes from is TKafkaOAuthBearerTokenProvider, a method
+  Kafka.Connection calls at each authentication (each new connection,
+  KIP-368's included): the provider returns the token it holds and gets a
+  new one from its issuer when that one is near its expiry. The library
+  doesn't read the token's claims; the broker gives the session lifetime
+  (the token's exp, capped by connections.max.reauth.ms), and the
+  connection is replaced before it ends.
+
   Base64. SCRAM uses standard Base64 with padding (RFC 4648 section 4);
   pascal-common-faa has only the URL alphabet without padding (for JWT).
   KafkaBase64Encode/KafkaTryBase64Decode translate between the two around
@@ -47,7 +75,8 @@
 
   Failures raise EKafkaAuthentication (Kafka.Types): a malformed or wrong
   answer from the broker, a server signature that doesn't match, a nonce
-  that doesn't extend the client's. }
+  that doesn't extend the client's, a token or extension Java's broker
+  would refuse, an OAUTHBEARER refusal. }
 
 interface
 
@@ -63,7 +92,28 @@ const
 
 type
   /// sasl.mechanism. ksmNone: no SASL (security.protocol PLAINTEXT or SSL).
-  TKafkaSaslMechanism = (ksmNone, ksmPlain, ksmScramSha256, ksmScramSha512);
+  TKafkaSaslMechanism = (ksmNone, ksmPlain, ksmScramSha256, ksmScramSha512, ksmOAuthBearer);
+
+  /// A SASL extension sent with OAUTHBEARER's initial response (RFC 7628
+  /// section 3.1; Java's sasl.jaas.config extension_<name> options): some
+  /// managed brokers ask for them (Confluent Cloud: logicalCluster,
+  /// identityPoolId).
+  TKafkaSaslExtension = record
+    Name: string;
+    Value: string;
+  end;
+  TKafkaSaslExtensionArray = array of TKafkaSaslExtension;
+
+  /// Gives the OAuth 2 bearer token (the access token as its issuer gave
+  /// it, a JWS for Kafka's validators) for one OAUTHBEARER authentication.
+  /// Called at each authentication: each new connection to each broker,
+  /// and the new connection that replaces one whose session is near its
+  /// end (KIP-368). Called on the thread that opens the connection (the
+  /// application's, or the producer's, consumer's or group's own), possibly
+  /// on several at once: it must be thread-safe, and quick, returning the
+  /// token it holds while that one is valid. An exception from it fails
+  /// the authentication (EKafkaAuthentication, its message included).
+  TKafkaOAuthBearerTokenProvider = function: string of object;
 
   /// The hash of a SCRAM mechanism.
   TKafkaScramHash = (kshSha256, kshSha512);
@@ -126,12 +176,44 @@ type
     function IsComplete: Boolean; override;
   end;
 
-/// 'PLAIN', 'SCRAM-SHA-256', 'SCRAM-SHA-512'; '' for ksmNone.
+  { OAUTHBEARER (RFC 7628) with a token given to it (the unit's header). }
+  TKafkaOAuthBearerClient = class(TKafkaSaslClient)
+  private type
+    // Not TState: TKafkaScramClient has one, and FPC 3.2.2 on Linux emits
+    // the same debug label for both ("Asm: Duplicate label").
+    TOAuthState = (osInitial, osSent, osRefused, osComplete, osFailed);
+  private
+    FToken: string;
+    FExtensions: TKafkaSaslExtensionArray;
+    FState: TOAuthState;
+    FServerError: string;
+  public
+    /// EKafkaAuthentication for a token that isn't an RFC 6750 b64token and
+    /// for an extension Java's broker would refuse.
+    constructor Create(const AToken: string; const AExtensions: TKafkaSaslExtensionArray);
+    function Mechanism: string; override;
+    function InitialResponse: TBytes; override;
+    /// Nothing: complete. The broker's JSON: answered with kvsep alone (the
+    /// broker then fails the exchange). Anything after that: refused, with
+    /// the JSON.
+    function Evaluate(const AChallenge: TBytes): TBytes; override;
+    function IsComplete: Boolean; override;
+    /// The JSON the broker refused the token with ('' if it didn't).
+    property ServerError: string read FServerError;
+  end;
+
+/// 'PLAIN', 'SCRAM-SHA-256', 'SCRAM-SHA-512', 'OAUTHBEARER'; '' for ksmNone.
 function KafkaSaslMechanismName(AMechanism: TKafkaSaslMechanism): string;
-/// The client for AMechanism (the caller frees it). EKafka for ksmNone, and
-/// EKafkaAuthentication for an empty user name.
+/// The client for a user-and-password mechanism (the caller frees it).
+/// EKafka for ksmNone and ksmOAuthBearer (TKafkaOAuthBearerClient takes a
+/// token), EKafkaAuthentication for an empty user name.
 function KafkaCreateSaslClient(AMechanism: TKafkaSaslMechanism;
   const AUsername, APassword: string): TKafkaSaslClient;
+
+/// A SASL extension, for TKafkaConnectionParams.SaslOAuthBearerExtensions.
+function KafkaSaslExtension(const AName, AValue: string): TKafkaSaslExtension;
+/// RFC 6750's b64token, what Java's broker accepts as a bearer token.
+function KafkaIsOAuthBearerToken(const AToken: string): Boolean;
 
 /// A SCRAM saslname: '=' as '=3D' and ',' as '=2C' (RFC 5802 section 5.1).
 function KafkaScramEscapeName(const AName: string): string;
@@ -155,6 +237,7 @@ begin
     ksmPlain: Result := 'PLAIN';
     ksmScramSha256: Result := 'SCRAM-SHA-256';
     ksmScramSha512: Result := 'SCRAM-SHA-512';
+    ksmOAuthBearer: Result := 'OAUTHBEARER';
   else
     Result := '';
   end;
@@ -165,6 +248,9 @@ function KafkaCreateSaslClient(AMechanism: TKafkaSaslMechanism;
 begin
   if AMechanism = ksmNone then
     raise EKafka.Create('No SASL mechanism was chosen');
+  if AMechanism = ksmOAuthBearer then
+    raise EKafka.Create('OAUTHBEARER takes a token, not a user name and password: ' +
+      'TKafkaOAuthBearerClient');
   if AUsername = '' then
     raise EKafkaAuthentication.CreateFmt('SASL %s: the user name is empty',
       [KafkaSaslMechanismName(AMechanism)]);
@@ -173,6 +259,32 @@ begin
     ksmScramSha256: Result := TKafkaScramClient.Create(kshSha256, AUsername, APassword);
   else
     Result := TKafkaScramClient.Create(kshSha512, AUsername, APassword);
+  end;
+end;
+
+function KafkaSaslExtension(const AName, AValue: string): TKafkaSaslExtension;
+begin
+  Result.Name := AName;
+  Result.Value := AValue;
+end;
+
+function KafkaIsOAuthBearerToken(const AToken: string): Boolean;
+var
+  I, LEnd: Integer;
+  C: Char;
+begin
+  // 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="
+  LEnd := Length(AToken);
+  while (LEnd > 0) and (AToken[LEnd] = '=') do
+    Dec(LEnd);
+  Result := LEnd > 0;
+  for I := 1 to LEnd do
+  begin
+    C := AToken[I];
+    if not (((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z')) or
+      ((C >= '0') and (C <= '9')) or (C = '-') or (C = '.') or (C = '_') or (C = '~') or
+      (C = '+') or (C = '/')) then
+      Exit(False);
   end;
 end;
 
@@ -477,6 +589,119 @@ begin
     not PcSameBytes(LSignature, FServerSignature) then
     raise EKafkaAuthentication.Create('SCRAM: the broker''s signature is wrong (it doesn''t ' +
       'know the password: not the broker it claims to be)');
+end;
+
+{ TKafkaOAuthBearerClient }
+
+const
+  // RFC 7628's kvsep.
+  KVSEP = #1;
+
+function ValidExtensionName(const AName: string): Boolean;
+var
+  K: Integer;
+begin
+  Result := (AName <> '') and (AName <> 'auth');
+  for K := 1 to Length(AName) do
+    if not (((AName[K] >= 'A') and (AName[K] <= 'Z')) or
+      ((AName[K] >= 'a') and (AName[K] <= 'z'))) then
+      Exit(False);
+end;
+
+function ValidExtensionValue(const AValue: string): Boolean;
+var
+  K: Integer;
+  C: Char;
+begin
+  Result := AValue <> '';
+  for K := 1 to Length(AValue) do
+  begin
+    C := AValue[K];
+    if not (((C >= #$21) and (C <= #$7E)) or (C = ' ') or (C = #9) or (C = #13) or
+      (C = #10)) then
+      Exit(False);
+  end;
+end;
+
+constructor TKafkaOAuthBearerClient.Create(const AToken: string;
+  const AExtensions: TKafkaSaslExtensionArray);
+var
+  I, J: Integer;
+begin
+  inherited Create;
+  if AToken = '' then
+    raise EKafkaAuthentication.Create('OAUTHBEARER: the token is empty');
+  if not KafkaIsOAuthBearerToken(AToken) then
+    raise EKafkaAuthentication.Create('OAUTHBEARER: the token has a character a bearer ' +
+      'token can''t have (RFC 6750: letters, digits, - . _ ~ + / and trailing =)');
+  for I := 0 to High(AExtensions) do
+  begin
+    if not ValidExtensionName(AExtensions[I].Name) then
+      raise EKafkaAuthentication.CreateFmt('OAUTHBEARER: the extension name "%s" is ' +
+        'invalid (letters only, and not "auth")', [AExtensions[I].Name]);
+    if not ValidExtensionValue(AExtensions[I].Value) then
+      raise EKafkaAuthentication.CreateFmt('OAUTHBEARER: the value of the extension "%s" ' +
+        'is empty or has a character outside printable ASCII, space, tab, CR and LF',
+        [AExtensions[I].Name]);
+    for J := 0 to I - 1 do
+      if AExtensions[J].Name = AExtensions[I].Name then
+        raise EKafkaAuthentication.CreateFmt('OAUTHBEARER: the extension "%s" is given twice',
+          [AExtensions[I].Name]);
+  end;
+  FToken := AToken;
+  FExtensions := Copy(AExtensions, 0, Length(AExtensions));
+end;
+
+function TKafkaOAuthBearerClient.Mechanism: string;
+begin
+  Result := 'OAUTHBEARER';
+end;
+
+function TKafkaOAuthBearerClient.InitialResponse: TBytes;
+var
+  LText: string;
+  I: Integer;
+begin
+  if FState <> osInitial then
+    raise EKafkaAuthentication.Create('OAUTHBEARER: the initial response was already sent');
+  LText := 'n,,' + KVSEP + 'auth=Bearer ' + FToken;
+  for I := 0 to High(FExtensions) do
+    LText := LText + KVSEP + FExtensions[I].Name + '=' + FExtensions[I].Value;
+  Result := Utf8(LText + KVSEP + KVSEP);
+  FState := osSent;
+end;
+
+function TKafkaOAuthBearerClient.Evaluate(const AChallenge: TBytes): TBytes;
+begin
+  Result := nil;
+  case FState of
+    osSent:
+      if Length(AChallenge) = 0 then
+        FState := osComplete
+      else
+      begin
+        // The broker's error (RFC 7628 section 3.2.2): answered with kvsep
+        // alone, after which the broker fails the exchange.
+        if not PcTryUtf8BytesToString(AChallenge, FServerError) then
+          FServerError := '<not UTF-8>';
+        FState := osRefused;
+        Result := Utf8(KVSEP);
+      end;
+    osRefused:
+      begin
+        FState := osFailed;
+        raise EKafkaAuthentication.CreateFmt('OAUTHBEARER: the broker refused the token: %s',
+          [FServerError]);
+      end;
+  else
+    FState := osFailed;
+    raise EKafkaAuthentication.Create('OAUTHBEARER: unexpected answer from the broker');
+  end;
+end;
+
+function TKafkaOAuthBearerClient.IsComplete: Boolean;
+begin
+  Result := FState = osComplete;
 end;
 
 end.

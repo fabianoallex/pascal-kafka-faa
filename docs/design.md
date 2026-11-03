@@ -224,7 +224,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | snappy and lz4 (pure Pascal) | K3 | done, both directions; a consumer must read whatever any producer sent |
 | zstd | K3 | read: a decoder in Pascal (open question 2, option C); writing waits for a user who asks |
 | SCRAM-SHA-512 | K3 | done; SHA-512 from pascal-common-faa 1.28.0 |
-| OAUTHBEARER (token supplied by the application) | K3 | no OIDC flow |
+| OAUTHBEARER (token supplied by the application) | K3 | done; a provider called per connection; no OIDC flow |
 | Spans and metrics | K3 | traceparent in headers, OpenTelemetry `messaging.*` conventions |
 | Transactions (exactly-once) | K4 | |
 | Outbox (pascal-db-faa) | K4 | the same pattern as `amqp/outbox` |
@@ -995,7 +995,8 @@ Win64, 0 leaks; the interoperability test and the samples):
    given by the application through an "of object" provider called at each authentication, so
    KIP-368's new connection gets a fresh token; the broker's error JSON reported in
    `EKafkaAuthentication`. Against Kafka's unsecured JWS validator on a new listener in
-   `docker/` (test only, as Kafka's own docs use it), and the fake.
+   `docker/` (test only, as Kafka's own docs use it), and the fake. *Done 2026-11-03*
+   ("OAUTHBEARER, the token supplied", below).
 7. **Spans and metrics.** `PascalCommon.Tracing` spans for send and poll with OpenTelemetry's
    `messaging.*` conventions, `traceparent` written to and read from record headers as the
    siblings do (`PascalCommon.TraceContext`); `PascalCommon.Metrics` counters and gauges for
@@ -1404,6 +1405,94 @@ delivery timeout. No broker does that: a leader that moved refuses every request
 two. The test now writes a first record, so that the broker knows the producer and answers the
 gap OUT_OF_ORDER; 60 runs of the fixture in a row passed. The idempotent fixture's own
 NOT_LEADER test already did so.
+
+### OAUTHBEARER, the token supplied (2026-11-03)
+
+Step 6 of the plan. Java 4.4.0's `OAuthBearerSaslClient`, `OAuthBearerClientInitialResponse`,
+`OAuthBearerSaslServer`, the unsecured validator (`OAuthBearerUnsecuredValidatorCallbackHandler`,
+`OAuthBearerUnsecuredJws`, `OAuthBearerValidationUtils`) and `SaslServerAuthenticator` (the
+session lifetime) were read first.
+
+**Done:**
+
+- **`Kafka.Sasl`**: `ksmOAuthBearer` and `TKafkaOAuthBearerClient`, the initial response as
+  Java's `OAuthBearerClientInitialResponse` writes it (`n,,`, kvsep, `auth=Bearer <token>`, the
+  extensions, kvsep kvsep). A refusal comes as a challenge, the JSON of RFC 7628 section 3.2.2,
+  which the client answers with kvsep alone (Java's state machine); the broker then fails the
+  exchange. `TKafkaOAuthBearerTokenProvider` (`function: string of object`),
+  `TKafkaSaslExtension`, `KafkaSaslExtension`, `KafkaIsOAuthBearerToken` (RFC 6750's b64token,
+  what Java's broker parses). `KafkaCreateSaslClient` raises for `ksmOAuthBearer`: it takes a
+  user and a password.
+- **`Kafka.Connection`**: `SaslOAuthBearerTokenProvider` and `SaslOAuthBearerExtensions` in
+  `TKafkaConnectionParams`. `Open` calls the provider once per connection, before
+  SaslHandshake; KIP-368's replacement connection is a new connection, so it asks again with
+  no code of its own. No provider, a provider that raises and a token that isn't a b64token
+  fail `Open` with `EKafkaAuthentication` before anything past ApiVersions is sent.
+- **`EKafkaAuthentication.BrokerMessage`**: the broker's message as it came (`CreateBroker`);
+  with OAUTHBEARER, the JSON, also in the exception's message.
+- **The fake broker** speaks OAUTHBEARER: it reads the initial response as Java's broker does,
+  takes any token but `OAuthRejectToken`, refuses that one as `OAuthBearerSaslServer` does
+  (`OAuthErrorJson` as the challenge, then error 58 with it), answers a malformed one with
+  Java's generic message, and records the tokens and extensions it saw.
+- **`docker/`**: the `OAUTH` listener on 9099, SASL_PLAINTEXT with OAUTHBEARER alone and Kafka's
+  unsecured JWS validator, the broker's default for OAUTHBEARER (test only, as Kafka's docs use
+  it: anyone can write such a token): scope `kafka` required, 10 s of clock skew allowed.
+- **Captures** (306 frames): the Java client 4.4.0 through the proxy, a token with an extension
+  (`unsecuredLoginExtension_traceId`) and one without the required scope; by hand
+  (`capture_versions.py --apis sasl-oauth`) SaslAuthenticate v0-v2 with a token valid until
+  2100, an extension, a token that expired, and an initial response without `auth`.
+- **The K1 sample** takes `--sasl oauthbearer --token-env NAME` (a provider that reads the
+  environment variable at each authentication) and `--extension name=value`.
+- **Tests**: `Kafka.SaslTests`, 7 more: the format, the refusal's kvsep, the checks on tokens
+  and extensions, b64token, Java's exchanges written again byte for byte, the hand-built ones.
+  `Kafka.SaslConnectionTests`, 7 more, against the fake: the token and extensions arrive
+  (plaintext and TLS), a refused token (code 58, the JSON in `BrokerMessage`, no token in the
+  message), no provider, a provider that raises and a bad token, a token per connection, the
+  cluster's KIP-368 replacement asking for a new token, a producer.
+  `Kafka.SaslIntegrationTests`, 4 more, against Kafka 4.4.0: produce and consume; an expired
+  token (`{"status":"invalid_token"}`); a token without the scope (`{"status":"insufficient_scope",
+  "scope":"[kafka]"}`); a token that lasts 4 s, the session as long, the replacement with a
+  new token, and the old connection closed by the broker once its token expired.
+
+**Checked against the captures and the broker:** given Java's token and extension, this
+client writes Java's initial response byte for byte, and Java's answer to the scope refusal
+(kvsep alone). The broker refuses with error 0 and the JSON as the challenge, then error 58
+with the same JSON as the message; a malformed initial response gets "Authentication failed
+during authentication due to invalid credentials with SASL mechanism OAUTHBEARER". **The
+session lifetime is the token's**: with no `connections.max.reauth.ms` the broker answers
+SaslAuthenticate v1+ with the time left to the token's `exp` (Java's one-hour token: 3 599 980
+ms), and it hangs up at the first request after it (the integration test sees it at 4 s).
+
+**Measured:** FPC 3.2.2 Windows x64: 342 unit and 51 integration tests, the interoperability
+test and both samples (and the K1 sample with `--sasl oauthbearer` against 9099), 0 leaks.
+Linux (Docker): the same, and both suites 5 times in three containers at once with
+`--cpus=1` (30 runs). Delphi 12 Win32 and Win64: 342 and 51, 0 leaks; the interoperability test and both samples
+with the Delphi programs, the K1 sample also with `--sasl oauthbearer`.
+
+**Decided while writing:**
+
+- **The provider has no arguments and returns a string**, as Java's login callback, which
+  doesn't know the broker either. It is called on the thread that opens the connection,
+  possibly on several at once; holding and renewing the token is the application's (an OIDC
+  flow is outside this step). It is called per connection, not on a timer of the library's:
+  the broker says how long a session lasts, and the connection that replaces one near its end
+  asks again.
+- **The token is a credential**: no message has it, nor its claims. The library doesn't read
+  it (it would have to trust it to), and checks only that it is a b64token, so that a bad one
+  fails with a message that says so instead of the broker's generic refusal.
+- **A provider's exception is `EKafkaAuthentication`**, not retried by the producer or the
+  consumer: a provider that can retry its issuer does it itself.
+- **No authzid**, as Java's client. **Extensions are fixed in the parameters**, as Java's JAAS
+  options, with Java's checks (names of letters, not `auth`; values printable ASCII, space,
+  tab, CR, LF); unique names, since Java keeps them in a map.
+- **The JSON isn't parsed**: `BrokerMessage` has it as it came (Kafka writes it by hand, `", "`
+  between members), and the application that wants `status` or `scope` reads it.
+- **No unsecured token writer in the library** (Java has `OAuthBearerUnsecuredLoginCallbackHandler`):
+  the tests have one (`KafkaTestUnsecuredJws`, `Kafka.TestHelpers`). A token anyone can write
+  doesn't belong in an application.
+
+**Fixed on the way:** nothing in the library. Gotcha 18 came back in a new form: a JSON object
+written in a `{ }` comment (`{"status":...}`) closed it at its `}`.
 
 ## 8. Open questions
 

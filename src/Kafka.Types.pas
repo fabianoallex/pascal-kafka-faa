@@ -25,7 +25,9 @@
       EKafkaAuthentication       SASL failed: a mechanism the broker doesn't
                                  enable, wrong credentials, a listener
                                  without SASL, or a broker answer that fails
-                                 the mechanism's checks (SCRAM's signature)
+                                 the mechanism's checks (SCRAM's signature),
+                                 an OAUTHBEARER token refused or its
+                                 provider failing
       EKafkaBrokerError          the broker answered with an error code (or
                                  the producer refused a record with the
                                  code the broker would give: MESSAGE_TOO_LARGE,
@@ -43,7 +45,9 @@
   themselves (Java's AuthenticationException isn't retriable either). It
   carries the broker's error code (UNSUPPORTED_SASL_MECHANISM,
   SASL_AUTHENTICATION_FAILED, ILLEGAL_SASL_STATE), or 0 when the client's
-  own check failed.
+  own check failed, and the broker's own message apart (BrokerMessage): with
+  OAUTHBEARER, the JSON of RFC 7628 (status, scope, openid-configuration),
+  for an application that reads it.
 
   PASCALCOMMON_VERSION 12800 is pascal-common-faa 1.28.0, for SHA-512,
   HMAC-SHA-512 and PBKDF2-HMAC-SHA-512 (SCRAM-SHA-512). Before it: the
@@ -91,10 +95,15 @@ type
   EKafkaAuthentication = class(EKafka)
   private
     FErrorCode: Int16;
+    FBrokerMessage: string;
   public
     constructor CreateCode(AErrorCode: Int16; const AMessage: string);
+    constructor CreateBroker(AErrorCode: Int16; const ABrokerMessage, AMessage: string);
     /// The broker's error code; 0 when the client's own check failed.
     property ErrorCode: Int16 read FErrorCode;
+    /// What the broker said, as it said it ('' when it said nothing). With
+    /// OAUTHBEARER, its JSON: {"status":"invalid_token"} and the like.
+    property BrokerMessage: string read FBrokerMessage;
   end;
 
   { An error code in a broker's answer. The message names the code
@@ -135,6 +144,14 @@ constructor EKafkaAuthentication.CreateCode(AErrorCode: Int16; const AMessage: s
 begin
   inherited Create(AMessage);
   FErrorCode := AErrorCode;
+end;
+
+constructor EKafkaAuthentication.CreateBroker(AErrorCode: Int16;
+  const ABrokerMessage, AMessage: string);
+begin
+  inherited Create(AMessage);
+  FErrorCode := AErrorCode;
+  FBrokerMessage := ABrokerMessage;
 end;
 
 constructor EKafkaBrokerError.Create(AErrorCode: Int16; const AMessage: string);

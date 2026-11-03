@@ -113,7 +113,9 @@ first).
   thread of its own: `WaitParked` tells a test the Fetch is waiting) and ListOffsets, and keeps
   the batches per partition (`AppendBatch`, `AppendRawBatch` for another client's bytes as
   they are, `SetLogStart`), and speaks SASL (`SaslMechanisms`, one user; PLAIN, and
-  SCRAM-SHA-256 and SCRAM-SHA-512 written as a server, apart from `Kafka.Sasl`): before a
+  SCRAM-SHA-256 and SCRAM-SHA-512 written as a server, apart from `Kafka.Sasl`; OAUTHBEARER,
+  any token but `OAuthRejectToken`, refused as Java's broker does with `OAuthErrorJson`, the
+  tokens it saw in `OAuthTokensSeen`): before a
   client authenticates it answers only ApiVersions and SASL, as a broker. It serves any number
   of connections at once (a thread each, with its own SASL state; `DropClient` aborts them
   all), and it is every group's coordinator (`OfferGroups`, on with `KafkaFakeUseView`;
@@ -135,8 +137,10 @@ first).
   is writing, `KafkaDecompressionSupported` reading).
 - **Integration suite**: the broker of `docker/docker-compose.yml` (Kafka 4.4.0, KRaft, one
   node; 9092 plaintext, 9093 TLS with the common's test PKI, 9096 SASL_PLAINTEXT, 9097
-  SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions; PLAIN alice / alice-secret,
-  SCRAM-SHA-256 bob / bob-secret, SCRAM-SHA-512 carol / carol-secret):
+  SASL_SSL, 9098 SASL_PLAINTEXT with 2-second sessions, 9099 SASL_PLAINTEXT with OAUTHBEARER
+  alone and Kafka's unsecured JWS validator, scope `kafka`, test only; PLAIN alice /
+  alice-secret, SCRAM-SHA-256 bob / bob-secret, SCRAM-SHA-512 carol / carol-secret; the
+  OAUTHBEARER tokens come from `KafkaTestUnsecuredJws`):
   `docker compose -f docker/docker-compose.yml up -d`. A change to the compose
   file needs the container recreated (`up -d` does it; a change to `docker/kafka-start.sh`
   alone needs `up -d --force-recreate`). `kafka-start.sh` creates the topic
@@ -248,11 +252,15 @@ first).
 17. **Bash heredocs keep breaking edit scripts** (gotcha 10, three more times in the SASL
     session): "unexpected EOF while looking for matching `'`" with nothing written, and a
     backslash-n inside a Python string turned into a real line break in a Markdown file (and in
-    this very item). Write the script with the Write tool, then run it.
+    this very item). Twice more in the OAUTHBEARER session: a heredoc that ended early
+    ("here-document delimited by end-of-file", nothing written), and a Python bytes literal's
+    escaped 0x01 written into the edited file as the raw control byte. Write the script with
+    the Write tool, then run it.
 18. **A compiler directive inside a brace comment ends it.** `{ ... (FPC's {$MODE DELPHI}) ... }`
     closes at the directive's `}`, and FPC then reports a syntax error far from the cause
     ("INTERFACE expected but ')' found" on a unit's header comment). Name directives in prose
-    inside `{ }` comments, or use `//`.
+    inside `{ }` comments, or use `//`. The same with a JSON object: `{"status":"x"}` in a
+    header comment ended it ("INTERFACE expected but ',' found"). `///` comments are safe.
 19. **pascal-common-faa's `TPcListener.Accept` returns nil once the listener is closed**; it
     doesn't raise. An accept loop that only catches exceptions spins forever (the proxy hung a
     fixture's teardown). Stop on nil, as `Kafka.TestFakeBroker` does.
@@ -274,3 +282,13 @@ first).
     Frame_Content_Size and no checksum, and ends with an empty raw block. librdkafka and Python
     write the content size. A decoder bounded by the content size alone would allocate
     nothing up front for Java's batches: the limit has to hold block by block too.
+25. **OAUTHBEARER's refusal is not an error code at first, and its session is the token's.**
+    Kafka 4.4.0 answers a refused token with error 0 and RFC 7628's JSON as the auth bytes;
+    only after the client's kvsep (one byte, 1) does error 58 come, with the same JSON as its
+    message. And without `connections.max.reauth.ms` the broker still gives a session lifetime,
+    the time left to the token's `exp`, and hangs up at the first request after it. Measured
+    with the Java client and by hand (`docs/codec-captures.md`).
+26. **FPC 3.2.2 on Linux: two nested types of the same name in one unit** (`TState` in
+    `TKafkaScramClient` and in `TKafkaOAuthBearerClient`) failed with "Asm: Duplicate label
+    DBG_$KAFKA.SASL_$$_TSTATE" (the debug info names them by unit and type only, with `-gl`).
+    FPC on Windows and Delphi built it. Give nested types unique names within a unit.

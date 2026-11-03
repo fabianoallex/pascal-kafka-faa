@@ -86,6 +86,14 @@
     SaslIterations rounds. SaslBadServerSignature sends a wrong server
     signature (a broker that doesn't know the password);
     SaslSessionLifetimeMs goes into SaslAuthenticate v1+ (KIP-368).
+    OAUTHBEARER parses RFC 7628's initial response as Java's broker does
+    (OAuthBearerClientInitialResponse: n, an optional authzid, kvsep, the
+    key=value pairs each ended by kvsep, kvsep; auth=Bearer <token>) and
+    takes any token but OAuthRejectToken, which it refuses as Java's
+    OAuthBearerSaslServer does: OAuthErrorJson as the challenge, then, at
+    the client's kvsep, SASL_AUTHENTICATION_FAILED with the JSON as the
+    message. A malformed initial response gets Java's generic refusal.
+    OAuthTokensSeen and LastOAuthExtensions say what came.
 
   - be every consumer group's coordinator (OfferGroups; KafkaFakeUseView
     turns it on): FindCoordinator answers this broker (CoordinatorNodeId,
@@ -151,7 +159,7 @@ type
     public
       constructor Create(AConnection: TKafkaFakeConnection);
     end;
-    TSaslState = (ssNone, ssHandshaken, ssScramFirst, ssAuthenticated);
+    TSaslState = (ssNone, ssHandshaken, ssScramFirst, ssOAuthRefused, ssAuthenticated);
   private
     FOwner: TKafkaFakeBroker;
     FEndpoint: TPcEndpoint;
@@ -273,6 +281,8 @@ type
     FConnectionCount: Integer;
     FSaslAuthenticatedCount: Integer;
     FLastSaslMechanism: string;
+    FOAuthTokensSeen: string;
+    FLastOAuthExtensions: string;
     FGroups: TKafkaFakeGroups;
     FFindCoordinatorCount: Integer;
     FLastFindCoordinatorVersion: Int16;
@@ -350,6 +360,10 @@ type
     SaslIterations: Integer;
     SaslBadServerSignature: Boolean;
     SaslSessionLifetimeMs: Int64;
+    /// OAUTHBEARER: this token is refused with OAuthErrorJson ('' = none).
+    OAuthRejectToken: string;
+    /// '{"status":"invalid_token"}' by default.
+    OAuthErrorJson: string;
     /// Offer and answer FindCoordinator (up to FindCoordinatorMax),
     /// ConsumerGroupHeartbeat (unless OfferConsumerGroupHeartbeat is False),
     /// OffsetCommit (v2-v10) and OffsetFetch (v8-v10): the broker is every
@@ -420,6 +434,11 @@ type
     function SaslAuthenticatedCount: Integer;
     /// The mechanism of the last SaslHandshake ('' before any).
     function LastSaslMechanism: string;
+    /// The OAUTHBEARER tokens received, in order, separated by commas.
+    function OAuthTokensSeen: string;
+    /// The extensions of the last OAUTHBEARER initial response, as
+    /// name=value separated by commas, in the order they came.
+    function LastOAuthExtensions: string;
     /// FindCoordinator requests received, and the version of the last.
     function FindCoordinatorCount: Integer;
     function LastFindCoordinatorVersion: Int16;
@@ -604,6 +623,7 @@ begin
   MetadataMax := 13;
   OfferMetadata := True;
   SaslIterations := 4096;
+  OAuthErrorJson := '{"status":"invalid_token"}';
   OfferConsumerGroupHeartbeat := True;
   FindCoordinatorMax := 6;
   CoordinatorNodeId := 1;
@@ -1011,6 +1031,60 @@ begin
   Result := '';
 end;
 
+/// RFC 7628's client initial response, read as Java's broker reads it
+/// (OAuthBearerClientInitialResponse); False when it doesn't match.
+function ParseOAuthInitialResponse(const AText: string; out AToken, AExtensions: string): Boolean;
+var
+  LRest, LItem, LAuth: string;
+  P, I: Integer;
+begin
+  Result := False;
+  AToken := '';
+  AExtensions := '';
+  LAuth := '';
+  // n,[a=<authzid>],^A<key>=<value>^A...^A
+  if Copy(AText, 1, 2) <> 'n,' then
+    Exit;
+  LRest := Copy(AText, 3, MaxInt);
+  P := Pos(',', LRest);
+  if (P = 0) or ((P > 1) and (Copy(LRest, 1, 2) <> 'a=')) then
+    Exit;
+  LRest := Copy(LRest, P + 1, MaxInt);
+  if (Length(LRest) < 2) or (LRest[1] <> #1) or (LRest[Length(LRest)] <> #1) then
+    Exit;
+  LRest := Copy(LRest, 2, Length(LRest) - 2);
+  while LRest <> '' do
+  begin
+    P := Pos(#1, LRest);
+    if P = 0 then
+      Exit;
+    LItem := Copy(LRest, 1, P - 1);
+    Delete(LRest, 1, P);
+    P := Pos('=', LItem);
+    if P < 2 then
+      Exit;
+    if Copy(LItem, 1, P - 1) = 'auth' then
+      LAuth := Copy(LItem, P + 1, MaxInt)
+    else
+    begin
+      if AExtensions <> '' then
+        AExtensions := AExtensions + ',';
+      AExtensions := AExtensions + LItem;
+    end;
+  end;
+  // auth=Bearer <token>: the scheme in any case, then one or more spaces.
+  P := Pos(' ', LAuth);
+  if (P = 0) or not SameText(Copy(LAuth, 1, P - 1), 'Bearer') then
+    Exit;
+  AToken := TrimLeft(Copy(LAuth, P + 1, MaxInt));
+  if AToken = '' then
+    Exit;
+  for I := 1 to Length(AToken) do
+    if (AToken[I] <= ' ') or (AToken[I] > #$7E) or (AToken[I] = ',') then
+      Exit;
+  Result := True;
+end;
+
 function TKafkaFakeBroker.HandleSasl(AConn: TKafkaFakeConnection; AKey, AVersion: Int16;
   const AContent: TBytes): Boolean;
 var
@@ -1094,7 +1168,7 @@ const
   SALT = 'fake-broker-salt';
 var
   R: TKafkaSaslAuthenticateResponse;
-  LText, LUser, LFinalWithoutProof: string;
+  LText, LUser, LFinalWithoutProof, LToken, LExtensions: string;
   LParts: array[0..2] of string;
   LSalted, LClientKey, LStoredKey, LServerKey, LAuthMessage, LSignature, LProof: TBytes;
   L512: Boolean;
@@ -1147,6 +1221,47 @@ begin
         R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
         R.ErrorMessage := 'Authentication failed: Invalid username or password';
         R.ErrorMessageIsNull := False;
+      end;
+    end
+    else if AConn.FSaslChosen = 'OAUTHBEARER' then
+    begin
+      if AConn.FSaslState = ssOAuthRefused then
+      begin
+        // The client's kvsep after the JSON: the exchange fails with it.
+        R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
+        if (Length(AAuthBytes) = 1) and (AAuthBytes[0] = 1) then
+          R.ErrorMessage := OAuthErrorJson
+        else
+          R.ErrorMessage := 'Authentication failed during authentication due to invalid ' +
+            'credentials with SASL mechanism OAUTHBEARER';
+        R.ErrorMessageIsNull := False;
+      end
+      else if not PcTryUtf8BytesToString(AAuthBytes, LText) or
+        not ParseOAuthInitialResponse(LText, LToken, LExtensions) then
+      begin
+        R.ErrorCode := KAFKA_ERROR_SASL_AUTHENTICATION_FAILED;
+        R.ErrorMessage := 'Authentication failed during authentication due to invalid ' +
+          'credentials with SASL mechanism OAUTHBEARER';
+        R.ErrorMessageIsNull := False;
+      end
+      else
+      begin
+        if FOAuthTokensSeen <> '' then
+          FOAuthTokensSeen := FOAuthTokensSeen + ',';
+        FOAuthTokensSeen := FOAuthTokensSeen + LToken;
+        FLastOAuthExtensions := LExtensions;
+        if (OAuthRejectToken <> '') and (LToken = OAuthRejectToken) then
+        begin
+          // Java's OAuthBearerSaslServer: the JSON as a challenge, no error.
+          R.AuthBytes := PcStringToUtf8Bytes(OAuthErrorJson);
+          AConn.FSaslState := ssOAuthRefused;
+        end
+        else
+        begin
+          AConn.FSaslState := ssAuthenticated;
+          Inc(FSaslAuthenticatedCount);
+          R.SessionLifetimeMs := SaslSessionLifetimeMs;
+        end;
       end;
     end
     else if AConn.FSaslState = ssHandshaken then
@@ -1388,6 +1503,26 @@ begin
   FMonitor.Enter;
   Result := FLastSaslMechanism;
   FMonitor.Leave;
+end;
+
+function TKafkaFakeBroker.OAuthTokensSeen: string;
+begin
+  FMonitor.Enter;
+  try
+    Result := FOAuthTokensSeen;
+  finally
+    FMonitor.Leave;
+  end;
+end;
+
+function TKafkaFakeBroker.LastOAuthExtensions: string;
+begin
+  FMonitor.Enter;
+  try
+    Result := FLastOAuthExtensions;
+  finally
+    FMonitor.Leave;
+  end;
 end;
 
 function TKafkaFakeBroker.TopicNameOf(AVersion: Int16;
