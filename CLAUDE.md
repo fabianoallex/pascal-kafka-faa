@@ -187,13 +187,12 @@ first).
   (FPC 3.2.2, Debian 12, OpenSSL 3; the integration container shares the broker's network
   namespace) and `sh tools/test_interop_docker.sh` (interoperability and samples). **CI:**
   `.github/workflows/ci.yml` only calls `sh tools/ci-test.sh`, which runs both.
-- **Delphi:** open `Kafka.groupproj`, run `tests/Unit/Kafka.UnitTests.dproj` and
-  `tests/Integration/Kafka.IntegrationSuite.dproj` on Win32 and Win64; build
-  `tests/Interop/KafkaInterop.dproj`, `samples/ProduceConsume/KafkaSample.dproj` and
-  `samples/ConsumerGroup/KafkaGroupSample.dproj` and run them
-  (`python -I tools/interop.py --pascal tests/Interop/Win64/Debug/KafkaInterop.exe`; the
-  samples with no arguments). A leak in those console programs shows FastMM's message box,
-  which blocks the script until closed. Delphi Community Edition
+- **Delphi:** the user builds `Kafka.groupproj` in the IDE (Win32 and Win64, Debug); then
+  `sh tools/test_delphi.sh` runs what it built from the shell: both suites, the
+  interoperability test and both samples per platform, and with `kafka-cloud.env` the Cloud
+  tests and the K1 sample against Confluent Cloud (`PLATFORMS=Win64` for one). A leak in
+  those programs shows FastMM's message box, which blocks the program: the script runs each
+  under a timeout, so a leak shows as rc 124. Delphi Community Edition
   doesn't compile from the command line: `dcc32` prints "This version of the product does not
   support command line compiling." and **exits with code 0**. Don't read that as success.
 - **Acceptance criterion for every commit:** FPC Windows x64 + Linux (Docker) + Delphi 12

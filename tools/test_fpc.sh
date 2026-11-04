@@ -10,8 +10,8 @@
 #
 # The Delphi side has no command-line equivalent: Delphi Community Edition
 # doesn't compile outside the IDE (dcc32 prints "This version of the product
-# does not support command line compiling." and exits with code 0). Run the
-# two .dproj of Kafka.groupproj from the IDE.
+# does not support command line compiling." and exits with code 0). Build
+# Kafka.groupproj in the IDE, then run it with tools/test_delphi.sh.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAZBUILD="${LAZBUILD:-lazbuild}"

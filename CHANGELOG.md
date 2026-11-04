@@ -4,6 +4,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 follow [Semantic Versioning](https://semver.org/). While the version is 0.x, a minor version
 may change the API; each such change is listed here.
 
+## [Unreleased]
+
+### Added
+
+- `tools/test_delphi.sh`: runs what the Delphi IDE built (Delphi Community Edition doesn't
+  compile from the command line) from the shell: both suites, the interoperability test and
+  both samples on Win32 and Win64, and with `kafka-cloud.env` the Confluent Cloud tests and
+  the K1 sample; a FastMM leak box shows as a timeout.
+
 ## [0.1.0] - 2026-11-04
 
 The first release: phases K1, K2 and K3 of `docs/design.md`. A native Kafka client with no

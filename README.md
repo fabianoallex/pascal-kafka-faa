@@ -275,8 +275,9 @@ the Java console producer sent.
 
 See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Windows: the
 suites, the Java interoperability test and the samples), `sh tools/test_fpc_docker.sh` and
-`sh tools/test_interop_docker.sh` (the same on Linux in Docker), `Kafka.groupproj` in the Delphi
-IDE. Everything but the unit suite needs `docker compose -f docker/docker-compose.yml up -d`
+`sh tools/test_interop_docker.sh` (the same on Linux in Docker), `Kafka.groupproj` built in the
+Delphi IDE and then `sh tools/test_delphi.sh` (it runs what the IDE built: the suites, the
+interoperability test and the samples, Win32 and Win64). Everything but the unit suite needs `docker compose -f docker/docker-compose.yml up -d`
 (plaintext 9092, TLS 9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, 9098 with 2-second SASL
 sessions, and 9099 with OAUTHBEARER).
 
