@@ -45,6 +45,8 @@ uses
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
+  Kafka.Tracing in '..\..\src\Kafka.Tracing.pas',
+  Kafka.Metrics in '..\..\src\Kafka.Metrics.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
   Kafka.Group in '..\..\src\Kafka.Group.pas',
@@ -57,6 +59,7 @@ uses
   Kafka.TestFakeGroup in 'Kafka.TestFakeGroup.pas',
   Kafka.TestMessages in 'Kafka.TestMessages.pas',
   Kafka.TestPartitions in 'Kafka.TestPartitions.pas',
+  Kafka.TestTracing in 'Kafka.TestTracing.pas',
   Kafka.PrimitivesTests in 'Kafka.PrimitivesTests.pas',
   Kafka.Crc32cTests in 'Kafka.Crc32cTests.pas',
   Kafka.EnvelopeTests in 'Kafka.EnvelopeTests.pas',
@@ -76,7 +79,9 @@ uses
   Kafka.ConsumerTests in 'Kafka.ConsumerTests.pas',
   Kafka.SaslTests in 'Kafka.SaslTests.pas',
   Kafka.SaslConnectionTests in 'Kafka.SaslConnectionTests.pas',
-  Kafka.ConnectionTests in 'Kafka.ConnectionTests.pas';
+  Kafka.ConnectionTests in 'Kafka.ConnectionTests.pas',
+  Kafka.TracingTests in 'Kafka.TracingTests.pas',
+  Kafka.MetricsTests in 'Kafka.MetricsTests.pas';
 
 var
   runner: ITestRunner;

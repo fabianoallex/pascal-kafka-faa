@@ -42,7 +42,9 @@ uses
   Kafka.ConsumerTests,
   Kafka.SaslTests,
   Kafka.SaslConnectionTests,
-  Kafka.ConnectionTests;
+  Kafka.ConnectionTests,
+  Kafka.TracingTests,
+  Kafka.MetricsTests;
 
 var
   ConsoleApp: TTestRunner;

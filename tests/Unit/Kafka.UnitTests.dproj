@@ -95,6 +95,8 @@
         <DCCReference Include="..\..\src\Kafka.Connection.pas"/>
         <DCCReference Include="..\..\src\Kafka.Partitioner.pas"/>
         <DCCReference Include="..\..\src\Kafka.Cluster.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Tracing.pas"/>
+        <DCCReference Include="..\..\src\Kafka.Metrics.pas"/>
         <DCCReference Include="..\..\src\Kafka.Producer.pas"/>
         <DCCReference Include="..\..\src\Kafka.Consumer.pas"/>
         <DCCReference Include="..\..\src\Kafka.Group.pas"/>
@@ -107,6 +109,7 @@
         <DCCReference Include="Kafka.TestFakeGroup.pas"/>
         <DCCReference Include="Kafka.TestMessages.pas"/>
         <DCCReference Include="Kafka.TestPartitions.pas"/>
+        <DCCReference Include="Kafka.TestTracing.pas"/>
         <DCCReference Include="Kafka.PrimitivesTests.pas"/>
         <DCCReference Include="Kafka.Crc32cTests.pas"/>
         <DCCReference Include="Kafka.EnvelopeTests.pas"/>
@@ -127,6 +130,8 @@
         <DCCReference Include="Kafka.SaslTests.pas"/>
         <DCCReference Include="Kafka.SaslConnectionTests.pas"/>
         <DCCReference Include="Kafka.ConnectionTests.pas"/>
+        <DCCReference Include="Kafka.TracingTests.pas"/>
+        <DCCReference Include="Kafka.MetricsTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

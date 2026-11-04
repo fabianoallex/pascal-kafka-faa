@@ -1,8 +1,8 @@
 # pascal-kafka-faa — design
 
 Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3's steps 1 to 5 done (the idempotent producer, snappy and lz4,
-zstd read, SCRAM-SHA-512)**
+met against Kafka 4.4.0; K3 done, its seven steps and its criterion (the idempotent producer,
+snappy and lz4, zstd read, SCRAM-SHA-512, OAUTHBEARER, spans and metrics)**
 (2026-11-03:
 "K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
@@ -162,6 +162,7 @@ Kafka.Consumer          manual assign, Poll, offsets; groups through IKafkaGroup
 Kafka.Group.Consumer    KIP-848
 Kafka.Admin             CreateTopics, DeleteTopics, DescribeCluster (what the tests need)
 Kafka.Tracing           PascalCommon.Tracing spans; traceparent in record headers
+Kafka.Metrics           PascalCommon.Metrics counters for the producer and the consumer
 ```
 
 ### Threads
@@ -225,7 +226,7 @@ From the `dual-compiler-delphi-lazarus` skill and the siblings; each goes into t
 | zstd | K3 | read: a decoder in Pascal (open question 2, option C); writing waits for a user who asks |
 | SCRAM-SHA-512 | K3 | done; SHA-512 from pascal-common-faa 1.28.0 |
 | OAUTHBEARER (token supplied by the application) | K3 | done; a provider called per connection; no OIDC flow |
-| Spans and metrics | K3 | traceparent in headers, OpenTelemetry `messaging.*` conventions |
+| Spans and metrics | K3 | done; traceparent in headers, OpenTelemetry `messaging.*` conventions |
 | Transactions (exactly-once) | K4 | |
 | Outbox (pascal-db-faa) | K4 | the same pattern as `amqp/outbox` |
 | Classic group protocol (3.x brokers) | when a user needs it | decision 4 |
@@ -1493,6 +1494,116 @@ with the Delphi programs, the K1 sample also with `--sasl oauthbearer`.
 
 **Fixed on the way:** nothing in the library. Gotcha 18 came back in a new form: a JSON object
 written in a `{ }` comment (`{"status":...}`) closed it at its `}`.
+
+### Spans and metrics (2026-11-03)
+
+Step 7 of the plan, the last. pascal-common-faa 1.28.0's `PascalCommon.Tracing`,
+`PascalCommon.TraceContext` and `PascalCommon.Metrics`, and how the siblings use them
+(pascal-amqp-faa's `AMQP.Tracing` and its `docs/tracing.md`, pascal-redis-faa's
+`Redis.Tracing`, pascal-db-faa's pool metrics), were read first. The design was put to the user
+before any code, and taken with both recommendations below (the send span detached, the process
+span opened by the application).
+
+**Done:**
+
+- **`Kafka.Tracing`**: the names and attributes (OpenTelemetry's messaging conventions,
+  `messaging.system` kafka), `KafkaTraceParentOf` (the last `traceparent` header, a null or
+  non-UTF-8 value absent), `KafkaInjectTraceContext` (`traceparent` and `tracestate` added in a
+  copy, nothing added when the record has a `traceparent`), and the spans' starts and ends.
+- **The producer**: `Send` opens a producer span `send <topic>`, a child of the caller's
+  current span, **detached**; its context goes into the record's headers; it ends with the
+  record's outcome (partition, offset, the broker's host and port; on a failure the error
+  status and `error.type`, the Kafka error's name for a broker's code, the class otherwise),
+  before the callback, on the thread that reports the outcome (the sender's, or the caller's
+  for a failure in `Send`).
+- **The consumer**: `Poll` is a client span `poll <topic>` (`poll` when the records came from
+  more than one topic; `messaging.batch.message_count`), the current span while it runs,
+  finished only when records come back; an empty `Poll` lets it go unfinished, and
+  pascal-common-faa exports only finished spans. A Poll that raises (not `EKafkaWakeup`)
+  finishes it with the error. `TKafkaConsumer.StartProcessSpan(ARecord)`: a consumer span
+  `process <topic>`, a child of the record's `traceparent` (a new trace without a valid one),
+  with the consumer's group and client id; `KafkaFinishSpan` ends it.
+- **`Kafka.Metrics`**, on the process-wide `PcMetrics`, the families registered in
+  `initialization`: `messaging.client.sent.messages` (`messaging.system`,
+  `messaging.destination.name`, `error.type`), `pascalkafka.producer.bytes` (the batches'
+  encoded bytes once the broker took them), `.retries` (records sent again),
+  `.batches.in_flight` (up-down, no label), `.epoch_bumps`; `messaging.client.consumed.messages`
+  (with `messaging.consumer.group.name`), `pascalkafka.consumer.lag` (up-down, per partition:
+  the last Fetch answer's high watermark minus the position), `.commits` (`sync`, `async`,
+  `auto`, and `error.type`), `.rebalances` (`assigned`, `revoked`, `lost`).
+- **Tests**: `Kafka.TracingTests`, 7 against the fake: the headers' injection and reading;
+  the send span's parent, attributes and context in the record; a failure's status; the
+  application's `traceparent` kept; poll and process in the producer's trace, nothing exported
+  for an empty Poll; the tracer off. `Kafka.MetricsTests`, 5: records, bytes and failures
+  (from the broker and before a batch); retries and batches in flight (the fake holding the
+  answer); an epoch bump; the consumer's records and lag, given back when it goes; a group's
+  rebalances and commits by kind. `Kafka.TracingIntegrationTests`, 2 against Kafka 4.4.0: the
+  context through the broker into a group consumer's process spans, and the same run's metrics.
+  `Kafka.TestTracing` (shared helper): an exporter that keeps the spans, the tracer started
+  without its thread, a metric's value read from the registry.
+- **Interoperability**: `tools/interop.py`'s trace scenario. The program (`trace-produce`)
+  sends with the tracer on and the Java console consumer (`print.headers`) sees on every record
+  a `traceparent` of the program's trace naming one of its send spans; the Java console
+  producer sends records with a `traceparent` of the script's and the program's
+  (`trace-consume`) process span for each is a child of the span it names.
+
+**Measured:** FPC 3.2.2 Windows x64: 354 unit and 53 integration tests, the
+interoperability test (its trace scenario included) and both samples, 0 leaks. Linux (Docker):
+the same, and both suites 5 times in three containers at once with `--cpus=1` (30 runs).
+Delphi 12 Win32 and Win64: 354 and 53, 0 leaks; the interoperability test and both samples
+with the Delphi programs too.
+
+**Decided while writing:**
+
+- **The send span is detached and ends with the outcome**, not when `Send` returns (the
+  publish of pascal-amqp-faa ends when its frames leave): `Send` only queues, so a span ended
+  there would time the queueing. A detached span may end on any thread; it is never the current
+  span, which costs nothing here, since `Send` does no work of its own inside it. Java's
+  OpenTelemetry instrumentation ends its send span in the callback too.
+- **No process span by itself.** pascal-common-faa has no span links, so the poll span can't
+  name the producers' spans, and `Poll` returns an array: the loop that processes it is the
+  application's. `StartProcessSpan` is what pascal-amqp-faa's `AmqpStartProcessSpan` is for a
+  `BasicGet`.
+- **An empty Poll exports nothing**: an idle consumer polls in a loop, and a span per empty
+  Poll would be most of what it exports. The span is still started at the entry, so the handlers
+  that run inside Poll (rebalances, commit callbacks) are its children when records come.
+- **The key is never an attribute** (`messaging.kafka.message.key` exists in the conventions):
+  it is bytes, often an id of a person. Redis's spans hide values for the same reason.
+- **The header is text**: `traceparent` is ASCII, so its UTF-8 bytes are what Java's
+  instrumentation writes; the last header of the name counts, as Java's `lastHeader`.
+- **Metrics are always on**, as pascal-db-faa's pool: an update is an atomic operation on a
+  series looked up once (per partition), counted per batch or per drained partition, never per
+  record. A switch to turn them off would save nothing measurable.
+- **Deltas, no client label**: the registry never drops a series, so whatever rises and falls
+  (batches in flight, lag) is given back when it ends (the producer's request answered or
+  aborted, a partition's state freed), and two clients in a process add up. The series are per
+  topic, partition and group, a bounded set; a label per client would add one per producer.
+- **`error.type`** is the Kafka error's name for a broker's code (`NOT_LEADER_OR_FOLLOWER`),
+  the class's name otherwise, `''` on success (no label, for Prometheus).
+
+**Fixed on the way:** nothing in the library. Gotcha 17 came back once more: a Python edit
+sent through a heredoc with Windows paths in its strings failed on `\U` ("truncated
+\UXXXXXXXX escape"), nothing written; the script written with the Write tool worked.
+
+### K3 closed (2026-11-03)
+
+**K3's criterion** (section 7): "consumes what Java produces with each codec; idempotent
+producer with no duplicate after a retry". **Met** against Kafka 4.4.0:
+
+- **Each codec**: the interoperability test has the Java console producer write gzip, snappy,
+  lz4 and zstd batches (`kafka-dump-log.sh` checks the codec of every one) and the library read
+  each record as the fixture says, on FPC (Windows and Linux) and Delphi; the zstd topic of the
+  integration suite is compressed again by the broker with Java's codec and read back
+  ("zstd, read").
+- **Idempotence**: `Kafka.IdempotenceIntegrationTests` loses a Produce answer through the proxy,
+  the producer sends the batch again, and the topic holds the record once ("The idempotent
+  producer").
+
+The other items of K3's row: SCRAM-SHA-512 and OAUTHBEARER against the broker's listeners,
+spans and metrics above. What K3 left for later: zstd written (open question 2: A or B's
+encoder when a user asks), splitting a batch the broker refuses as too large (Java's
+`MESSAGE_TOO_LARGE` split), an OIDC flow for OAUTHBEARER. K4 (transactions, the outbox) waits for
+a user who asks (section 7: "on demand").
 
 ## 8. Open questions
 

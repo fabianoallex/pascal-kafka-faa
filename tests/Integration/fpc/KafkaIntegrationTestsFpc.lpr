@@ -29,6 +29,7 @@ uses
   Kafka.GroupIntegrationTests,
   Kafka.ConsumerGroupIntegrationTests,
   Kafka.IdempotenceIntegrationTests,
+  Kafka.TracingIntegrationTests,
   Kafka.CloudIntegrationTests;
 
 var

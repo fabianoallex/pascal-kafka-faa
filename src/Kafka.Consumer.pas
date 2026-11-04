@@ -88,6 +88,15 @@
   loop from elsewhere. Close is called from the polling thread (or after
   it stopped).
 
+  Tracing and metrics (Kafka.Tracing, Kafka.Metrics). With the tracer on,
+  Poll is a "poll <topic>" span, the current one while it runs, exported
+  only when records come back; StartProcessSpan opens the span of
+  processing one record, a child of its traceparent, around the
+  application's own code. The metrics: the records Poll returned (Drain),
+  each partition's lag (the last Fetch answer's high watermark minus the
+  position, given back when the partition goes), the commits by kind and
+  outcome, the rebalance events.
+
   Delphi x FPC: the handlers are "of object" methods (no closures on FPC
   3.2.2); the wait is the connection's IKafkaSignal (Kafka.Connection), one
   event for every Fetch in flight, which the membership fires too when an
@@ -104,6 +113,8 @@ uses
   Kafka.Protocol.RecordBatch,
   Kafka.Connection,
   Kafka.Cluster,
+  PascalCommon.Tracing,
+  PascalCommon.Metrics,
   Kafka.Group,
   Kafka.Group.Consumer;
 
@@ -222,12 +233,25 @@ type
       NeedsCommitted: Boolean;
       /// The leader epoch of the record before Position (-1: unknown).
       LastEpoch: Int32;
+      /// The last Fetch answer's high watermark (-1: none yet).
+      HighWatermark: Int64;
+      /// The partition's series (Kafka.Metrics), owned by the registry, and
+      /// the lag this state added to its series.
+      ConsumedSeries: TPcCounterSeries;
+      LagSeries: TPcUpDownCounterSeries;
+      LagReported: Int64;
+      /// Gives back the lag it reported.
+      destructor Destroy; override;
       procedure ClearBuffer;
+      /// The lag's series brought to HighWatermark - Position.
+      procedure UpdateLag;
     end;
 
     TAsyncCommit = record
       Future: IKafkaCommitFuture;
       Callback: TKafkaCommitEvent;
+      /// 'async' or 'auto', for the commits' metric.
+      Kind: string;
       /// The offsets' key (OffsetsKey), for the auto-commit's bookkeeping.
       Key: string;
     end;
@@ -315,9 +339,12 @@ type
     function ConsumedOffsets: TKafkaCommittedOffsetArray;
     function WaitAsyncCommits(ADeadline: UInt64): Boolean;
     procedure RunCommitCallbacks;
-    procedure CommitSync(const AOffsets: TKafkaCommittedOffsetArray; ADeadline: UInt64);
+    procedure CommitSync(const AOffsets: TKafkaCommittedOffsetArray; ADeadline: UInt64;
+      const AKind: string);
     function QueueAsync(const AOffsets: TKafkaCommittedOffsetArray;
-      ACallback: TKafkaCommitEvent): IKafkaCommitFuture;
+      ACallback: TKafkaCommitEvent; const AKind: string): IKafkaCommitFuture;
+    procedure CountCommit(const AKind, AErrorType: string);
+    procedure CountRebalance(const AEvent: string);
     procedure GroupStep(ANow: UInt64);
     procedure ResolveCommitted;
     procedure LeaveGroup(ADeadline: UInt64);
@@ -336,6 +363,8 @@ type
     procedure HandleFetch(AFlight: TFetchFlight);
     procedure SendFetches(ANow: UInt64);
     function Drain: TKafkaConsumerRecordArray;
+    /// Poll without its span.
+    function PollRecords(ATimeoutMs: Cardinal): TKafkaConsumerRecordArray;
     procedure SeekTo(const APartitions: array of TKafkaTopicPartition; AKind: TResetKind);
   public
     /// Checks the parameters; no I/O.
@@ -399,6 +428,11 @@ type
     /// Makes the Poll in progress, or the next one, raise EKafkaWakeup. Any
     /// thread.
     procedure Wakeup;
+    /// The span of processing ARecord (Kafka.Tracing): kind consumer, a
+    /// child of the record's traceparent, with this consumer's group and
+    /// client id; the current span of the calling thread until
+    /// KafkaFinishSpan ends it there. nil when the tracer is off.
+    function StartProcessSpan(const ARecord: TKafkaConsumerRecord): IPcSpan;
 
     /// Each partition's first offset (ListOffsets), up to MaxBlockMs.
     function BeginningOffsets(const APartitions: array of TKafkaTopicPartition): TKafkaInt64Array;
@@ -428,7 +462,9 @@ uses
   Kafka.Errors,
   Kafka.Messages.Apis,
   Kafka.Messages.Fetch,
-  Kafka.Messages.ListOffsets;
+  Kafka.Messages.ListOffsets,
+  Kafka.Tracing,
+  Kafka.Metrics;
 
 const
   LIST_OFFSETS_EARLIEST = -2;
@@ -485,12 +521,33 @@ end;
 
 { TKafkaConsumer.TPartitionState }
 
+destructor TKafkaConsumer.TPartitionState.Destroy;
+begin
+  KafkaMetricAdd(LagSeries, -LagReported);
+  inherited;
+end;
+
 procedure TKafkaConsumer.TPartitionState.ClearBuffer;
 begin
   Buffer := nil;
   BufferIndex := 0;
   BufferNext := -1;
   HasBuffer := False;
+end;
+
+procedure TKafkaConsumer.TPartitionState.UpdateLag;
+var
+  LLag: Int64;
+begin
+  if (HighWatermark < 0) or (Position < 0) or (HighWatermark < Position) then
+    LLag := 0
+  else
+    LLag := HighWatermark - Position;
+  if LLag <> LagReported then
+  begin
+    KafkaMetricAdd(LagSeries, LLag - LagReported);
+    LagReported := LLag;
+  end;
 end;
 
 { TKafkaConsumer }
@@ -703,6 +760,9 @@ begin
   Result.WaitRefreshAfter := -1;
   Result.LastEpoch := -1;
   Result.NeedsCommitted := FParams.GroupId <> '';
+  Result.HighWatermark := -1;
+  Result.ConsumedSeries := KafkaConsumedMessagesSeries(ATopic, FParams.GroupId);
+  Result.LagSeries := KafkaConsumerLagSeries(ATopic, APartition, FParams.GroupId);
   Result.ClearBuffer;
 end;
 
@@ -762,18 +822,20 @@ begin
   case AKind of
     kgeAssigned:
       begin
+        CountRebalance('assigned');
         AddPartitions(APartitions);
         if Assigned(FOnAssigned) then
           CallPartitions(FOnAssigned, APartitions);
       end;
     kgeRevoked:
       try
+        CountRebalance('revoked');
         // Java's maybeAutoCommitSyncBeforeRebalance: every consumed
         // position, before the handler; a failure doesn't stop the revoke
         // (the records may be read again: at-least-once).
         if FAutoCommitEnabled and not FLeaving then
           try
-            CommitSync(ConsumedOffsets, PcTickMs + FApiTimeoutMs);
+            CommitSync(ConsumedOffsets, PcTickMs + FApiTimeoutMs, 'auto');
           except
             on EKafka do ;
           end;
@@ -784,6 +846,7 @@ begin
       end;
     kgeLost:
       try
+        CountRebalance('lost');
         if Assigned(FOnLost) then
           CallPartitions(FOnLost, APartitions)
         else if Assigned(FOnRevoked) then
@@ -835,6 +898,7 @@ begin
     E := FAsync[0];
     FAsync := Copy(FAsync, 1, Length(FAsync) - 1);
     R := E.Future.Report;
+    CountCommit(E.Kind, KafkaErrorType(R.ErrorClass, R.ErrorCode));
     if not R.Succeeded and (FCommittedKey = E.Key) then
       FCommittedKey := ''; // the auto-commit tries again
     if Assigned(E.Callback) then
@@ -849,25 +913,48 @@ begin
   end;
 end;
 
+procedure TKafkaConsumer.CountCommit(const AKind, AErrorType: string);
+begin
+  KafkaMetricAdd(KafkaCommitsSeries(FParams.GroupId, AKind, AErrorType), 1);
+end;
+
+procedure TKafkaConsumer.CountRebalance(const AEvent: string);
+begin
+  KafkaMetricAdd(KafkaRebalancesSeries(FParams.GroupId, AEvent), 1);
+end;
+
 procedure TKafkaConsumer.CommitSync(const AOffsets: TKafkaCommittedOffsetArray;
-  ADeadline: UInt64);
+  ADeadline: UInt64; const AKind: string);
 var
   LTimeoutMs: Cardinal;
+  LCode: Int16;
 begin
   if Length(AOffsets) = 0 then
     Exit;
   LTimeoutMs := RemainingUntil(ADeadline);
-  // An asynchronous commit queued before must not land after this one.
-  if not WaitAsyncCommits(ADeadline) then
-    raise EKafkaTimeout.CreateFmt('The asynchronous commits before this one were not done ' +
-      'in %d ms', [LTimeoutMs]);
-  RunCommitCallbacks;
-  FMembership.Commit(AOffsets, RemainingUntil(ADeadline));
+  try
+    // An asynchronous commit queued before must not land after this one.
+    if not WaitAsyncCommits(ADeadline) then
+      raise EKafkaTimeout.CreateFmt('The asynchronous commits before this one were not ' +
+        'done in %d ms', [LTimeoutMs]);
+    RunCommitCallbacks;
+    FMembership.Commit(AOffsets, RemainingUntil(ADeadline));
+  except
+    on E: EKafka do
+    begin
+      LCode := 0;
+      if E is EKafkaBrokerError then
+        LCode := EKafkaBrokerError(E).ErrorCode;
+      CountCommit(AKind, KafkaErrorType(EKafkaClass(E.ClassType), LCode));
+      raise;
+    end;
+  end;
+  CountCommit(AKind, '');
   FCommittedKey := OffsetsKey(AOffsets);
 end;
 
 function TKafkaConsumer.QueueAsync(const AOffsets: TKafkaCommittedOffsetArray;
-  ACallback: TKafkaCommitEvent): IKafkaCommitFuture;
+  ACallback: TKafkaCommitEvent; const AKind: string): IKafkaCommitFuture;
 var
   N: Integer;
 begin
@@ -877,6 +964,7 @@ begin
   FAsync[N].Future := Result;
   FAsync[N].Callback := ACallback;
   FAsync[N].Key := OffsetsKey(AOffsets);
+  FAsync[N].Kind := AKind;
 end;
 
 procedure TKafkaConsumer.GroupStep(ANow: UInt64);
@@ -904,7 +992,7 @@ begin
   LKey := OffsetsKey(LOffsets);
   if (Length(LOffsets) = 0) or (LKey = FCommittedKey) then
     Exit;
-  FAutoCommit := QueueAsync(LOffsets, nil);
+  FAutoCommit := QueueAsync(LOffsets, nil, 'auto');
   FCommittedKey := LKey;
 end;
 
@@ -967,7 +1055,7 @@ begin
     // before the leave, while the member can still commit.
     if FAutoCommitEnabled then
       try
-        CommitSync(ConsumedOffsets, ADeadline);
+        CommitSync(ConsumedOffsets, ADeadline, 'auto');
       except
         on EKafka do ;
       end;
@@ -1067,7 +1155,7 @@ begin
     RequireGroup('Commit');
     if ATimeoutMs = 0 then
       ATimeoutMs := FApiTimeoutMs;
-    CommitSync(ConsumedOffsets, PcTickMs + ATimeoutMs);
+    CommitSync(ConsumedOffsets, PcTickMs + ATimeoutMs, 'sync');
   finally
     Release;
   end;
@@ -1081,7 +1169,7 @@ begin
     RequireGroup('Commit');
     if ATimeoutMs = 0 then
       ATimeoutMs := FApiTimeoutMs;
-    CommitSync(AOffsets, PcTickMs + ATimeoutMs);
+    CommitSync(AOffsets, PcTickMs + ATimeoutMs, 'sync');
   finally
     Release;
   end;
@@ -1092,7 +1180,7 @@ begin
   Acquire;
   try
     RequireGroup('CommitAsync');
-    Result := QueueAsync(ConsumedOffsets, ACallback);
+    Result := QueueAsync(ConsumedOffsets, ACallback, 'async');
   finally
     Release;
   end;
@@ -1104,7 +1192,7 @@ begin
   Acquire;
   try
     RequireGroup('CommitAsync');
-    Result := QueueAsync(AOffsets, ACallback);
+    Result := QueueAsync(AOffsets, ACallback, 'async');
   finally
     Release;
   end;
@@ -1686,6 +1774,8 @@ begin
         raise EKafkaBrokerError.Create(LCode, Format('Fetch %s-%d: %s',
           [S.Topic, S.Partition, KafkaErrorText(LCode)]));
       end;
+      S.HighWatermark := LPart.HighWatermark;
+      S.UpdateLag;
       if LPart.RecordsIsNull or (Length(LPart.Records) = 0) then
         Continue;
       LOffset := AFlight.Offsets[LIndex];
@@ -1914,6 +2004,7 @@ begin
       Inc(LCount, LTake);
       S.Position := Result[LCount - 1].Offset + 1;
       S.LastEpoch := Result[LCount - 1].LeaderEpoch;
+      KafkaMetricAdd(S.ConsumedSeries, LTake);
     end;
     if S.BufferIndex >= Length(S.Buffer) then
     begin
@@ -1921,6 +2012,7 @@ begin
         S.Position := S.BufferNext;
       S.ClearBuffer;
     end;
+    S.UpdateLag;
   end;
   if N > 0 then
   begin
@@ -1930,7 +2022,56 @@ begin
   end;
 end;
 
+function PollTopic(const ARecords: TKafkaConsumerRecordArray): string;
+var
+  I: Integer;
+begin
+  Result := ARecords[0].Topic;
+  for I := 1 to High(ARecords) do
+    if ARecords[I].Topic <> Result then
+      Exit('');
+end;
+
 function TKafkaConsumer.Poll(ATimeoutMs: Cardinal): TKafkaConsumerRecordArray;
+var
+  LSpan: IPcSpan;
+begin
+  if not TPcTracing.Enabled then
+    Exit(PollRecords(ATimeoutMs));
+  // The current span while Poll runs (the handlers inside are its
+  // children), exported only when records come back: an empty Poll lets it
+  // go unfinished (Kafka.Tracing).
+  LSpan := KafkaStartPollSpan(FParams.GroupId, FParams.Cluster.Connection.ClientId);
+  try
+    Result := PollRecords(ATimeoutMs);
+  except
+    on E: Exception do
+    begin
+      // A wakeup is how a loop stops, not a failure of the Poll.
+      if not (E is EKafkaWakeup) then
+        KafkaFinishSpan(LSpan, E);
+      raise;
+    end;
+  end;
+  if Length(Result) > 0 then
+    KafkaFinishPollSpan(LSpan, PollTopic(Result), Length(Result));
+end;
+
+function TKafkaConsumer.StartProcessSpan(const ARecord: TKafkaConsumerRecord): IPcSpan;
+var
+  LSize: Int64;
+begin
+  if not TPcTracing.Enabled then
+    Exit(nil);
+  if ARecord.ValueIsNull then
+    LSize := -1
+  else
+    LSize := Length(ARecord.Value);
+  Result := KafkaStartProcessSpan(ARecord.Topic, ARecord.Partition, ARecord.Offset,
+    ARecord.Headers, LSize, FParams.GroupId, FParams.Cluster.Connection.ClientId);
+end;
+
+function TKafkaConsumer.PollRecords(ATimeoutMs: Cardinal): TKafkaConsumerRecordArray;
 var
   LDeadline, LNow, LWake: UInt64;
   F: TFetchFlight;

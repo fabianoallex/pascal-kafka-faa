@@ -130,6 +130,14 @@
         <UnitName Value="Kafka.Cluster"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Kafka.Tracing.pas"/>
+        <UnitName Value="Kafka.Tracing"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Kafka.Metrics.pas"/>
+        <UnitName Value="Kafka.Metrics"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Kafka.Producer.pas"/>
         <UnitName Value="Kafka.Producer"/>
       </Item>

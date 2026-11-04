@@ -40,9 +40,18 @@ fpc/KafkaInteropFpc.lpr), given here as a command (--pascal).
                     program's only from its partitions, and nothing of its
                     partitions read again by Java after it left.
 
-Eight new topics per run (interop-java-<codec>-<n> for each codec,
-interop-pascal-<codec>-<n> for those the library writes, interop-group-<n>),
-deleted when the run passes and kept for a look when it fails.
+  the trace         the program sends records with the tracer on: the Java
+                    console consumer (print.headers) must see each record's
+                    traceparent header, in the program's trace and naming
+                    one of its send spans. Then the Java console producer
+                    sends records with a traceparent header of this script's,
+                    and the program's process span for each is a child of
+                    the span that header names, in its trace.
+
+Ten new topics per run (interop-java-<codec>-<n> for each codec,
+interop-pascal-<codec>-<n> for those the library writes, interop-group-<n>,
+interop-trace-pascal-<n> and interop-trace-java-<n>), deleted when the run
+passes and kept for a look when it fails.
 
     python -I tools/interop.py --pascal tests/Interop/fpc/KafkaInteropFpc.exe
     python -I tools/interop.py --pascal "docker exec interop-runner /t/interop" \\
@@ -54,6 +63,7 @@ unfreed blocks. Exit code 0 when both directions pass.
 
 import argparse
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -302,6 +312,68 @@ def group_interop(args, pascal, topic):
           f"{len(pascal_ns)} by the program, none lost, none twice")
 
 
+TRACE_COUNT = 5
+TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-01$")
+
+
+def trace_interop(args, pascal, pascal_topic, java_topic):
+    """The traceparent header both ways (the module's docstring, "the trace")."""
+    out = run_pascal(pascal + ["trace-produce", args.bootstrap, pascal_topic, str(TRACE_COUNT)])
+    if not any(l.startswith("OK pascal trace-produce") for l in out.splitlines()):
+        raise Failure("pascal trace-produce failed:\n" + out)
+    trace = None
+    spans = set()
+    for line in out.splitlines():
+        if line.startswith("TRACE "):
+            trace = line.split()[1]
+        elif line.startswith("S "):
+            spans.add(line.split()[1])
+    if not trace or len(spans) != TRACE_COUNT:
+        raise Failure("the program reported no trace or the wrong spans:\n" + out)
+    out = broker(args.container, BIN + "kafka-console-consumer.sh", "--bootstrap-server",
+                 args.bootstrap, "--topic", pascal_topic, "--from-beginning",
+                 "--max-messages", str(TRACE_COUNT), "--timeout-ms", "30000",
+                 "--formatter-property", "print.headers=true")
+    seen = 0
+    for line in out.split("\n"):
+        if "\tt " not in line:
+            continue
+        headers, value = line.split("\t", 1)
+        parents = [h.split(":", 1)[1] for h in headers.split(",") if h.startswith("traceparent:")]
+        if len(parents) != 1:
+            raise Failure(f"{value}: Java saw the headers {headers!r}")
+        m = TRACEPARENT.match(parents[0])
+        if not m or m.group(1) != trace or m.group(2) not in spans:
+            raise Failure(f"{value}: traceparent {parents[0]!r}, not a send span of trace {trace}")
+        seen += 1
+    if seen != TRACE_COUNT:
+        raise Failure(f"Java read {seen} records of {TRACE_COUNT}:\n{out}")
+    print(f"OK trace pascal->java: kafka-console-consumer.sh saw the traceparent of a send span "
+          f"of the program's trace on each of {seen} records")
+
+    sent = {}
+    lines = ""
+    for n in range(TRACE_COUNT):
+        trace_id, span_id = secrets.token_hex(16), secrets.token_hex(8)
+        sent[f"j_{n}"] = (trace_id, span_id)
+        lines += f"traceparent:00-{trace_id}-{span_id}-01\tj {n}\n"
+    broker(args.container, BIN + "kafka-console-producer.sh", "--bootstrap-server", args.bootstrap,
+           "--topic", java_topic, "--reader-property", "parse.headers=true",
+           stdin=lines.encode("utf-8"))
+    out = run_pascal(pascal + ["trace-consume", args.bootstrap, java_topic, str(TRACE_COUNT)])
+    if not any(l.startswith("OK pascal trace-consume") for l in out.splitlines()):
+        raise Failure("pascal trace-consume failed:\n" + out)
+    got = {}
+    for line in out.splitlines():
+        if line.startswith("P "):
+            _, value, trace_id, parent = line.split()
+            got[value] = (trace_id, parent)
+    if got != sent:
+        raise Failure(f"the program's process spans {got!r}, the Java producer sent {sent!r}")
+    print(f"OK trace java->pascal: the program's process span for each of {len(got)} records "
+          "is a child of the span its Java-written traceparent names")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--pascal", required=True, help="the KafkaInterop program, as a command")
@@ -318,7 +390,8 @@ def main():
     stamp = f"{int(time.time() * 1000)}"
     topics = ([f"interop-{side}-{codec}-{stamp}" for codec in CODECS for side in ("java", "pascal")]
               + [f"interop-java-{codec}-{stamp}" for codec in READ_ONLY_CODECS]
-              + [f"interop-group-{stamp}"])
+              + [f"interop-group-{stamp}"]
+              + [f"interop-trace-pascal-{stamp}", f"interop-trace-java-{stamp}"])
     try:
         for t in topics:
             broker(args.container, BIN + "kafka-topics.sh", "--bootstrap-server", args.bootstrap,
@@ -332,7 +405,8 @@ def main():
             pascal_to_java(args, pascal, topics[2 * i + 1], codec, rows)
         for i, codec in enumerate(READ_ONLY_CODECS):
             java_to_pascal(args, pascal, topics[2 * len(CODECS) + i], codec, rows)
-        group_interop(args, pascal, topics[-1])
+        group_interop(args, pascal, topics[-3])
+        trace_interop(args, pascal, topics[-2], topics[-1])
     except Failure as e:
         print(f"FAIL {e}\n(topics kept: {', '.join(topics)})")
         return 1
@@ -340,7 +414,7 @@ def main():
         broker(args.container, BIN + "kafka-topics.sh", "--bootstrap-server", args.bootstrap,
                "--delete", "--topic", t)
     print(f"interop: both directions with {', '.join(CODECS)}, Java -> library with "
-          f"{', '.join(READ_ONLY_CODECS)}, and the shared group OK")
+          f"{', '.join(READ_ONLY_CODECS)}, the shared group and the trace context OK")
     return 0
 
 

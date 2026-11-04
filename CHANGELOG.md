@@ -213,6 +213,23 @@ the sample against Confluent Cloud, has been run.
   `OAUTH` listener (9099, Kafka's unsecured JWS validator, test only); the K1 sample takes
   `--sasl oauthbearer --token-env NAME` and `--extension`. Captures: the Java client's
   OAUTHBEARER exchanges and hand-built ones (306 frames). Tests: 342 unit and 51 integration.
+- Spans and metrics (phase K3, step 7). `Kafka.Tracing`: OpenTelemetry spans on
+  pascal-common-faa's `PascalCommon.Tracing`, with the `messaging.*` conventions
+  (`messaging.system` kafka). `Send` opens a detached producer span `send <topic>`, a child of
+  the current span, that ends with the record's outcome (partition, offset, the broker; on a
+  failure the error status and the Kafka error's name as `error.type`), and writes its
+  `traceparent` (and `tracestate`) into a copy of the record's headers unless the record has
+  one. `Poll` is a client span `poll <topic>`, exported only when records come back.
+  `TKafkaConsumer.StartProcessSpan` opens a consumer span `process <topic>` whose parent is
+  the record's `traceparent`; `KafkaFinishSpan` ends it. `KafkaTraceParentOf` and
+  `KafkaInjectTraceContext` for the headers. With the tracer off nothing is created and no
+  header is added. `Kafka.Metrics`: on the process-wide `PcMetrics`,
+  `messaging.client.sent.messages` (with `error.type`), `pascalkafka.producer.bytes`,
+  `.retries`, `.batches.in_flight` and `.epoch_bumps`; `messaging.client.consumed.messages`,
+  `pascalkafka.consumer.lag` (per partition), `.commits` (by kind and outcome) and
+  `.rebalances` (by event); counted per batch or per partition, as deltas. The interoperability
+  test checks the `traceparent` header both ways with the Java console tools. Tests: 354 unit
+  and 53 integration.
 
 ### Changed
 

@@ -100,7 +100,8 @@ first).
   Delphi by `tests/Unit/Kafka.DUnitXCompat.pas` (the skill's canonical copy:
   `check_test_kit.py` reports drift). Helpers whose names don't end in `Tests`
   (`Kafka.TestHelpers`, `Kafka.TestFakeBroker`, `Kafka.TestCaptures`, `Kafka.TestMessages`,
-  `Kafka.TestPartitions`, `Kafka.TestFakeGroup`, and in `tests/Integration` `Kafka.TestProxy`)
+  `Kafka.TestPartitions`, `Kafka.TestFakeGroup`, `Kafka.TestTracing`, and in `tests/Integration`
+  `Kafka.TestProxy`)
   are shared, not mirrored.
 - **A new test unit** ends with `initialization TDUnitX.RegisterTestFixture(...)` (the mirror
   turns it into `RegisterTest`) and goes into the `.dpr`, the `.dproj` and the FPC `.lpr`.
@@ -129,6 +130,12 @@ first).
   (`LoseProduceAnswers` writes a batch and loses its answer; `StoredBatches`):
   `Kafka.IdempotentProducerTests`. `ReleaseHeldProduce` answers in arrival order, the ones
   that came meanwhile too (a broker answers a connection in order).
+- **Spans and metrics** (`Kafka.TracingTests`, `Kafka.MetricsTests`, against the fake;
+  `Kafka.TracingIntegrationTests` against 4.4.0): `Kafka.TestTracing` starts the process-wide
+  tracer without its export thread (`Spans` flushes on the test's thread) and reads a metric
+  from `PcMetrics`. The registry never drops a series: a metric test uses a topic and group of
+  its own (`KafkaTestUniqueId`) or compares with the value read before it acted. A fixture that
+  starts the tracer stops it in `TearDown`.
 - **The codecs' vectors** (`Kafka.CompressionTests`; `Kafka.ZstdTests`, from
   `tools/codec_vectors.py zstd`): hex constants written by `tools/codec_vectors.py` with the
   reference libraries (cramjam, lz4, xxhash and zstandard for Python, in a venv of their own:
@@ -157,7 +164,11 @@ first).
   be deleted at once by retention). Both directions run once per codec (gzip, snappy, lz4),
   and `kafka-dump-log.sh` checks every batch's codec. The last scenario puts the Java console
   consumer (`group.protocol=consumer`, in the background) and the program's `group` mode in
-  one group (`interop-group-<n>`, 6 partitions) and checks every record is read once.
+  one group (`interop-group-<n>`, 6 partitions) and checks every record is read once. The trace
+  scenario: the program's `trace-produce` sends with the tracer on and the Java console consumer
+  (`print.headers`) must see each record's `traceparent`; the Java console producer sends
+  records with the script's `traceparent` and the program's `trace-consume` checks its process
+  spans' parents.
 - **The samples** `samples/ProduceConsume` (K1: `Assign`) and `samples/ConsumerGroup` (K2: a
   group, `KafkaGroupSample`), one `.dpr` each for Delphi and Lazarus, run with their defaults
   against the SASL_SSL listener in the test scripts; each must print `done`.

@@ -99,6 +99,16 @@
   timeout at worst. The destructor calls Close with no timeout. Don't free
   the producer while another thread is inside Send.
 
+  Tracing and metrics (Kafka.Tracing, Kafka.Metrics). With the tracer on,
+  Send opens a detached "send <topic>" span, a child of the caller's
+  current span, puts its traceparent in a copy of the record's headers
+  (unless the record has one), and the span ends with the record's outcome,
+  before the callback, on whichever thread reports it. Off, Send checks one
+  flag and nothing else changes. The metrics are counted per batch, never
+  per record: records sent (by outcome) and bytes when a batch is done,
+  records sent again in Requeue, batches in flight while their request
+  waits, epoch bumps in ApplyBump.
+
   Delphi x FPC: no anonymous methods (callbacks are "of object", with a Tag
   for the caller's context), no TTask; the hub is a pascal-common-faa
   TPcMonitor. }
@@ -376,10 +386,13 @@ implementation
 uses
   PascalCommon.Threading,
   PascalCommon.Tracing,
+  PascalCommon.Metrics,
   Kafka.Errors,
   Kafka.Messages.Apis,
   Kafka.Messages.Produce,
-  Kafka.Messages.InitProducerId;
+  Kafka.Messages.InitProducerId,
+  Kafka.Tracing,
+  Kafka.Metrics;
 
 const
   // What a record adds to a batch beyond its key, value and header bytes:
@@ -412,6 +425,8 @@ type
     FOnDelivery: TKafkaDeliveryEvent;
     FReport: TKafkaDeliveryReport;
     FDone: Boolean;
+    /// The Send's span (Kafka.Tracing), detached; nil with the tracer off.
+    FSpan: IPcSpan;
   public
     constructor Create(const AHub: IDeliveryHub; AOnDelivery: TKafkaDeliveryEvent; ATag: NativeInt);
     /// Runs the callback, then wakes the future's waiters.
@@ -446,6 +461,10 @@ type
     /// Idempotence: the batch was renumbered by an epoch bump (Java's
     /// sequenceHasBeenReset).
     SequenceReset: Boolean;
+    /// The broker of its last request, for the records' spans (set only
+    /// while the tracer is on).
+    ServerHost: string;
+    ServerPort: Integer;
     procedure Add(ADelivery: TDelivery);
     function HasSequence: Boolean;
     function LastSequence: Int32;
@@ -472,6 +491,11 @@ type
     /// has it is unknown until the batches after it say.
     Unresolved: Boolean;
     UnresolvedNext: Int32;
+    /// The topic's series (Kafka.Metrics), looked up once; owned by the
+    /// registry.
+    SentSeries: TPcCounterSeries;
+    BytesSeries: TPcCounterSeries;
+    RetriesSeries: TPcCounterSeries;
     constructor Create(const ATopic: string; APartition: Int32);
     destructor Destroy; override;
   end;
@@ -648,6 +672,14 @@ var
 begin
   LReport := AReport;
   LReport.Tag := FReport.Tag;
+  // The span ends with the outcome, before the callback: a slow callback
+  // isn't the send's time.
+  if FSpan <> nil then
+  begin
+    KafkaFinishSendSpan(FSpan, LReport.Partition, LReport.Offset,
+      KafkaErrorType(LReport.ErrorClass, LReport.ErrorCode), LReport.ErrorMessage);
+    FSpan := nil;
+  end;
   if Assigned(FOnDelivery) then
     try
       FOnDelivery(LReport);
@@ -713,6 +745,15 @@ begin
   Result.RaiseIfFailed;
 end;
 
+/// A record that failed before it joined a batch: its outcome, and the
+/// metric a batch's records get in FailBatch.
+procedure CompleteEarly(ADelivery: TDelivery; const AReport: TKafkaDeliveryReport);
+begin
+  ADelivery.Complete(AReport);
+  KafkaMetricAdd(KafkaSentMessagesSeries(AReport.Topic,
+    KafkaErrorType(AReport.ErrorClass, AReport.ErrorCode)), 1);
+end;
+
 { TProducerBatch }
 
 procedure TProducerBatch.Add(ADelivery: TDelivery);
@@ -762,6 +803,9 @@ begin
   SeqProducerEpoch := KAFKA_NO_PRODUCER_EPOCH;
   LastAckedSequence := -1;
   LastAckedOffset := -1;
+  SentSeries := KafkaSentMessagesSeries(ATopic, '');
+  BytesSeries := KafkaProducerBytesSeries(ATopic);
+  RetriesSeries := KafkaProducerRetriesSeries(ATopic);
 end;
 
 destructor TPartitionQueue.Destroy;
@@ -1053,11 +1097,19 @@ begin
   LRecord := ARecord;
   if LRecord.Timestamp < 0 then
     LRecord.Timestamp := NowUnixMs;
+  // The span and its context in the headers (a copy: the caller's array
+  // stays as it was); with the tracer off, nothing at all.
+  if TPcTracing.Enabled then
+  begin
+    D.FSpan := KafkaStartSendSpan(LRecord.Topic, LRecord.Partition, Length(LRecord.Value),
+      LRecord.ValueIsNull, FParams.Cluster.Connection.ClientId);
+    LRecord.Headers := KafkaInjectTraceContext(LRecord.Headers, D.FSpan);
+  end;
   LSize := RecordSize(LRecord);
   if (LSize + KAFKA_RECORD_BATCH_HEADER_SIZE + REQUEST_OVERHEAD + 3 * Length(LRecord.Topic) >
     FParams.MaxRequestSize) or (LSize > FParams.BufferMemory) then
   begin
-    D.Complete(FailedReport(LRecord.Topic, LRecord.Partition, EKafkaBrokerError,
+    CompleteEarly(D, FailedReport(LRecord.Topic, LRecord.Partition, EKafkaBrokerError,
       KAFKA_ERROR_MESSAGE_TOO_LARGE, Format('The record is %d bytes serialized, larger than ' +
       'MaxRequestSize (%d) or BufferMemory (%d)', [LSize, FParams.MaxRequestSize,
       FParams.BufferMemory])));
@@ -1069,10 +1121,10 @@ begin
     on E: EKafka do
     begin
       if E is EKafkaBrokerError then
-        D.Complete(FailedReport(LRecord.Topic, LRecord.Partition, EKafkaBrokerError,
+        CompleteEarly(D, FailedReport(LRecord.Topic, LRecord.Partition, EKafkaBrokerError,
           EKafkaBrokerError(E).ErrorCode, E.Message))
       else
-        D.Complete(FailedReport(LRecord.Topic, LRecord.Partition, EKafkaClass(E.ClassType),
+        CompleteEarly(D, FailedReport(LRecord.Topic, LRecord.Partition, EKafkaClass(E.ClassType),
           0, E.Message));
       Exit;
     end;
@@ -1080,7 +1132,7 @@ begin
   LPartition := LRecord.Partition;
   if LPartition >= Length(LTopic.Partitions) then
   begin
-    D.Complete(FailedReport(LRecord.Topic, LPartition, EKafkaBrokerError,
+    CompleteEarly(D, FailedReport(LRecord.Topic, LPartition, EKafkaBrokerError,
       KAFKA_ERROR_UNKNOWN_TOPIC_OR_PARTITION, Format('Topic %s has %d partitions, not %d',
       [LRecord.Topic, Length(LTopic.Partitions), LPartition + 1])));
     Exit;
@@ -1193,7 +1245,7 @@ begin
   Result := LFailureClass = nil;
   if not Result then
   begin
-    D.Complete(FailedReport(ARecord.Topic, APartition, LFailureClass, 0, LFailure));
+    CompleteEarly(D, FailedReport(ARecord.Topic, APartition, LFailureClass, 0, LFailure));
     Exit;
   end;
   if LWake then
@@ -1375,6 +1427,7 @@ begin
   FMonitor.Enter;
   try
     FInFlight.Remove(F);
+    KafkaAddBatchesInFlight(-Length(F.Batches));
     // In transit until completed or queued again, so that a Flush starting
     // now waits for them (CompleteBatch and FailBatch take them out).
     for B in F.Batches do
@@ -1753,6 +1806,12 @@ begin
       SetLength(F.Batches, LSent.Count);
       for I := 0 to LSent.Count - 1 do
         F.Batches[I] := LSent[I];
+      if TPcTracing.Enabled then
+        for B in LSent do
+        begin
+          B.ServerHost := LBroker.Connection.Params.Host;
+          B.ServerPort := LBroker.Connection.Params.Port;
+        end;
       try
         F.Future := LBroker.Connection.Send(KAFKA_API_KEY_PRODUCE, LVersion, LBody,
           FWakeSignal);
@@ -1767,6 +1826,7 @@ begin
         FInFlight.Add(F);
         for B in LSent do
           FTransit.Remove(B);
+        KafkaAddBatchesInFlight(Length(F.Batches));
         Inc(FRequestsSent);
       finally
         FMonitor.Leave;
@@ -1846,6 +1906,8 @@ begin
     Q.Batches.Insert(I, B);
     Q.Muted := False;
     FTransit.Remove(B);
+    if ACountAttempt then
+      KafkaMetricAdd(Q.RetriesSeries, B.Count);
   finally
     FMonitor.Leave;
   end;
@@ -1887,14 +1949,23 @@ end;
 procedure TKafkaProducer.CompleteBatch(ABatch: TObject; ABaseOffset, ALogAppendTime: Int64);
 var
   B: TProducerBatch;
+  Q: TPartitionQueue;
   I: Integer;
   R: TKafkaDeliveryReport;
 begin
   B := TProducerBatch(ABatch);
   ReleaseBatch(B);
+  Q := TPartitionQueue(QueueOf(B));
+  if Q <> nil then
+  begin
+    KafkaMetricAdd(Q.SentSeries, B.Count);
+    KafkaMetricAdd(Q.BytesSeries, Length(B.Encoded));
+  end;
   try
     for I := 0 to B.Count - 1 do
     begin
+      if B.Entries[I].Delivery.FSpan <> nil then
+        KafkaSetServer(B.Entries[I].Delivery.FSpan, B.ServerHost, B.ServerPort);
       R := Default(TKafkaDeliveryReport);
       R.Topic := B.Topic;
       R.Partition := B.Partition;
@@ -1924,9 +1995,12 @@ var
 begin
   B := TProducerBatch(ABatch);
   ReleaseBatch(B);
+  KafkaMetricAdd(KafkaSentMessagesSeries(B.Topic, KafkaErrorType(AClass, ACode)), B.Count);
   try
     for I := 0 to B.Count - 1 do
     begin
+      if B.Entries[I].Delivery.FSpan <> nil then
+        KafkaSetServer(B.Entries[I].Delivery.FSpan, B.ServerHost, B.ServerPort);
       R := FailedReport(B.Topic, B.Partition, AClass, ACode, AMessage);
       R.Timestamp := B.Batch.Records[I].Timestamp;
       B.Entries[I].Delivery.Complete(R);
@@ -1956,6 +2030,8 @@ begin
     try
       LFlights.AddRange(FInFlight);
       FInFlight.Clear;
+      for I := 0 to LFlights.Count - 1 do
+        KafkaAddBatchesInFlight(-Length(TInFlight(LFlights[I]).Batches));
       for I := 0 to LFlights.Count - 1 do
         for B in TInFlight(LFlights[I]).Batches do
           FTransit.Add(B);
@@ -2217,6 +2293,7 @@ begin
   finally
     FMonitor.Leave;
   end;
+  KafkaAddEpochBump;
   if FProducerEpoch = High(Int16) then
   begin
     // The epoch is spent: a new id from InitProducerId, then the

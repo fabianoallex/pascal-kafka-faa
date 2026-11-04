@@ -36,6 +36,20 @@
       It prints "A <p>,<p>..." (its partitions) and "G <n> <partition>" per
       record read, for the script to compare with what Java read.
 
+    KafkaInterop trace-produce <bootstrap> <topic> <count>
+      With the tracer on (spans kept in memory), sends <count> records
+      (value "t <n>") inside a span of its own, and prints "TRACE <trace
+      id>" and "S <span id>" for each send span: the Java console consumer
+      must see each record's traceparent header in that trace, naming one of
+      those spans.
+
+    KafkaInterop trace-consume <bootstrap> <topic> <count>
+      The Java console producer sent <count> records with a traceparent
+      header of the script's; this reads every partition from the start and
+      opens a process span per record (TKafkaConsumer.StartProcessSpan),
+      printing "P <value> <trace id> <parent span id>" for the script to
+      compare with what it sent.
+
   The fixture is the Java console producer's own input: "headers TAB key TAB
   value" per line, headers "name:value" separated by commas, NULL for a
   null key or header value. Header "n" numbers the records.
@@ -57,8 +71,10 @@ implementation
 uses
   SysUtils,
   Classes,
+  SyncObjs,
   PascalCommon.Utf8,
   PascalCommon.Threading,
+  PascalCommon.Tracing,
   Kafka.Types,
   Kafka.Compression,
   Kafka.Protocol.Primitives,
@@ -66,10 +82,24 @@ uses
   Kafka.Partitioner,
   Kafka.Cluster,
   Kafka.Producer,
-  Kafka.Consumer;
+  Kafka.Consumer,
+  Kafka.Tracing;
 
 type
   EInteropFailure = class(Exception);
+
+  /// Keeps the spans the tracer exports (trace-produce, trace-consume).
+  TKeptSpans = class(TInterfacedObject, IPcSpanExporter)
+  private
+    FLock: TCriticalSection;
+    FSpans: TPcSpanDataArray;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    function ExportSpans(const ASpans: TPcSpanDataArray; out AError: string): Boolean;
+    /// Exports what is queued, then every span so far.
+    function Spans: TPcSpanDataArray;
+  end;
 
   TFixtureRecord = record
     N: Integer;
@@ -434,6 +464,157 @@ begin
   end;
 end;
 
+constructor TKeptSpans.Create;
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+end;
+
+destructor TKeptSpans.Destroy;
+begin
+  FLock.Free;
+  inherited;
+end;
+
+function TKeptSpans.ExportSpans(const ASpans: TPcSpanDataArray; out AError: string): Boolean;
+var
+  I, N: Integer;
+begin
+  AError := '';
+  FLock.Enter;
+  try
+    N := Length(FSpans);
+    SetLength(FSpans, N + Length(ASpans));
+    for I := 0 to High(ASpans) do
+      FSpans[N + I] := ASpans[I];
+  finally
+    FLock.Leave;
+  end;
+  Result := True;
+end;
+
+function TKeptSpans.Spans: TPcSpanDataArray;
+begin
+  TPcTracing.FlushNow;
+  FLock.Enter;
+  try
+    Result := Copy(FSpans, 0, Length(FSpans));
+  finally
+    FLock.Leave;
+  end;
+end;
+
+/// The tracer on, every trace sampled, no export thread; the exporter.
+function StartTracing: TKeptSpans;
+var
+  LOptions: TPcTracingOptions;
+begin
+  LOptions := TPcTracingOptions.Default('pascal-kafka-faa-interop', '1');
+  LOptions.SampleRatio := 1;
+  Result := TKeptSpans.Create;
+  TPcTracing.Start(LOptions, Result, False);
+end;
+
+function RunTraceProduce(const ABootstrap, ATopic: string; ACount: Integer): string;
+var
+  PP: TKafkaProducerParams;
+  Pr: TKafkaProducer;
+  LSpans: TKeptSpans;
+  LParent: IPcSpan;
+  LData: TPcSpanDataArray;
+  I, N: Integer;
+begin
+  LSpans := StartTracing;
+  try
+    PP := KafkaProducerParams(ABootstrap);
+    PP.Cluster.Connection.ClientId := 'pascal-kafka-faa-interop-trace';
+    Pr := TKafkaProducer.Create(PP);
+    try
+      Pr.Open;
+      LParent := TPcTracing.StartSpan('interop trace-produce', skInternal);
+      try
+        for I := 0 to ACount - 1 do
+          Pr.Send(KafkaProducerRecord(ATopic, PcStringToUtf8Bytes('t ' + IntToStr(I))));
+        Check(Pr.Flush(60000), 'not flushed in 60 s', []);
+      finally
+        LParent.Finish;
+      end;
+      System.WriteLn('TRACE ' + LParent.TraceId);
+    finally
+      Pr.Free;
+    end;
+    LData := LSpans.Spans;
+    N := 0;
+    for I := 0 to High(LData) do
+      if LData[I].Name = 'send ' + ATopic then
+      begin
+        Check(LData[I].Status <> ssError, 'a send failed: %s', [LData[I].StatusMessage]);
+        System.WriteLn('S ' + LData[I].SpanId);
+        Inc(N);
+      end;
+    Check(N = ACount, '%d send spans for %d records', [N, ACount]);
+    Result := Format('OK pascal trace-produce: %d records, each with its send span''s ' +
+      'traceparent', [ACount]);
+  finally
+    TPcTracing.Shutdown;
+  end;
+end;
+
+function RunTraceConsume(const ABootstrap, ATopic: string; ACount: Integer): string;
+var
+  P: TKafkaConsumerParams;
+  C: TKafkaConsumer;
+  LSpans: TKeptSpans;
+  LParts: array of TKafkaTopicPartition;
+  LGot: TKafkaConsumerRecordArray;
+  LSpan: IPcSpan;
+  LText: string;
+  LPartitions, I, LCount: Integer;
+  LDeadline: UInt64;
+begin
+  LSpans := StartTracing;
+  try
+    P := KafkaConsumerParams(ABootstrap);
+    P.Cluster.Connection.ClientId := 'pascal-kafka-faa-interop-trace';
+    P.AutoOffsetReset := korEarliest;
+    P.FetchMaxWaitMs := 200;
+    C := TKafkaConsumer.Create(P);
+    try
+      C.Open;
+      LPartitions := Length(C.Cluster.Topic(ATopic).Partitions);
+      SetLength(LParts, LPartitions);
+      for I := 0 to LPartitions - 1 do
+        LParts[I] := KafkaTopicPartition(ATopic, I);
+      C.Assign(LParts);
+      LCount := 0;
+      LDeadline := PcTickMs + 30000;
+      while (LCount < ACount) and (PcTickMs < LDeadline) do
+      begin
+        LGot := C.Poll(1000);
+        for I := 0 to High(LGot) do
+        begin
+          Check(PcTryUtf8BytesToString(LGot[I].Value, LText), 'a value that isn''t UTF-8', []);
+          LSpan := C.StartProcessSpan(LGot[I]);
+          try
+            System.WriteLn(Format('P %s %s %s', [StringReplace(LText, ' ', '_', [rfReplaceAll]),
+              LSpan.TraceId, LSpan.ParentSpanId]));
+          finally
+            KafkaFinishSpan(LSpan, nil);
+            LSpan := nil;
+          end;
+          Inc(LCount);
+        end;
+      end;
+      Check(LCount = ACount, '%d of %d records in 30 s', [LCount, ACount]);
+    finally
+      C.Free;
+    end;
+    Result := Format('OK pascal trace-consume: %d process spans', [LCount]);
+  finally
+    TPcTracing.Shutdown;
+  end;
+end;
+
 function KafkaInteropMain: Integer;
 var
   LMode: string;
@@ -441,15 +622,21 @@ begin
   LMode := ParamStr(1);
   if not (((ParamCount = 4) and (LMode = 'consume')) or
     (((ParamCount = 4) or (ParamCount = 5)) and (LMode = 'produce')) or
-    ((ParamCount = 7) and (LMode = 'group'))) then
+    ((ParamCount = 7) and (LMode = 'group')) or
+    ((ParamCount = 4) and ((LMode = 'trace-produce') or (LMode = 'trace-consume')))) then
   begin
     System.WriteLn('usage: KafkaInterop consume <bootstrap> <topic> <fixture>');
     System.WriteLn('       KafkaInterop produce <bootstrap> <topic> <fixture> [gzip|snappy|lz4]');
     System.WriteLn('       KafkaInterop group <bootstrap> <topic> <group> <from> <to> <partitions>');
+    System.WriteLn('       KafkaInterop trace-produce|trace-consume <bootstrap> <topic> <count>');
     Exit(2);
   end;
   try
-    if LMode = 'group' then
+    if LMode = 'trace-produce' then
+      System.WriteLn(RunTraceProduce(ParamStr(2), ParamStr(3), StrToInt(ParamStr(4))))
+    else if LMode = 'trace-consume' then
+      System.WriteLn(RunTraceConsume(ParamStr(2), ParamStr(3), StrToInt(ParamStr(4))))
+    else if LMode = 'group' then
       System.WriteLn(RunGroup(ParamStr(2), ParamStr(3), ParamStr(4), StrToInt(ParamStr(5)),
         StrToInt(ParamStr(6)), StrToInt(ParamStr(7))))
     else if LMode = 'consume' then

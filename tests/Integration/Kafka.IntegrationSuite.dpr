@@ -42,6 +42,8 @@ uses
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
+  Kafka.Tracing in '..\..\src\Kafka.Tracing.pas',
+  Kafka.Metrics in '..\..\src\Kafka.Metrics.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
   Kafka.Group in '..\..\src\Kafka.Group.pas',
@@ -49,12 +51,14 @@ uses
   Kafka.Group.Consumer in '..\..\src\Kafka.Group.Consumer.pas',
   Kafka.DUnitXCompat in '..\Unit\Kafka.DUnitXCompat.pas',
   Kafka.TestHelpers in '..\Unit\Kafka.TestHelpers.pas',
+  Kafka.TestTracing in '..\Unit\Kafka.TestTracing.pas',
   Kafka.TestProxy in 'Kafka.TestProxy.pas',
   Kafka.IntegrationTests in 'Kafka.IntegrationTests.pas',
   Kafka.SaslIntegrationTests in 'Kafka.SaslIntegrationTests.pas',
   Kafka.GroupIntegrationTests in 'Kafka.GroupIntegrationTests.pas',
   Kafka.ConsumerGroupIntegrationTests in 'Kafka.ConsumerGroupIntegrationTests.pas',
   Kafka.IdempotenceIntegrationTests in 'Kafka.IdempotenceIntegrationTests.pas',
+  Kafka.TracingIntegrationTests in 'Kafka.TracingIntegrationTests.pas',
   Kafka.CloudIntegrationTests in 'Kafka.CloudIntegrationTests.pas';
 
 var

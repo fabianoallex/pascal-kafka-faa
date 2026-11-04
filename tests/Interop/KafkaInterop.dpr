@@ -35,6 +35,8 @@ uses
   Kafka.Connection in '..\..\src\Kafka.Connection.pas',
   Kafka.Partitioner in '..\..\src\Kafka.Partitioner.pas',
   Kafka.Cluster in '..\..\src\Kafka.Cluster.pas',
+  Kafka.Tracing in '..\..\src\Kafka.Tracing.pas',
+  Kafka.Metrics in '..\..\src\Kafka.Metrics.pas',
   Kafka.Producer in '..\..\src\Kafka.Producer.pas',
   Kafka.Consumer in '..\..\src\Kafka.Consumer.pas',
   Kafka.Group in '..\..\src\Kafka.Group.pas',

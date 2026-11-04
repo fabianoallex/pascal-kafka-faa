@@ -4,14 +4,15 @@ A native Apache Kafka client for **Delphi** and **Free Pascal/Lazarus** from one
 with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, chosen at run
 time.
 
-**Status: early, not released.** Phases K1, K2 and the start of K3: the protocol, the codecs generated from
+**Status: early, not released.** Phases K1, K2 and K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, snappy and lz4 (in Pascal, both
 directions) and zstd (read, in Pascal; not written yet), murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 and OAUTHBEARER over plaintext or TLS, the
 cluster layer (bootstrap, metadata, leaders), the producer (idempotent by default), and the consumer with partitions
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
-events, synchronous, asynchronous and automatic commits), checked against the Java client in
-both directions and in one group with it. The plan is [`docs/design.md`](docs/design.md).
+events, synchronous, asynchronous and automatic commits), OpenTelemetry spans with the trace
+context in the records' headers and metrics, checked against the Java client in both
+directions and in one group with it. The plan is [`docs/design.md`](docs/design.md).
 
 ## What works today
 
@@ -183,6 +184,41 @@ begin
   end;
 end;
 ```
+
+### Tracing and metrics
+
+The producer and the consumer open OpenTelemetry spans (`messaging.*` conventions) once the
+application starts pascal-common-faa's tracer with an exporter (pascal-api-infra-faa's OTLP
+one, or any `IPcSpanExporter`); with it off they cost one flag check.
+
+```pascal
+TPcTracing.Start(TPcTracingOptions.FromEnvironment('orders', '1.0.0'), Exporter);
+...
+Producer.Send(Rec);   // span "send orders", child of the current span; its traceparent
+                      // goes in the record's headers (unless the record has one)
+...
+Records := Consumer.Poll(1000);   // span "poll orders" when records come back
+for I := 0 to High(Records) do
+begin
+  Span := Consumer.StartProcessSpan(Records[I]);  // child of the record's traceparent:
+  try                                              // the producer's trace
+    Handle(Records[I]);
+    KafkaFinishSpan(Span, nil);
+  except
+    on E: Exception do
+    begin
+      KafkaFinishSpan(Span, E);
+      raise;
+    end;
+  end;
+end;
+```
+
+The header is W3C's `traceparent`, as text: the Java client's OpenTelemetry instrumentation
+reads and writes the same one. Metrics go to the process-wide `PcMetrics` (Prometheus text with
+`PcPrometheusText`): `messaging.client.sent.messages`, `messaging.client.consumed.messages`,
+and `pascalkafka.producer.bytes`, `.retries`, `.batches.in_flight`, `.epoch_bumps`,
+`pascalkafka.consumer.lag`, `.commits`, `.rebalances` (`Kafka.Metrics` has the list).
 
 ## Sample
 
