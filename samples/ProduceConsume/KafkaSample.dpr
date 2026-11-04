@@ -13,10 +13,13 @@
   the CA of pascal-common-faa's test PKI. Against Confluent Cloud:
 
     KafkaSample --bootstrap pkc-xxxxx.region.provider.confluent.cloud:9092
-      --sasl plain --user <API key> --password-env CC_SECRET --ca ""
+      --sasl plain --user <API key> --password-env CC_SECRET --system-ca
       --topic <an existing topic>
 
-  --ca "" trusts the system's store, as for any public broker. The password
+  --system-ca trusts the system's store, as for any public broker. It is a
+  flag, not --ca with an empty value: Delphi's ParamStr drops an empty
+  argument (FPC keeps it), so --ca "" took the next option as its value on
+  Delphi. The password
   comes from an environment variable (--password-env), so it doesn't land in
   the shell's history; --password exists for the lab.
 
@@ -33,7 +36,7 @@
     KafkaSample --bootstrap localhost:9099 --no-tls --sasl oauthbearer
       --token-env KAFKA_TOKEN
 
-  The options, all optional: --bootstrap, --ca, --sasl plain|scram-sha-256|
+  The options, all optional: --bootstrap, --ca, --system-ca, --sasl plain|scram-sha-256|
   scram-sha-512|oauthbearer|none, --user, --password, --password-env,
   --token-env, --extension, --topic, --count, --no-tls. }
 
@@ -136,6 +139,12 @@ begin
     if Name = '--no-tls' then
     begin
       Result.UseTls := False;
+      Inc(I);
+      Continue;
+    end;
+    if Name = '--system-ca' then
+    begin
+      Result.CaFile := '';
       Inc(I);
       Continue;
     end;

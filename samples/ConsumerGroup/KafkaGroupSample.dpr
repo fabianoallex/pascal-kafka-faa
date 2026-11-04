@@ -18,7 +18,7 @@
   paths). With no arguments it talks to the SASL_SSL listener of
   docker/docker-compose.yml (localhost:9097, SCRAM-SHA-256, bob) and trusts
   the CA of pascal-common-faa's test PKI. The options, all optional, are
-  samples/ProduceConsume's (--bootstrap, --ca, --sasl, --user, --password,
+  samples/ProduceConsume's (--bootstrap, --ca, --system-ca, --sasl, --user, --password,
   --password-env, --topic, --count, --no-tls) and --group.
 
   Delphi x FPC: the handlers are methods of an object ("of object"), not
@@ -151,6 +151,12 @@ begin
     if Name = '--no-tls' then
     begin
       Result.UseTls := False;
+      Inc(I);
+      Continue;
+    end;
+    if Name = '--system-ca' then
+    begin
+      Result.CaFile := '';
       Inc(I);
       Continue;
     end;

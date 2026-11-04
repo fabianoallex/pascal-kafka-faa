@@ -1,9 +1,10 @@
 # pascal-kafka-faa — design
 
-Status: **K0 done; K1 done but for its Confluent Cloud run; K2's six steps done, its criterion
-met against Kafka 4.4.0; K3 done, its seven steps and its criterion (the idempotent producer,
-snappy and lz4, zstd read, SCRAM-SHA-512, OAUTHBEARER, spans and metrics)**
-(2026-11-03:
+Status: **K0 done; K1 done, its Confluent Cloud run included (2026-11-04); K2's six steps
+done, its criterion met against Kafka 4.4.0; K3 done, its seven steps and its criterion (the
+idempotent producer, snappy and lz4, zstd read, SCRAM-SHA-512, OAUTHBEARER, spans and
+metrics); 0.1.0 released from there**
+(2026-11-04:
 "K1 progress",
 "K2 progress" and "K3 progress" below). From the feasibility review of 2026-11-01. The user's decisions the same day: the transport moves to
 pascal-common-faa (1), no embedded broker for now (2), and the recommendations of this document
@@ -634,6 +635,48 @@ is met.
 **Next:** run the sample and the opt-in test against Confluent Cloud; then K2 (the KIP-848
 consumer group: "K2 progress", below). Open question 1 is answered: Apache 4.4.0 in CI, Confluent Cloud as the first
 managed broker.
+
+### Confluent Cloud, K1 closed (2026-11-04)
+
+The run K1 waited for, after K3, with an account of the user's (a cluster of 24 brokers in
+AWS us-east-2, a topic of 6 partitions; the credentials from a `kafka-cloud.env` the git
+ignores, never in the repository or a log).
+
+**Done:**
+
+- **`Kafka.CloudIntegrationTests`** has a second test, `Kafka.TracingIntegrationTests` on a
+  managed broker: a consumer in a group of its own, the records sent inside a span, their
+  `traceparent` read back, the process spans children of the send spans in the sender's trace,
+  and the run's metrics (records sent and consumed, no lag left, the rebalances, a commit). The
+  topic is shared with other runs, so the consumer starts at the end offsets read before the
+  records go (a `Seek` in its assigned handler) and the topic's series are compared with the
+  values read before. Tried first on the local SASL_SSL listener (alice), as K1's test was.
+
+**Measured against Confluent Cloud** (SASL PLAIN over TLS, the system's trust store):
+
+- FPC 3.2.2 Windows x64 (SChannel): both tests, 0 leaks; the K1 sample (`KafkaSample --sasl
+  plain --system-ca`, 5 records sent and read back, `done`) and the K2 sample (the group, 6
+  partitions assigned, asynchronous and synchronous commits, `done`), 0 leaks.
+- FPC 3.2.2 Linux (Debian 12, OpenSSL 3): both tests, 0 leaks.
+- Delphi 12 Win32 and Win64 (built in the IDE, run from the shell with the variables): both
+  tests inside the whole integration suite, 0 leaks; the K1 sample with `--system-ca` (5
+  records sent and read back, `done`), after the fix below.
+- KIP-848 on Confluent Cloud: the group's heartbeats, the assignment, OffsetCommit and the leave
+  worked with nothing changed; the cluster's 24 brokers through one bootstrap name, every
+  partition's leader over SASL.
+
+**Found on the way:** the Linux test image (`fpc322-bookworm`) had no `ca-certificates`, so
+OpenSSL's default verify paths held nothing and every public certificate was refused (X509
+error 20). The library does load the system's store (`SSL_CTX_set_default_verify_paths`); the
+package is the store. Gotcha 27 in `CLAUDE.md`; the README says so.
+
+**Fixed on the way:** the samples' `--ca ""` (the system's store) failed on Delphi with "topic_0
+needs a value": Delphi's `ParamStr` drops an empty argument, so `--ca` took `--topic` as its
+value. FPC keeps it, which is why the FPC runs passed. Both samples take `--system-ca` now, a
+flag with no value, and the README and the samples' comments name it (gotcha 28).
+
+**K1's criterion** (section 7) is **met**: a sample produces and consumes against Kafka 4.x
+and against Confluent Cloud over TLS + SASL, and the interoperability tests are green.
 
 ## K2 progress
 

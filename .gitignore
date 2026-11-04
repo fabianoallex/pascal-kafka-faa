@@ -49,3 +49,6 @@ packagefiles.xml
 # (tools/gen_broker_certs.sh)
 docker/certs/
 __pycache__/
+
+# Local credentials (Confluent Cloud)
+kafka-cloud.env

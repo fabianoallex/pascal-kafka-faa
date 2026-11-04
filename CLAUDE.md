@@ -176,6 +176,11 @@ first).
   `KAFKA_CLOUD_API_KEY`, `KAFKA_CLOUD_API_SECRET`, `KAFKA_CLOUD_TOPIC` (an existing topic);
   without them a notice and a pass. Never put credentials in the repository.
   `KAFKA_CLOUD_CA_FILE` points it at a private CA, to try it on `localhost:9097` with alice.
+  The user keeps them in `kafka-cloud.env` at the root (git-ignored, `export NAME=value`):
+  load it with `set -a; . ./kafka-cloud.env; set +a` in the same command, pass them into a
+  container by name (`docker run -e KAFKA_CLOUD_API_KEY ...`), and never print the values
+  (mask the key and the bootstrap host in any output shown). Two tests: produce and poll back
+  (`Assign`), and a group consumer with the `traceparent`, spans and metrics.
 - **FPC on Windows:** `sh tools/test_fpc.sh` (both suites, then the interoperability test and
   the samples; everything but the unit suite is skipped with a notice when the broker isn't
   running, `KAFKA_IT=require` makes that a failure). **Linux:** `sh tools/test_fpc_docker.sh`
@@ -303,3 +308,12 @@ first).
     `TKafkaScramClient` and in `TKafkaOAuthBearerClient`) failed with "Asm: Duplicate label
     DBG_$KAFKA.SASL_$$_TSTATE" (the debug info names them by unit and type only, with `-gl`).
     FPC on Windows and Delphi built it. Give nested types unique names within a unit.
+27. **A Linux image without `ca-certificates` has no system trust store.** The Cloud test failed
+    in `fpc322-bookworm` with "the server's certificate was refused (X509 error 20)": OpenSSL's
+    default verify paths (which the common loads when `TlsCaFile` is empty) were empty, since
+    `/etc/ssl/certs` didn't exist. `apt-get install ca-certificates` in the container fixed it.
+    The local broker's tests never saw it: they name the test CA.
+28. **Delphi's `ParamStr` drops an empty argument; FPC's keeps it.** The samples' `--ca ""`
+    (the system's trust store) worked on FPC and, on Delphi, made `--ca` take the next option
+    as its value ("topic_0 needs a value"). Don't give a command-line option an empty value
+    that means something: the samples have `--system-ca`, a flag.

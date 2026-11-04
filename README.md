@@ -4,7 +4,7 @@ A native Apache Kafka client for **Delphi** and **Free Pascal/Lazarus** from one
 with no external dependency (no librdkafka). TLS through SChannel or OpenSSL, chosen at run
 time.
 
-**Status: early, not released.** Phases K1, K2 and K3: the protocol, the codecs generated from
+**Status: 0.1.0, the first release** ([`CHANGELOG.md`](CHANGELOG.md)). Phases K1, K2 and K3: the protocol, the codecs generated from
 Kafka 4.4.0's message definitions, record batch v2 with gzip, snappy and lz4 (in Pascal, both
 directions) and zstd (read, in Pascal; not written yet), murmur2 partitioning compatible
 with Java, a connection per broker, SASL PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 and OAUTHBEARER over plaintext or TLS, the
@@ -12,7 +12,8 @@ cluster layer (bootstrap, metadata, leaders), the producer (idempotent by defaul
 assigned by hand or by a consumer group (KIP-848, Kafka 4.0 and later: subscribe, rebalance
 events, synchronous, asynchronous and automatic commits), OpenTelemetry spans with the trace
 context in the records' headers and metrics, checked against the Java client in both
-directions and in one group with it. The plan is [`docs/design.md`](docs/design.md).
+directions and in one group with it, and run against Confluent Cloud. The plan is
+[`docs/design.md`](docs/design.md).
 
 ## What works today
 
@@ -192,6 +193,9 @@ application starts pascal-common-faa's tracer with an exporter (pascal-api-infra
 one, or any `IPcSpanExporter`); with it off they cost one flag check.
 
 ```pascal
+uses
+  PascalCommon.Tracing, PascalCommon.Metrics, Kafka.Tracing, Kafka.Producer, Kafka.Consumer;
+...
 TPcTracing.Start(TPcTracingOptions.FromEnvironment('orders', '1.0.0'), Exporter);
 ...
 Producer.Send(Rec);   // span "send orders", child of the current span; its traceparent
@@ -228,7 +232,7 @@ uses the SASL_SSL listener of `docker/docker-compose.yml`; against Confluent Clo
 
 ```sh
 KafkaSample --bootstrap pkc-xxxxx.region.provider.confluent.cloud:9092 --sasl plain \
-  --user <API key> --password-env CC_SECRET --ca "" --topic <an existing topic>
+  --user <API key> --password-env CC_SECRET --system-ca --topic <an existing topic>
 ```
 
 [`samples/ConsumerGroup`](samples/ConsumerGroup/KafkaGroupSample.dpr): a consumer in a group,
@@ -246,7 +250,10 @@ codec sent with a valid CRC according to `kafka-dump-log.sh`. Both directions ru
 snappy and lz4; zstd runs from Java to this library, which reads zstd and doesn't write it. It
 also puts the Java console consumer
 (`group.protocol=consumer`) and this library's consumer in one group: they split the topic's
-partitions, hand them over through their commits, and read every record once.
+partitions, hand them over through their commits, and read every record once. And the trace
+context crosses both ways: the Java console consumer sees each record's `traceparent` naming
+this library's send span, and this library's process spans are children of the `traceparent`
+the Java console producer sent.
 
 ## Requirements
 
@@ -270,12 +277,18 @@ See [`CLAUDE.md`](CLAUDE.md), "Tests". In short: `sh tools/test_fpc.sh` (FPC, Wi
 suites, the Java interoperability test and the samples), `sh tools/test_fpc_docker.sh` and
 `sh tools/test_interop_docker.sh` (the same on Linux in Docker), `Kafka.groupproj` in the Delphi
 IDE. Everything but the unit suite needs `docker compose -f docker/docker-compose.yml up -d`
-(plaintext 9092, TLS 9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, and 9098 with 2-second SASL
-sessions).
+(plaintext 9092, TLS 9093, SASL_PLAINTEXT 9096, SASL_SSL 9097, 9098 with 2-second SASL
+sessions, and 9099 with OAUTHBEARER).
 
-The Confluent Cloud test (`Kafka.CloudIntegrationTests`) runs only with credentials in the
-environment: `KAFKA_CLOUD_BOOTSTRAP`, `KAFKA_CLOUD_API_KEY`, `KAFKA_CLOUD_API_SECRET` and an
-existing topic in `KAFKA_CLOUD_TOPIC`. Without them it prints a notice and passes.
+The Confluent Cloud test (`Kafka.CloudIntegrationTests`: records produced and polled back, and
+a group consumer reading their `traceparent` back with its spans and metrics) runs only with
+credentials in the environment: `KAFKA_CLOUD_BOOTSTRAP`, `KAFKA_CLOUD_API_KEY`,
+`KAFKA_CLOUD_API_SECRET` and an existing topic in `KAFKA_CLOUD_TOPIC`. Without them it prints a
+notice and passes. A file `kafka-cloud.env` at the root, ignored by git, can hold them as
+`export NAME=value` lines (`set -a; . ./kafka-cloud.env; set +a`). The API key needs the topic,
+groups and IdempotentWrite (the producer is idempotent by default). On Linux the system's trust
+store is the `ca-certificates` package: a minimal image without it refuses every public
+certificate.
 
 ## License
 

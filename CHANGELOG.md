@@ -4,264 +4,103 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 follow [Semantic Versioning](https://semver.org/). While the version is 0.x, a minor version
 may change the API; each such change is listed here.
 
-## [Unreleased]
+## [0.1.0] - 2026-11-04
 
-Phase K1 (`docs/design.md`, "K1 progress"). Not released: 0.1.0 comes once K1's last criterion,
-the sample against Confluent Cloud, has been run.
+The first release: phases K1, K2 and K3 of `docs/design.md`. A native Kafka client with no
+librdkafka, developed against Apache Kafka 4.4.0 and run against Confluent Cloud. Needs
+pascal-common-faa 1.28.0 or later (`Kafka.Types` and the `.lpk` refuse an older copy).
 
 ### Added
 
-- `Kafka.Protocol.Primitives`: big-endian integers, `FLOAT64`, `UUID`, unsigned varint and
-  zigzag varint/varlong, classic and compact strings, bytes and arrays with their nulls, raw
-  tagged fields.
-- `Kafka.Protocol.Crc32c`: CRC32C (Castagnoli), checked against RFC 3720's vectors.
-- `Kafka.Protocol.Envelope`: request header v1/v2, response header v0/v1 (always v0 for
-  ApiVersions), the size-prefixed frame.
-- `tools/gen_messages.py` (decision 3): the codecs generated from Apache Kafka 4.4.0's message
-  definitions. Generated: `Kafka.Messages.ApiVersions` (v0-v5), `Kafka.Messages.Metadata`
-  (v0-v13), `Kafka.Messages.Apis` (the table negotiation uses) and `Kafka.Errors` (every error
-  code, from `Errors.java`).
-- `Kafka.Connection`: one broker over TCP or TLS (pascal-common-faa: SChannel or OpenSSL,
-  private CA, client certificates), a reader thread, several requests in flight matched by
-  correlation id, request timeouts, ApiVersions negotiation with the fallback of KIP-511, and a
-  typed `Metadata` call.
-- `Kafka.Transport`: the exception boundary (no `EPcTransport*` leaves the library).
-- `Kafka.Types`: the exception tree, the version, and the check for pascal-common-faa 1.27.1 or
-  later.
-- `Kafka.Protocol.RecordBatch`: record batch v2 (magic 2) by hand, CRC32C checked, headers,
-  null against empty key and value, absolute offsets and timestamps (LogAppendTime as Java), a
-  Fetch's last batch cut by the byte limit skipped.
-- `Kafka.Compression`: none and gzip (RFC 1952 over raw deflate from `System.ZLib` and
-  paszlib, the same framing code on both compilers; trailer checked, output bounded).
-  `EKafkaCompression` for a codec not there yet and data that doesn't decompress.
-- Generated: `Kafka.Messages.Produce` (v3-v13), `Kafka.Messages.Fetch` (v4-v18),
-  `Kafka.Messages.ListOffsets` (v1-v11). The generator now reads the `records` type and tagged
-  struct fields; every record has `IsDefault`.
-- `TKafkaConnection.Produce`, `Fetch`, `ListOffsets`, `SendOneWay` (Produce with acks=0, which
-  the broker doesn't answer) and `Request` with a deadline of its own.
-- `Kafka.Partitioner`: murmur2 and the partition of a key, as Java's producer chooses it.
-- `Kafka.Cluster`: bootstrap, metadata snapshots, the tracked topics refreshed when stale or
-  invalidated, waits for a topic and for a partition's leader (`MaxBlockMs`), one connection
-  per broker (`IKafkaBrokerConnection`), `NeedsRefresh`.
-- `Kafka.Producer`: `Send` with a future and an optional callback, batches per partition
-  (`BatchSize`, `LingerMs`), a sender thread, acks all/1/0, retries bounded by `Retries` and
-  `DeliveryTimeoutMs`, one batch in flight per partition (order kept through retries),
-  `BufferMemory` and `MaxBlockMs`, `Flush`, `Close` with a timeout, gzip; Java's defaults
-  (`KafkaProducerParams`).
-- `TKafkaStickyPartitioner`: the partition of records without a key (KIP-480, KIP-794).
-- `Kafka.Consumer`: manually assigned partitions (`Assign`, `Seek`, `SeekToBeginning`,
-  `SeekToEnd`, `Position`, `Poll`, `Wakeup`, `BeginningOffsets`, `EndOffsets`),
-  `AutoOffsetReset`, Java's defaults (`KafkaConsumerParams`). `EKafkaWakeup`;
-  `KAFKA_WAIT_INFINITE` in `Kafka.Types`.
-- `IKafkaSignal` and `TKafkaEventSignal`: `TKafkaConnection.Send` can fire a signal when the
-  future is done.
-- `KafkaErrorIsRetriable`, `KafkaErrorIsInvalidMetadata` (generated from each code's Java
-  exception class, `tools/fetch_error_classes.py`). They replace
-  `KafkaErrorInvalidatesMetadata`, whose hand-written list missed NETWORK_EXCEPTION and three
-  leader-election codes.
-- SASL: `Kafka.Sasl` (PLAIN, SCRAM-SHA-256 over pascal-common-faa's SHA-256, HMAC and
-  PBKDF2; the server's signature checked), generated `Kafka.Messages.SaslHandshake` (v0-v1) and
-  `Kafka.Messages.SaslAuthenticate` (v0-v2). `TKafkaConnectionParams.SaslMechanism`,
-  `SaslUsername`, `SaslPassword`: `Open` authenticates after ApiVersions, in plaintext or over
-  TLS, so the cluster, the producer and the consumer get it from their connection template.
-  `EKafkaAuthentication` (with the broker's error code), which the producer and the consumer
-  don't retry and the cluster's bootstrap raises at once. KIP-368: the connection keeps the
-  session lifetime (`SessionLifetimeMs`, `ReauthenticationDue`) and the cluster replaces a
-  connection whose session is about to end, instead of re-authenticating on the same socket.
-- `docker/`: SASL_PLAINTEXT (9096), SASL_SSL (9097) and a listener with 2-second sessions
-  (9098); the SCRAM user is created when the storage is formatted (`docker/kafka-start.sh`).
-- Tests: 215 unit tests (codecs and record batches against 158 frames captured from a Kafka
-  4.4.0 broker and the Java client, gzip against Python's, murmur2 against Kafka's vectors and
-  the Java producer's partitions, SCRAM against RFC 7677's vectors and, given the nonce the
-  Java client chose, against Java's own messages byte for byte; fake brokers in process, plain,
-  TLS and SASL (PLAIN and SCRAM with right and wrong credentials, a wrong server signature, an
-  unsupported mechanism, a listener without SASL, session lifetimes); the producer against fake
-  brokers that fail, hold or drop requests, the consumer against fake brokers that answer Fetch
-  with a long poll) and 32 integration tests against `docker/docker-compose.yml` (plaintext and
-  TLS with a private CA, every TLS backend; records produced and fetched back, gzip, acks=0; the
-  cluster's bootstrap, leaders, an auto-created topic, a keyed record through its partition's
-  leader; the producer's keyed, sticky and bulk records fetched back; the consumer polling what
-  the producer sent, plain and TLS; both through SASL_PLAINTEXT and SASL_SSL with each
-  mechanism, and across SASL sessions that expire; Confluent Cloud, opt-in).
-- Interoperability with the Java client 4.4.0 (`tools/interop.py`, the library's side in
-  `tests/Interop`): what the Java console producer sends is read by the library field by field,
-  each keyed record in the partition both murmur2 implementations agree on; what the library
-  sends is read by the Java console consumer as sent, and `kafka-dump-log.sh` finds every batch
-  gzip with a valid CRC. Run by `tools/test_fpc.sh`, `tools/test_interop_docker.sh` and CI.
-- `Kafka.CloudIntegrationTests`: the opt-in test against Confluent Cloud (SASL PLAIN over TLS,
-  the system's trust store), credentials from `KAFKA_CLOUD_*` in the environment.
-- `samples/ProduceConsume`: K1's sample, a producer and a consumer over TLS and SASL, one source
-  for Delphi and Lazarus; its defaults use the SASL_SSL listener of `docker/`.
-- Phase K2's foundation (consumer groups, KIP-848): generated `Kafka.Messages.FindCoordinator`
-  (v0-v6), `Kafka.Messages.ConsumerGroupHeartbeat` (v0-v1), `Kafka.Messages.OffsetCommit`
-  (v2-v10), `Kafka.Messages.OffsetFetch` (v1-v10) and `Kafka.Messages.ConsumerGroupDescribe`
-  (v0-v1). `tools/gen_messages.py` generates nullable struct fields (Java's int8 marker). 38
-  more captured exchanges (234 frames), by hand for every version and from the Java consumer in
-  a KIP-848 group; `Kafka.GroupMessagesTests` (226 unit tests in all).
-- Consumer groups, KIP-848 (phase K2, steps 2 to 4): `Kafka.Group` (the membership interface
-  `IKafkaGroupMembership`, decision 4's seam; its events `kgeRevoked`, `kgeAssigned`, `kgeLost`;
-  `TKafkaCommittedOffset`; the wait hub), `Kafka.Group.Coordinator` (FindCoordinator in the list
-  form, v4+, and the single-key form for older brokers; the coordinator's own connection;
-  lookups again on NOT_COORDINATOR and COORDINATOR_NOT_AVAILABLE, spaced by an exponential
-  backoff with jitter) and `Kafka.Group.Consumer` (`TKafkaConsumerProtocol`: a client-chosen
-  member id, KIP-1082; a heartbeat thread at the coordinator's interval, sending only the
-  fields that changed; reconciliation by topic id, named through the metadata, revoked
-  partitions handed to the consumer before the new assignment is acknowledged; fenced and
-  unknown members lose their partitions and join again; `Leave` with epoch -1; `Commit` and
-  `Committed` over OffsetCommit and OffsetFetch with Java's retries); the consumer uses it from
-  the next entry on.
-- `TKafkaCluster.Coordinator` (a connection of its own for a group coordinator, as Java keeps)
-  and `TKafkaCluster.AnyBroker`.
-- `KafkaBackoffMs`: Java's exponential backoff (factor 2, jitter 0.2), and
-  `KAFKA_DEFAULT_RETRY_BACKOFF_MAX_MS` (`retry.backoff.max.ms`).
-- Tests: the fake broker serves any number of connections at once (a thread each, with its own
-  SASL state) and is a group coordinator (`Kafka.TestFakeGroup`: heartbeats with a round-robin
-  assignor that moves a partition only after its owner let it go, fencing, OffsetCommit and
-  OffsetFetch with the member's epoch checked, passive members, injected errors).
-  `Kafka.GroupTests` (24 unit tests: 250 in all) and `Kafka.GroupIntegrationTests` (one member
-  joins, commits, reads back and leaves; two members split a topic and one leaves; against
-  Kafka 4.4.0: 34 integration tests in all).
-- The consumer in a consumer group (phase K2, steps 5 and 6): `TKafkaConsumerParams.GroupId`,
-  `GroupProtocol` (`kgpConsumer`; `kgpClassic` raises, decision 4), `EnableAutoCommit` (on in
-  `KafkaConsumerParams`), `AutoCommitIntervalMs`, `MaxPollIntervalMs`, `DefaultApiTimeoutMs`,
-  `RetryBackoffMaxMs`, `GroupRemoteAssignor`, `ClientRack`; `TKafkaConsumer.Subscribe` (the
-  join with the first `Poll`, as Java 4.x), `Unsubscribe`, `Subscription`, exclusive with
-  `Assign` (`Assign([])` unsubscribes); `OnPartitionsAssigned`, `OnPartitionsRevoked`,
-  `OnPartitionsLost` (`TKafkaPartitionsEvent`, "of object", inside `Poll` on its thread; the
-  consumer applies the assignment first: revoked and lost partitions stop being fetched and
-  their buffered records are dropped); positions from the group's committed offsets, then
-  `AutoOffsetReset`; `Commit`, `CommitOffsets` (synchronous, after the asynchronous commits
-  queued before), `CommitAsync`, `CommitOffsetsAsync` (a `TKafkaCommitEvent` callback run inside
-  a later `Poll`, `Commit` or `Close`, and an `IKafkaCommitFuture`), `Committed`; auto-commit on
-  its interval inside `Poll` (when the positions changed), before a revoke and at `Close`;
-  `Close(ATimeoutMs)` commits, leaves (the revoke handler) and closes the membership before the
-  connections; the `Group` property (member id, epoch, state). Handlers may call the consumer
-  back (`Commit`, `Seek`, `Position`...); `Poll`, `Close`, `Subscribe`, `Unsubscribe` and
-  `Assign` raise there.
-- `Kafka.Group`: `IKafkaGroupMembership.CommitAsync` and `PendingCommits`, `TKafkaCommitReport`,
-  `TKafkaCommitEvent`, `IKafkaCommitFuture` (`TKafkaCommitFuture`); `kmsStale`.
-  `TKafkaConsumerProtocol` sends asynchronous commits from its thread, in order, once each
-  (Java's commitAsync), and leaves the group when `Poll` isn't called within the rebalance
-  timeout (`max.poll.interval.ms`): epoch -1, stale, the partitions lost, joined again at the
-  next `Poll` (Java's `transitionToStale`).
-- `samples/ConsumerGroup`: K2's sample, a consumer in a group with its handlers, asynchronous
-  and synchronous commits; a second run starts where the first committed.
-- Tests: `Kafka.ConsumerGroupTests` (10 unit tests: 260 in all; two consumers rebalancing on
-  the fake with every record read once, the revoke's commit before the move, a manual commit in
-  the revoke handler, positions from the commits, auto-commit, asynchronous commits, Close, the
-  poll timer) and `Kafka.ConsumerGroupIntegrationTests` (2: K2's criterion against Kafka 4.4.0,
-  two consumers rebalancing with no record lost or read twice; a new consumer starting after a
-  closed one's commit: 36 integration tests in all). `tools/interop.py` has a third scenario: the
-  Java consumer 4.4.0 (`group.protocol=consumer`) and this one in the same group, sharing a
-  topic's partitions, every record read once.
-- Phase K3's foundation (the idempotent producer): generated `Kafka.Messages.InitProducerId`
-  (v0-v5; 4.4.0 marks v6 unstable, and the generator now caps the response at the request's
-  last stable version, as Java's `ApiKeys`). 18 more captured exchanges (270 frames): by hand,
-  InitProducerId v0-v5 and idempotent Produce batches showing what the broker answers a retry, a
-  gap, a new epoch, the old one, an unknown producer and an evicted retry; from the Java console
-  producer, its InitProducerId (answered COORDINATOR_LOAD_IN_PROGRESS first) and its batch;
-  `Kafka.ProducerIdMessagesTests` (267 unit tests in all).
-- The idempotent producer (phase K3, step 2), after Java 4.4.0: `TKafkaProducerParams.Idempotence`
-  (`kidAuto`, the default, `kidOn`, `kidOff`), InitProducerId, the producer id, epoch and
-  per-partition sequences in each batch, up to five batches of a partition in flight with
-  retries kept in sequence order, Java's handling of OUT_OF_ORDER_SEQUENCE_NUMBER,
-  UNKNOWN_PRODUCER_ID, INVALID_PRODUCER_EPOCH and DUPLICATE_SEQUENCE_NUMBER, the local epoch
-  bump, unresolved sequences after an expiry. `Idempotent`, `ProducerId`, `ProducerEpoch`,
-  `InitProducerIdCount`, `EpochBumps`. The fake broker answers InitProducerId and checks
-  sequences as Kafka 4.4.0 does; `Kafka.TestProxy` (integration) loses a real broker's answers.
-  Tests: `Kafka.IdempotentProducerTests` (16 unit tests: 283 in all) and
-  `Kafka.IdempotenceIntegrationTests` (2: 38 integration tests in all).
-- snappy and lz4 in `Kafka.Compression` (phase K3, step 3), in Pascal, both directions:
-  `KafkaSnappyCompress`/`KafkaSnappyDecompress` (xerial's framing, as Java's producer writes
-  it; a raw block, as librdkafka writes it, read too), `KafkaSnappyRawCompress`/
-  `KafkaSnappyRawDecompress`, `KafkaLz4Compress`/`KafkaLz4Decompress` (the LZ4 frame as Java
-  writes it, with KIP-57's header checksum; checksums, content size and 4 MiB blocks read),
-  `KafkaLz4BlockCompress`/`KafkaLz4BlockDecompress`, `KafkaXxHash32`. `KafkaCompress`,
-  `KafkaDecompress` and `KafkaCompressionSupported` take both, so the producer
-  (`TKafkaProducerParams.Compression := kcSnappy` or `kcLz4`) and the consumer use them with no
-  change of their own. Output bounded as gzip's. Captures: the Java console producer's snappy
-  and lz4 batches (274 frames). Tests: `Kafka.CompressionTests` (20, against the reference
-  libraries' vectors), the Java batches, the producer and consumer against the fake, the fake's
-  `AppendRawBatch` (307 unit tests in all); 4 integration tests (42); `tools/interop.py` runs
-  both directions with gzip, snappy and lz4, and checks the codec in the broker's log for both.
-- zstd, read (phase K3, step 4; `docs/design.md`, open question 2, option C):
-  `Kafka.Compression.Zstd`, a decoder in Pascal (RFC 8878: frames, skippable frames, raw, RLE
-  and compressed blocks, Huffman literals, FSE sequences, repeat offsets, the XXH64 checksum),
-  `KafkaZstdDecompress` and `KafkaXxHash64`. It refuses what Java 4.4.0's decoder (zstd-jni
-  1.5.7-17) refuses: a dictionary, a window above 128 MiB, zstd 0.x's legacy frames. Output
-  bounded as the other codecs'. `KafkaDecompress(kcZstd)` reads it, so the consumer reads zstd
-  batches with no change of its own. `KafkaDecompressionSupported` (every codec);
-  `KafkaCompressionSupported` now means writing, and is False for zstd. Captures: the Java
-  console producer's zstd batch (276 frames). Tests: `Kafka.ZstdTests` (10, against the
-  reference library's frames from `tools/codec_vectors.py zstd`, frames built by hand, what is
-  refused), the Java batch, the consumer against the fake (321 unit tests in all); 2
-  integration tests (44) on a topic with `compression.type=zstd`, which `docker/kafka-start.sh`
-  creates, so the broker compresses with Java's zstd; `tools/interop.py` runs Java to library
-  with zstd.
-- SCRAM-SHA-512 (phase K3, step 5): `ksmScramSha512` in `TKafkaConnectionParams.SaslMechanism`,
-  over pascal-common-faa 1.28.0's SHA-512. The fake broker speaks it; `docker/` enables it with
-  a user `carol` / `carol-secret`; the samples take `--sasl scram-sha-512`. Captures: the Java
-  client's SCRAM-SHA-512 exchange (282 frames). Tests: draft-melnikov-scram-sha-512's example,
-  Java's exchange, the fake (328 unit tests in all) and Kafka 4.4.0 (47 integration tests).
-- OAUTHBEARER with the token supplied (phase K3, step 6): `ksmOAuthBearer`,
-  `TKafkaConnectionParams.SaslOAuthBearerTokenProvider` (`TKafkaOAuthBearerTokenProvider`, a
-  `function: string of object` called at each new connection, KIP-368's replacement included)
-  and `SaslOAuthBearerExtensions` (`KafkaSaslExtension`); `TKafkaOAuthBearerClient` writes RFC
-  7628's initial response as Java does and answers a refusal with kvsep;
-  `KafkaIsOAuthBearerToken`. `EKafkaAuthentication.BrokerMessage`: the broker's message as it
-  came, with OAUTHBEARER its JSON. The fake broker speaks OAUTHBEARER; `docker/` adds the
-  `OAUTH` listener (9099, Kafka's unsecured JWS validator, test only); the K1 sample takes
-  `--sasl oauthbearer --token-env NAME` and `--extension`. Captures: the Java client's
-  OAUTHBEARER exchanges and hand-built ones (306 frames). Tests: 342 unit and 51 integration.
-- Spans and metrics (phase K3, step 7). `Kafka.Tracing`: OpenTelemetry spans on
-  pascal-common-faa's `PascalCommon.Tracing`, with the `messaging.*` conventions
-  (`messaging.system` kafka). `Send` opens a detached producer span `send <topic>`, a child of
-  the current span, that ends with the record's outcome (partition, offset, the broker; on a
-  failure the error status and the Kafka error's name as `error.type`), and writes its
-  `traceparent` (and `tracestate`) into a copy of the record's headers unless the record has
-  one. `Poll` is a client span `poll <topic>`, exported only when records come back.
-  `TKafkaConsumer.StartProcessSpan` opens a consumer span `process <topic>` whose parent is
-  the record's `traceparent`; `KafkaFinishSpan` ends it. `KafkaTraceParentOf` and
-  `KafkaInjectTraceContext` for the headers. With the tracer off nothing is created and no
-  header is added. `Kafka.Metrics`: on the process-wide `PcMetrics`,
-  `messaging.client.sent.messages` (with `error.type`), `pascalkafka.producer.bytes`,
-  `.retries`, `.batches.in_flight` and `.epoch_bumps`; `messaging.client.consumed.messages`,
-  `pascalkafka.consumer.lag` (per partition), `.commits` (by kind and outcome) and
-  `.rebalances` (by event); counted per batch or per partition, as deltas. The interoperability
-  test checks the `traceparent` header both ways with the Java console tools. Tests: 354 unit
-  and 53 integration.
-
-### Changed
-
-- **pascal-common-faa 1.28.0 or later** (it was 1.27.1): `Kafka.Types` and the `.lpk` refuse an
-  older copy.
-- **`TKafkaScramSha256Client` is now `TKafkaScramClient`**, with the hash as its first
-  constructor parameter (`kshSha256` or `kshSha512`).
-- **`Compression := kcZstd` raises `EArgumentException`** in `TKafkaProducer.Create` with a
-  message that says zstd is read but not written (it said "isn't supported yet"), and
-  `KafkaCompress(kcZstd)` raises `EKafkaCompression` saying the same.
-- **The producer is idempotent by default** (`Idempotence = kidAuto`, Java's default since
-  3.0): with `Acks = kaAll` and `Retries > 0` it asks the broker for a producer id and keeps up
-  to five batches of a partition in flight. A broker that refuses InitProducerId (an ACL
-  without IdempotentWrite) fails the records with that error: set `Idempotence := kidOff`.
-  `MaxInFlightPerBroker` above 5 now raises `EArgumentException` in `Create` unless
-  idempotence is off (Java's rule).
-
-- `TKafkaTopicPartition`, `TKafkaTopicPartitionArray` and `KafkaTopicPartition` moved from
-  `Kafka.Consumer` to `Kafka.Types` (the group units need them and the consumer will use the
-  group units). A program that names them through `Kafka.Consumer` only needs `Kafka.Types` in
-  its `uses`.
-- `TKafkaConsumer.Close` takes a timeout (default 30 s, Java's), for the group's commit and
-  leave; `Close` with no argument still compiles. `Poll` without `Assign` raises only when the
-  consumer isn't subscribed either.
-- A consumer with a `GroupId` starts an assigned partition from the group's committed offset
-  (Java's behaviour with `assign` and a `group.id`); without one, nothing changes.
-- `IKafkaGroupMembership.Poll` also restarts the member's poll timer.
-
-### Fixed
-
-- `Kafka.Producer`: `Flush` could return True while a batch whose answer had just arrived was
-  still being completed (its futures not done yet): between leaving the in-flight list and its
-  futures completing, the batch was in no list `Flush` looks at. Found as a rare failure of
-  `BufferFull_SendWaitsMaxBlockThenFails`. Such batches now stay in transit until every future
-  is done (also when they expire or the producer aborts them).
+- **The protocol.** `Kafka.Protocol.Primitives` (big-endian integers, `FLOAT64`, `UUID`,
+  unsigned and zigzag varints, classic and compact strings, bytes and arrays with their nulls,
+  tagged fields), `Kafka.Protocol.Crc32c` (CRC32C, checked against RFC 3720's vectors),
+  `Kafka.Protocol.Envelope` (request header v1/v2, response header v0/v1, the size-prefixed
+  frame).
+- **Codecs generated from Kafka 4.4.0's message definitions** (`tools/gen_messages.py`,
+  decision 3): `Kafka.Messages.ApiVersions` (v0-v5), `Metadata` (v0-v13), `Produce` (v3-v13),
+  `Fetch` (v4-v18), `ListOffsets` (v1-v11), `SaslHandshake` (v0-v1), `SaslAuthenticate`
+  (v0-v2), `FindCoordinator` (v0-v6), `ConsumerGroupHeartbeat` (v0-v1), `OffsetCommit`
+  (v2-v10), `OffsetFetch` (v1-v10), `ConsumerGroupDescribe` (v0-v1), `InitProducerId` (v0-v5);
+  `Kafka.Messages.Apis` (the table negotiation uses) and `Kafka.Errors` (every error code, from
+  `Errors.java`). `KafkaErrorIsRetriable` and `KafkaErrorIsInvalidMetadata` come from each
+  code's Java exception class (`tools/fetch_error_classes.py`), not from a hand-written list.
+- **Record batches.** `Kafka.Protocol.RecordBatch`: record batch v2 by hand, CRC32C checked,
+  headers, null against empty key and value, absolute offsets and timestamps (LogAppendTime as
+  Java), a Fetch's last batch cut by the byte limit skipped.
+- **Compression**, in Pascal on both compilers (`Kafka.Compression`): gzip (RFC 1952 over
+  `System.ZLib` and paszlib), snappy (xerial's framing, as Java writes it; raw snappy, as
+  librdkafka writes it, read too), lz4 (the LZ4 frame as Java writes it, KIP-57's header
+  checksum), both directions; zstd read (`Kafka.Compression.Zstd`, RFC 8878, refusing what Java
+  4.4.0's decoder refuses: a dictionary, a window above 128 MiB, legacy frames), not written:
+  `Compression := kcZstd` raises `EArgumentException` in `TKafkaProducer.Create`.
+  `KafkaCompressionSupported` (writing), `KafkaDecompressionSupported` (reading); output bounded
+  on every codec; `EKafkaCompression`.
+- **The connection.** `Kafka.Connection`: one broker over TCP or TLS (pascal-common-faa:
+  SChannel or OpenSSL chosen at run time, a private CA or the system's store, client
+  certificates), a reader thread, several requests in flight matched by correlation id,
+  request timeouts, ApiVersions negotiation with KIP-511's fallback, typed `Metadata`,
+  `Produce`, `Fetch` and `ListOffsets`, `SendOneWay` (acks=0), `Request` with a deadline of its
+  own. `IKafkaSignal` and `TKafkaEventSignal`. `Kafka.Transport`: no `EPcTransport*` leaves the
+  library; `Kafka.Types` has the exception tree and the version.
+- **SASL** (`Kafka.Sasl`): PLAIN, SCRAM-SHA-256 and SCRAM-SHA-512 (`TKafkaScramClient`, the
+  server's signature checked), OAUTHBEARER with a token the application supplies
+  (`SaslOAuthBearerTokenProvider`, called at each new connection; `SaslOAuthBearerExtensions`,
+  `KafkaSaslExtension`; no OIDC flow). `TKafkaConnectionParams.SaslMechanism`, `SaslUsername`,
+  `SaslPassword`, in plaintext or over TLS. `EKafkaAuthentication` (the broker's error code and
+  `BrokerMessage`), never retried. KIP-368: the connection keeps the session lifetime and the
+  cluster replaces a connection whose session is about to end.
+- **The cluster** (`Kafka.Cluster`): bootstrap, metadata snapshots, the tracked topics
+  refreshed when stale or invalidated, waits for a topic and a partition's leader
+  (`MaxBlockMs`), one connection per broker, a group coordinator's connection of its own.
+  `Kafka.Partitioner`: murmur2, the partition of a key as Java's producer chooses it, and
+  `TKafkaStickyPartitioner` for records without a key (KIP-480, KIP-794). `KafkaBackoffMs`:
+  Java's exponential backoff with jitter.
+- **The producer** (`Kafka.Producer`): `Send` with a future and an optional callback, batches
+  per partition (`BatchSize`, `LingerMs`), a sender thread, acks all/1/0, retries bounded by
+  `Retries` and `DeliveryTimeoutMs`, `BufferMemory` and `MaxBlockMs`, `Flush`, `Close` with a
+  timeout, every codec but zstd; Java's defaults (`KafkaProducerParams`). **Idempotent by
+  default** (`Idempotence = kidAuto`, Java's default since 3.0): with `Acks = kaAll` and
+  `Retries > 0` it takes a producer id (InitProducerId), numbers each partition's batches and
+  keeps up to five in flight, with Java's handling of OUT_OF_ORDER_SEQUENCE_NUMBER,
+  UNKNOWN_PRODUCER_ID, INVALID_PRODUCER_EPOCH and DUPLICATE_SEQUENCE_NUMBER and the local epoch
+  bump. A broker that refuses InitProducerId (an ACL without IdempotentWrite) fails the records
+  with that error: set `Idempotence := kidOff`. `MaxInFlightPerBroker` above 5 needs it off
+  (Java's rule).
+- **The consumer** (`Kafka.Consumer`): partitions assigned by hand (`Assign`, `Seek`,
+  `SeekToBeginning`, `SeekToEnd`, `Position`, `Poll`, `Wakeup` and `EKafkaWakeup`,
+  `BeginningOffsets`, `EndOffsets`, `AutoOffsetReset`) or by a **consumer group, KIP-848**
+  (Kafka 4.0 or later): `GroupId`, `Subscribe` (the join with the first `Poll`, as Java 4.x),
+  `Unsubscribe`, `OnPartitionsAssigned`, `OnPartitionsRevoked` and `OnPartitionsLost` (inside
+  `Poll`, on its thread; they may call `Commit`, `Seek`, `Position`...), positions from the
+  group's committed offsets, `Commit`, `CommitOffsets`, `CommitAsync` and `CommitOffsetsAsync`
+  (a callback inside a later `Poll`, and an `IKafkaCommitFuture`), `Committed`, auto-commit
+  (on by default, every 5 s, before a revoke and at `Close`), `MaxPollIntervalMs` (a member
+  that stops polling leaves and joins again), `Close(ATimeoutMs)` commits and leaves. Java's
+  defaults (`KafkaConsumerParams`). `Kafka.Group`, `Kafka.Group.Coordinator` and
+  `Kafka.Group.Consumer` hold the membership (`IKafkaGroupMembership`, decision 4's seam; the
+  classic protocol raises). `TKafkaTopicPartition` and its array are in `Kafka.Types`.
+- **Tracing and metrics.** `Kafka.Tracing`: OpenTelemetry spans on pascal-common-faa's tracer,
+  `messaging.*` conventions. `Send` opens a producer span `send <topic>` that ends with the
+  record's outcome and writes its `traceparent` (and `tracestate`) into the record's headers
+  unless the record has one; `Poll` is a span `poll <topic>`, exported when records come back;
+  `TKafkaConsumer.StartProcessSpan` opens `process <topic>` as a child of the record's
+  `traceparent`, `KafkaFinishSpan` ends it. With the tracer off nothing is created and no
+  header added. `Kafka.Metrics`, on `PcMetrics`: `messaging.client.sent.messages`,
+  `pascalkafka.producer.bytes`, `.retries`, `.batches.in_flight`, `.epoch_bumps`;
+  `messaging.client.consumed.messages`, `pascalkafka.consumer.lag`, `.commits`, `.rebalances`.
+- **Samples**, one source each for Delphi and Lazarus: `samples/ProduceConsume` (a producer and
+  a consumer over TLS and SASL, every mechanism) and `samples/ConsumerGroup` (a consumer in a
+  group with its handlers and commits); `--system-ca` trusts the system's store.
+- **Tests**: 354 unit tests (codecs against 306 frames captured from a Kafka 4.4.0 broker and
+  the Java client, compression against the reference libraries' vectors and the Java
+  producer's batches, murmur2 against Kafka's vectors, SCRAM against the RFCs' vectors and
+  Java's messages; an in-process fake broker, plain, TLS and SASL, that fails, holds and drops
+  requests, coordinates groups and checks idempotent sequences as 4.4.0 does) and 54
+  integration tests against `docker/docker-compose.yml` (Kafka 4.4.0, KRaft: plaintext, TLS,
+  SASL_PLAINTEXT, SASL_SSL, short SASL sessions, OAUTHBEARER), including the opt-in
+  `Kafka.CloudIntegrationTests` against Confluent Cloud (SASL PLAIN over TLS: records produced
+  and polled back; a group consumer reading the `traceparent` back, with its spans and
+  metrics). Interoperability with the Java client 4.4.0 (`tools/interop.py`): both directions
+  with gzip, snappy and lz4, zstd from Java, the Java consumer and this one in one group, the
+  `traceparent` both ways.
